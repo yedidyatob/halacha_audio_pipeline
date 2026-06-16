@@ -1,0 +1,19 @@
+# Local Configuration
+config.yaml
+*.json
+
+# Output & Cache Directories
+cache/
+output/
+debug/
+
+# Python caching and environments
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ipynb_checkpoints/
+v/
+venv/
+.env

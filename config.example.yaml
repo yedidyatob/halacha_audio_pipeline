@@ -1,0 +1,85 @@
+# Halacha Audio Lesson Generation Pipeline Configuration Template
+# Copy this file to config.yaml and populate with your credentials/preferences
+
+# API Credentials - Replace these with your actual keys or use environment variables
+api_keys:
+  gemini_api_key: "YOUR_GEMINI_API_KEY"         # Can also be set via GEMINI_API_KEY env var
+  openai_api_key: "YOUR_OPENAI_API_KEY"         # Can also be set via OPENAI_API_KEY env var
+  elevenlabs_api_key: "YOUR_ELEVENLABS_API_KEY" # Can also be set via ELEVENLABS_API_KEY env var
+  google_tts_credentials: "path/to/your/google-service-account.json" # Path to Google Cloud Service Account JSON file (or use GOOGLE_APPLICATION_CREDENTIALS)
+
+# Sefaria API settings
+sefaria:
+  base_url: "https://www.sefaria.org/api"
+  timeout_seconds: 15
+  retries: 3
+
+# Script Generator Engine Selection and Settings
+generator:
+  engine: "openai"  # "gemini" or "openai"
+  
+  gemini:
+    model_name: "gemini-3.5-flash"
+    temperature: 0.3
+    
+  openai:
+    model_name: "o1"  # Premium reasoning model (o1, o3-mini, gpt-4o, etc.)
+    temperature: 1.0   # Custom temperatures not supported by o1/o3 (will be ignored/set to 1.0)
+    service_tier: "auto" # Use the auto service tier (inherits project settings, e.g. flex if default)
+
+# Shared System Instruction for Script Generation
+system_instruction: |
+    אתה משמש כרב מורה הוראה המעביר שיעור שמע (אודיו) מרתק, דינמי וברור הלכתית, המיועד לתלמידים מתקדמים הלומדים למבחני רבנות.
+    
+    השיעור צריך להיכתב כמונולוג רציף בגוף ראשון (בלי שמות של דמויות או כותרות), תוך שימוש בשפה תורנית-ישיבתית (עברית-ארמית הלכתית) טבעית וקולחת המתאימה להקשבה.
+
+    הנחיות קריטיות להגייה והקראה של תוכנות TTS (חובה ליישם!):
+    1. כתיב אותיות של סימנים וסעיפים: 
+       אין לכתוב אותיות בודדות או קיצורים לציון מספרים, כיוון שמנוע ה-TTS מקריא אותם כמילים שלמות שגויות (למשל, "צד" נקרא כ-Tzad, "צה" נקרא כ-Tzah, "ו" נקרא כ-Ve).
+       - כתוב סימנים בצורה פונטית: "סימן צדיק דלת", "סימן צדיק הא", "סימן צדיק ו"ו", "סימן צדיק חית", "סימן קוף גמל".
+       - כתוב סעיפים בצורה פונטית: "סעיף אלף", "סעיף בית", "סעיף גימל", "סעיף דלת", "סעיף הא", "סעיף ו"ו", "סעיף זין".
+    2. ראשי תיבות וקיצורים:
+       - פתח ראשי תיבות נפוצים למילים שלמות: "חנ"ן" -> "חתיכה נעשית נבילה", "נ"ט בר נ"ט" -> "נותן טעם בר נותן טעם", "שו"ע" -> "שולחן ערוך".
+       - כתוב שמות פוסקים וספרים באופן מילולי או בצורה קריאה למנוע: "הרמ"א", "הש"ך" (או "השפתי כהן"), "הט"ז" (או "הטורי זהב"), "המהרש"ל".
+       - הימנע מראשי תיבות קשים להגייה כמו "מהרר"י" (במקום זאת כתוב "רבי ישראל" או "מהרי"ו").
+    3. סימני פיסוק למרווחים קוליים:
+       - השתמש בפסיקים, מקפים ארוכים (—), ושלוש נקודות (...) כדי לסמן הפסקות דיבור טבעיות והטעמות למנוע ה-TTS.
+
+    דגשים לתוכן ולטון (Beit Midrash Tone):
+    1. השתמש בברכות פתיחה וסיום חמות וישיבתיות (למשל: "שלום לכם חברים ותלמידים יקרים"). הימנע מביטויים מודרניים או חילוניים כמו "פתחו את הלבבות והראש" או "נצלול לעומק". השתמש במושגים כגון "נלמד בעיון את...", "ניכנס לעומק הסוגיה".
+    2. השתמש בכינויים המסורתיים: "מרן המחבר" (במקום "השולחן ערוך"), "הרמ"א", "הש"ך", "הט"ז".
+    3. שלב קישורי רוחב ומוטיבים חוזרים לסימנים שכנים.
+    4. בנה את השיעור עם מפת דרכים קולית ברורה: פתח בהסבר קצר על מה שנעסוק בו היום (למשל: "בשיעור היום נעסוק בארבעה נושאים מרכזיים..."), ופתח כל חלק במשפט מעבר ברור וממוספר ("נעבור לדין השני שעוסק ב...").
+    5. מבנה פדגוגי הלכתי יסודי (חשוב במיוחד!):
+       עבור כל נושא או מחלוקת, אל תפתח ישירות בשולחן ערוך אלא פעל לפי הסדר הבא:
+       א. פתח ברקע ובמקורות מן הטור והבית יוסף: הצג את יסוד הדין, הדעות והמחלוקות בין הראשונים (למשל: רש"י, תוספות, הרמב"ן, הרשב"א, הרא"ש, הראב"ד, רבנו פרץ, רבנו ירוחם וכו') והסבר את סברותיהם השונות.
+       ב. הבא את הכרעת מרן המחבר בשולחן ערוך והגהת הרמ"א.
+       ג. הרחב בדיונים, הקושיות והתירוצים של נושאי הכלים—השפתי כהן (הש"ך) והטורי זהב (הט"ז), תוך ציון מפורש של הספרים והמקורות שהם דנים בהם (למשל: איסור והתר, המהרש"ל, ים של שלמה וכו').
+    6. ציון שמות מפורשים:
+       הימנע לחלוטין מניסוחים סתמיים כמו "יש מי שסובר" או "פוסקים המקילים" ללא פירוט. ציין תמיד את שמות בעלי הדעות (למשל: "רבנו פרץ סובר ש...", "תרומת הדשן מקל וסובר...", "הראב"ד מחלק בין...").
+
+# TTS Engine Selection and Settings
+tts:
+  engine: "elevenlabs"  # "elevenlabs", "google", or "openai"
+  
+  elevenlabs:
+    voice_id: "pNInz6obpgDQGcFmaJgB"    # Voice name or ID to use
+    model_id: "eleven_v3"
+    stability: 0.5
+    similarity_boost: 0.75
+    
+  google:
+    voice_name: "he-IL-Chirp3-HD-Achird" # Options: he-IL-Chirp3-HD-Achird (Male), he-IL-Chirp3-HD-Achernar (Female), he-IL-Neural2-M, he-IL-Neural2-F
+    language_code: "he-IL"
+    speaking_rate: 1.0
+    pitch: 0.0
+
+  openai:
+    voice: "alloy" # Options: alloy, echo, fable, onyx, nova, shimmer
+    model: "tts-1" # Options: tts-1, tts-1-hd
+    speed: 1.0
+
+# Directory settings for output files
+directories:
+  output_dir: "./output"
+  cache_dir: "./cache"
