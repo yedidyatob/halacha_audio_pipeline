@@ -87,7 +87,8 @@ class ElevenLabsTTS(BaseTTS):
         voice_id: str = "pNInz6obpgDQGcFmaJgB", 
         model_id: str = "eleven_v3",
         stability: float = 0.5,
-        similarity_boost: float = 0.75
+        similarity_boost: float = 0.75,
+        ssl_verify: bool = True
     ):
         # Fallback to ELEVENLABS_API_KEY environment variable if not provided
         self.api_key = api_key or os.environ.get("ELEVENLABS_API_KEY")
@@ -98,6 +99,7 @@ class ElevenLabsTTS(BaseTTS):
         self.model_id = model_id
         self.stability = stability
         self.similarity_boost = similarity_boost
+        self.ssl_verify = ssl_verify
 
 
     def synthesize(self, text: str, output_path: str) -> None:
@@ -107,8 +109,7 @@ class ElevenLabsTTS(BaseTTS):
             from elevenlabs import VoiceSettings
             import httpx
             
-            # Using verify=False to bypass certificate errors in environments with SSL inspection
-            custom_httpx = httpx.Client(verify=False)
+            custom_httpx = httpx.Client(verify=self.ssl_verify)
             client = ElevenLabs(api_key=self.api_key, httpx_client=custom_httpx)
             
             # Chunk the text to stay within ElevenLabs' request limits (e.g. 4000 chars to be safe)
@@ -221,7 +222,8 @@ class OpenAITTS(BaseTTS):
         api_key: str = None, 
         voice: str = "alloy", 
         model: str = "tts-1",
-        speed: float = 1.0
+        speed: float = 1.0,
+        ssl_verify: bool = True
     ):
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         if not self.api_key:
@@ -230,14 +232,14 @@ class OpenAITTS(BaseTTS):
         self.voice = voice
         self.model = model
         self.speed = speed
+        self.ssl_verify = ssl_verify
 
     def synthesize(self, text: str, output_path: str) -> None:
         logger.info(f"Synthesizing audio via OpenAI TTS (Voice: {self.voice}, Model: {self.model}, Speed: {self.speed})...")
         try:
             import httpx
             
-            # Using verify=False to bypass certificate errors in corporate networks
-            custom_httpx = httpx.Client(verify=False)
+            custom_httpx = httpx.Client(verify=self.ssl_verify)
             client = OpenAI(api_key=self.api_key, http_client=custom_httpx)
             
             # Chunk the text to stay within OpenAI's 4096 character limit

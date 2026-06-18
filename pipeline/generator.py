@@ -17,12 +17,59 @@ class BaseScriptGenerator(ABC):
         self.model_name = model_name
         self.temperature = temperature
 
+    def _get_generation_user_prompt(
+        self, 
+        gematria_siman: str, 
+        master_context: str, 
+        commentators_desc: str = 'השפתי כהן (הש"ך) והטורי זהב (הט"ז) והמקורות שהם מביאים'
+    ) -> str:
+        return (
+            f"להלן קובץ המקורות המלא:\n"
+            f"{master_context}\n\n"
+            f"אנא התמקד כעת והפק טיוטת סיכום הלכתית מפורטת, שלמה ומעמיקה במיוחד עבור סימן {gematria_siman}.\n\n"
+            f"דרישות קריטיות להשלמה (חובה ליישם):\n"
+            f"1. עליך להקיף את כל הדעות, הסוגיות, והפרטים המופיעים בסימן {gematria_siman} עצמו. אל תסכם באופן כללי ואל תדלג על אף קושיה או שיטה.\n"
+            f"2. מבנה פדגוגי הלכתי (Beit Midrash Flow): עבור כל דין או מחלוקת, התחל תמיד בהסבר המקור מן הטור והבית יוסף ודעות הראשונים השונות (בציון שמותיהם המפורשים), לאחר מכן הבא את פסק מרן המחבר בשולחן ערוך והגהת הרמ\"א, ולבסוף העמק בביאור דעות נושאי הכלים—{commentators_desc}.\n"
+            f"3. ציין במפורש את שמות בעלי הדעות (הראשונים, האחרונים, והמפרשים) לאורך כל הסיכום. הימנע לחלוטין מביטויים סתמיים כמו \"יש מי שסובר\".\n"
+            f"4. הראה קשר רחב לסימנים השונים המופיעים בקובץ המקורות. אם יסוד או דעה פה מתקשרים לדיון בסימנים אחרים בקובץ, ציין זאת במפורש במילים שלך.\n"
+            f"5. התמקד אך ורק בתוכן ההלכתי, בפירוט ובדיוק המרביים. מומלץ להשתמש בסימני מרקדאון (כותרות, הדגשות, רשימות) ובסוגריים כדי לארגן את המידע בצורה הברורה ביותר. אל תדאג בשלב זה למגבלות הקראה של TTS או לקיצור הטקסט—התמקד בפירוט מלא של מאה אחוז מהחומר."
+        )
+
+    def _get_relations_user_prompt(self, drafts: dict) -> str:
+        prompt_parts = [
+            "להלן טיוטות הסיכום ההלכתיות של הסימנים השונים:",
+            ""
+        ]
+        for siman, draft in sorted(drafts.items()):
+            prompt_parts.append(f"=== סימן {siman} ===")
+            prompt_parts.append(draft)
+            prompt_parts.append("")
+            
+        prompt_parts.append(
+            "אנא נתח כעת באופן מעמיק את כל הקשרים, התלויות, והעקרונות ההלכתיים המשותפים ביניהם לפי ההנחיות."
+        )
+        return "\n".join(prompt_parts)
+
+    def _get_polishing_user_prompt(self, script_text: str, relations_text: str = "") -> str:
+        if not relations_text:
+            return script_text
+            
+        return (
+            f"להלן טיוטת סיכום המקורית עבור השיעור:\n"
+            f"{script_text}\n\n"
+            f"להלן מסמך הקשרים והזיקות ההלכתיות לסימנים השכנים:\n"
+            f"{relations_text}\n\n"
+            f"אנא ערוך כעת את טיוטת הסיכום לשיעור שמע מלוטש לפי כל ההנחיות. "
+            f"שלב את הקשרים והזיקות ההלכתיות לסימנים השכנים באופן טבעי וקולח בתוך השיעור (למשל, במעברים בין הסעיפים או בסיכומים)."
+        )
+
     @abstractmethod
     def generate_siman_script(
         self, 
         siman: int, 
         master_context: str, 
-        system_instruction: str
+        system_instruction: str,
+        commentators_desc: str = 'השפתי כהן (הש"ך) והטורי זהב (הט"ז) והמקורות שהם מביאים'
     ) -> str:
         """
         Generates a custom script for a specific Siman using the Master Reference Strategy.
@@ -30,23 +77,38 @@ class BaseScriptGenerator(ABC):
         pass
 
     @abstractmethod
-    def polish_siman_script(self, script_text: str) -> str:
+    def analyze_cross_relations(self, drafts: dict, relations_instruction: str) -> str:
+        """
+        Analyzes thematic and conceptual connections across multiple Siman drafts.
+        """
+        pass
+
+    @abstractmethod
+    def polish_siman_script(self, script_text: str, relations_text: str, polishing_instruction: str) -> str:
         """
         Refines a draft script to ensure it is 100% optimized for TTS pronunciation.
         """
         pass
 
+
+class BatchCapableGenerator(ABC):
+    """
+    Interface for generators that support asynchronous batch operations.
+    """
+    @abstractmethod
     def create_batch_generation_job(
         self, 
         siman: int, 
         master_context: str, 
         system_instruction: str,
-        batch_input_path: str
+        batch_input_path: str,
+        commentators_desc: str = 'השפתי כהן (הש"ך) והטורי זהב (הט"ז) והמקורות שהם מביאים'
     ) -> str:
-        raise NotImplementedError("Batch processing is not implemented for this generator.")
+        pass
 
+    @abstractmethod
     def retrieve_batch_result(self, batch_id: str) -> dict:
-        raise NotImplementedError("Batch retrieval is not implemented for this generator.")
+        pass
 
 
 class GeminiScriptGenerator(BaseScriptGenerator):
@@ -69,23 +131,12 @@ class GeminiScriptGenerator(BaseScriptGenerator):
         self, 
         siman: int, 
         master_context: str, 
-        system_instruction: str
+        system_instruction: str,
+        commentators_desc: str = 'השפתי כהן (הש"ך) והטורי זהב (הט"ז) והמקורות שהם מביאים'
     ) -> str:
         gematria_siman = int_to_gematria(siman)
         logger.info(f"Generating script for Siman {siman} ({gematria_siman}) using Gemini model {self.model_name}...")
-
-        user_prompt = (
-            f"להלן קובץ המקורות המלא הכולל מספר סימנים של הטור, בית יוסף, שולחן ערוך, ש\"ך וט\"ז.\n"
-            f"אנא התמקד כעת והפק שיעור שמע (אודיו) מפורט, שלם ומעמיק במיוחד עבור סימן {gematria_siman}.\n\n"
-            f"דרישות קריטיות להשלמה (חובה ליישם):\n"
-            f"1. עליך להקיף את כל הדעות, הסוגיות, והפרטים המופיעים בסימן {gematria_siman} עצמו. אל תסכם באופן כללי ואל תדלג על אף קושיה או שיטה.\n"
-            f"2. מבנה פדגוגי הלכתי (Beit Midrash Flow): עבור כל דין או מחלוקת, התחל תמיד בהסבר המקור מן הטור והבית יוסף ודעות הראשונים השונות (בציון שמותיהם המפורשים), לאחר מכן הבא את פסק מרן המחבר בשולחן ערוך והגהת הרמ\"א, ולבסוף העמק בביאור דעות נושאי הכלים—השפתי כהן (הש\"ך) והטורי זהב (הט\"ז) והמקורות שהם מביאים.\n"
-            f"3. ציין במפורש את שמות בעלי הדעות (הראשונים, האחרונים, והמפרשים) לאורך כל השיעור. הימנע לחלוטין מביטויים סתמיים כמו \"יש מי שסובר\".\n"
-            f"4. הראה קשר רחב לסימנים השונים המופיעים בקובץ המקורות. אם יסוד או דעה פה מתקשרים לדיון בסימנים אחרים בקובץ, ציין זאת במפורש במילים שלך.\n"
-            f"5. הקפד על התאמה מלאה ל-TTS: ללא סימני מרקדאון (בלי כוכביות, בלי כותרות, בלי רשימות), פתח את כל ראשי התיבות (למילים מלאות), ואל תשתמש בסוגריים כלל.\n\n"
-            f"קובץ המקורות:\n"
-            f"{master_context}"
-        )
+        user_prompt = self._get_generation_user_prompt(gematria_siman, master_context, commentators_desc)
 
         try:
             config = types.GenerateContentConfig(
@@ -110,53 +161,47 @@ class GeminiScriptGenerator(BaseScriptGenerator):
             logger.error(f"Error during Gemini script generation for Siman {siman}: {e}")
             raise
 
-    def polish_siman_script(self, script_text: str) -> str:
-        logger.info("Polishing generated script for TTS compliance via Gemini...")
-        
-        system_instruction = (
-            "אתה עורך לשוני מקצועי ומומחה להכנת תמלילים עבור מערכות הקראת קול (Text-to-Speech) בעברית תורנית.\n"
-            "תפקידך לקבל תמליל של שיעור הלכה בעברית, ולבצע הגהה ועריכה קפדנית כדי להבטיח שהוא מותאם לחלוטין לקריאה חלקה על ידי קריין ממוחשב (TTS), תוך שמירה על המבנה והתוכן המקורי במלואו.\n\n"
-            "חוקי עריכה מחייבים (אל תסטה מהם!):\n"
-            "1. הסר לחלוטין כל סימן עיצוב כגון כוכביות (*), כותרות (#), קווים תחתונים, הדגשות, או נקודות בולטים של רשימות. הטקסט חייב להיות פסקאות רציפות בלבד.\n"
-            "2. פתח סעיפים וסימנים למילים מלאות בהגייה פונטית נכונה (TTS יקריין אותיות בודדות כמילים שגויות):\n"
-            "   - \"סימן צד\" -> \"סימן צדיק דלת\"\n"
-            "   - \"סימן צה\" -> \"סימן צדיק הא\"\n"
-            "   - \"סימן צו\" -> \"סימן צדיק ו\"ו\"\n"
-            "   - \"סימן צח\" -> \"סימן צדיק חית\"\n"
-            "   - \"סימן קג\" -> \"סימן קוף גמל\"\n"
-            "   - \"סעיף א\" -> \"סעיף אלף\"\n"
-            "   - \"סעיף ב\" -> \"סעיף בית\"\n"
-            "   - \"סעיף ג\" -> \"סעיף גימל\"\n"
-            "   - \"סעיף ד\" -> \"סעיף דלת\"\n"
-            "   - \"סעיף ה\" -> \"סעיף הא\"\n"
-            "   - \"סעיף ו\" -> \"סעיף ו\"ו\"\n"
-            "   - \"סעיף ז\" -> \"סעיף זין\"\n"
-            "   וכן הלאה לכל מספר או אות הלכתית.\n"
-            "3. פתח ראשי תיבות נפוצים להגייה שלמה:\n"
-            "   - \"חנ\"ן\" -> \"חתיכה נעשית נבילה\"\n"
-            "   - \"נ\"ט בר נ\"ט\" -> \"נותן טעם בר נותן טעם\"\n"
-            "   - \"שו\"ע\" -> \"שולחן ערוך\"\n"
-            "   - \"ב\"ח\" -> \"בשר בחלב\"\n"
-            "   - \"יו\"ד\" -> \"יורה דעה\"\n"
-            "   - \"רמ\"א\" -> \"הרמ\"א\"\n"
-            "   - \"ש\"ך\" -> \"הש\"ך\" (או \"השפתי כהן\")\n"
-            "   - \"ט\"ז\" -> \"הט\"ז\" (או \"הטורי זהב\")\n"
-            "   - \"מהרר\"י\" -> \"רבי ישראל\"\n"
-            "   - \"מהרש\"ל\" -> \"המהרש\"ל\"\n"
-            "4. הימנע לחלוטין מסוגריים ( ). אם יש טקסט בסוגריים, שלב אותו בתוך זרימת המשפט או מחק את הסוגריים והשאר רק את הטקסט הפנימי.\n"
-            "5. שמור על לשון ישיבתית-תורנית נקייה, והסר ביטויים חילוניים או מודרניים מדי שמשתחלים לעיתים (כמו \"פתחו את הלבבות והראש\").\n"
-            "6. פלט אך ורק את הטקסט המוגה והערוך, ללא הקדמות עצמיות (כמו \"הנה הטקסט המתוקן\") וללא הערות שוליים."
-        )
+    def analyze_cross_relations(self, drafts: dict, relations_instruction: str) -> str:
+        logger.info(f"Analyzing cross-relations for {list(drafts.keys())} via Gemini model {self.model_name}...")
+        user_prompt = self._get_relations_user_prompt(drafts)
         
         try:
             config = types.GenerateContentConfig(
-                system_instruction=system_instruction,
+                system_instruction=relations_instruction,
+                temperature=self.temperature
+            )
+            
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=user_prompt,
+                config=config
+            )
+            
+            relations_text = response.text
+            if not relations_text:
+                raise ValueError("Gemini API returned an empty text response for relations analysis.")
+                
+            logger.info("Successfully generated cross-relations analysis.")
+            return relations_text
+            
+        except Exception as e:
+            logger.error(f"Error during Gemini relations analysis: {e}")
+            raise
+
+    def polish_siman_script(self, script_text: str, relations_text: str, polishing_instruction: str) -> str:
+        logger.info("Polishing generated script for TTS compliance via Gemini...")
+        
+        user_prompt = self._get_polishing_user_prompt(script_text, relations_text)
+        
+        try:
+            config = types.GenerateContentConfig(
+                system_instruction=polishing_instruction,
                 temperature=0.1
             )
             
             response = self.client.models.generate_content(
                 model=self.model_name,
-                contents=script_text,
+                contents=user_prompt,
                 config=config
             )
             
@@ -172,7 +217,7 @@ class GeminiScriptGenerator(BaseScriptGenerator):
             raise
 
 
-class OpenAIScriptGenerator(BaseScriptGenerator):
+class OpenAIScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
     """
     Generates custom, TTS-optimized Hebrew script files using OpenAI's API.
     Supports o1/o3 reasoning models automatically.
@@ -194,23 +239,12 @@ class OpenAIScriptGenerator(BaseScriptGenerator):
         self, 
         siman: int, 
         master_context: str, 
-        system_instruction: str
+        system_instruction: str,
+        commentators_desc: str = 'השפתי כהן (הש"ך) והטורי זהב (הט"ז) והמקורות שהם מביאים'
     ) -> str:
         gematria_siman = int_to_gematria(siman)
         logger.info(f"Generating script for Siman {siman} ({gematria_siman}) using OpenAI model {self.model_name}...")
-
-        user_prompt = (
-            f"להלן קובץ המקורות המלא הכולל מספר סימנים של הטור, בית יוסף, שולחך ערוך, ש\"ך וט\"ז.\n"
-            f"אנא התמקד כעת והפק שיעור שמע (אודיו) מפורט, שלם ומעמיק במיוחד עבור סימן {gematria_siman}.\n\n"
-            f"דרישות קריטיות להשלמה (חובה ליישם):\n"
-            f"1. עליך להקיף את כל הדעות, הסוגיות, והפרטים המופיעים בסימן {gematria_siman} עצמו. אל תסכם באופן כללי ואל תדלג על אף קושיה או שיטה.\n"
-            f"2. מבנה פדגוגי הלכתי (Beit Midrash Flow): עבור כל דין או מחלוקת, התחל תמיד בהסבר המקור מן הטור והבית יוסף ודעות הראשונים השונות (בציון שמותיהם המפורשים), לאחר מכן הבא את פסק מרן המחבר בשולחן ערוך והגהת הרמ\"א, ולבסוף העמק בביאור דעות נושאי הכלים—השפתי כהן (הש\"ך) והטורי זהב (הט\"ז) והמקורות שהם מביאים.\n"
-            f"3. ציין במפורש את שמות בעלי הדעות (הראשונים, האחרונים, והמפרשים) לאורך כל השיעור. הימנע לחלוטין מביטויים סתמיים כמו \"יש מי שסובר\".\n"
-            f"4. הראה קשר רחב לסימנים השונים המופיעים בקובץ המקורות. אם יסוד או דעה פה מתקשרים לדיון בסימנים אחרים בקובץ, ציין זאת במפורש במילים שלך.\n"
-            f"5. הקפד על התאמה מלאה ל-TTS: ללא סימני מרקדאון (בלי כוכביות, בלי כותרות, בלי רשימות), פתח את כל ראשי התיבות (למילים מלאות), ואל תשתמש בסוגריים כלל.\n\n"
-            f"קובץ המקורות:\n"
-            f"{master_context}"
-        )
+        user_prompt = self._get_generation_user_prompt(gematria_siman, master_context, commentators_desc)
 
         messages = []
         is_reasoning_model = self.model_name.startswith("o1") or self.model_name.startswith("o3")
@@ -244,53 +278,56 @@ class OpenAIScriptGenerator(BaseScriptGenerator):
             logger.error(f"Error during OpenAI script generation for Siman {siman}: {e}")
             raise
 
-    def polish_siman_script(self, script_text: str) -> str:
-        logger.info("Polishing generated script for TTS compliance via OpenAI...")
-        
-        system_instruction = (
-            "אתה עורך לשוני מקצועי ומומחה להכנת תמלילים עבור מערכות הקראת קול (Text-to-Speech) בעברית תורנית.\n"
-            "תפקידך לקבל תמליל של שיעור הלכה בעברית, ולבצע הגהה ועריכה קפדנית כדי להבטיח שהוא מותאם לחלוטין לקריאה חלקה על ידי קריין ממוחשב (TTS), תוך שמירה על המבנה והתוכן המקורי במלואו.\n\n"
-            "חוקי עריכה מחייבים (אל תסטה מהם!):\n"
-            "1. הסר לחלוטין כל סימן עיצוב כגון כוכביות (*), כותרות (#), קווים תחתונים, הדגשות, או נקודות בולטים של רשימות. הטקסט חייב להיות פסקאות רציפות בלבד.\n"
-            "2. פתח סעיפים וסימנים למילים מלאות בהגייה פונטית נכונה (TTS יקריין אותיות בודדות כמילים שגויות):\n"
-            "   - \"סימן צד\" -> \"סימן צדיק דלת\"\n"
-            "   - \"סימן צה\" -> \"סימן צדיק הא\"\n"
-            "   - \"סימן צו\" -> \"סימן צדיק ו\"ו\"\n"
-            "   - \"סימן צח\" -> \"סימן צדיק חית\"\n"
-            "   - \"סימן קג\" -> \"סימן קוף גמל\"\n"
-            "   - \"סעיף א\" -> \"סעיף אלף\"\n"
-            "   - \"סעיף ב\" -> \"סעיף בית\"\n"
-            "   - \"סעיף ג\" -> \"סעיף גימל\"\n"
-            "   - \"סעיף ד\" -> \"סעיף דלת\"\n"
-            "   - \"סעיף ה\" -> \"סעיף הא\"\n"
-            "   - \"סעיף ו\" -> \"סעיף ו\"ו\"\n"
-            "   - \"סעיף ז\" -> \"סעיף זין\"\n"
-            "   וכן הלאה לכל מספר או אות הלכתית.\n"
-            "3. פתח ראשי תיבות נפוצים להגייה שלמה:\n"
-            "   - \"חנ\"ן\" -> \"חתיכה נעשית נבילה\"\n"
-            "   - \"נ\"ט בר נ\"ט\" -> \"נותן טעם בר נותן טעם\"\n"
-            "   - \"שו\"ע\" -> \"שולחן ערוך\"\n"
-            "   - \"ב\"ח\" -> \"בשר בחלב\"\n"
-            "   - \"יו\"ד\" -> \"יורה דעה\"\n"
-            "   - \"רמ\"א\" -> \"הרמ\"א\"\n"
-            "   - \"ש\"ך\" -> \"הש\"ך\" (או \"השפתי כהן\")\n"
-            "   - \"ט\"ז\" -> \"הט\"ז\" (או \"הטורי זהב\")\n"
-            "   - \"מהרר\"י\" -> \"רבי ישראל\"\n"
-            "   - \"מהרש\"ל\" -> \"המהרש\"ל\"\n"
-            "4. הימנע לחלוטין מסוגריים ( ). אם יש טקסט בסוגריים, שלב אותו בתוך זרימת המשפט או מחק את הסוגריים והשאר רק את הטקסט הפנימי.\n"
-            "5. שמור על לשון ישיבתית-תורנית נקייה, והסר ביטויים חילוניים או מודרניים מדי שמשתחלים לעיתים (כמו \"פתחו את הלבבות והראש\").\n"
-            "6. פלט אך ורק את הטקסט המוגה והערוך, ללא הקדמות עצמיות (כמו \"הנה הטקסט המתוקן\") וללא הערות שוליים."
-        )
+    def analyze_cross_relations(self, drafts: dict, relations_instruction: str) -> str:
+        logger.info(f"Analyzing cross-relations for {list(drafts.keys())} via OpenAI model {self.model_name}...")
+        user_prompt = self._get_relations_user_prompt(drafts)
         
         messages = []
         is_reasoning_model = self.model_name.startswith("o1") or self.model_name.startswith("o3")
         
         if is_reasoning_model:
-            messages.append({"role": "developer", "content": system_instruction})
+            messages.append({"role": "developer", "content": relations_instruction})
         else:
-            messages.append({"role": "system", "content": system_instruction})
+            messages.append({"role": "system", "content": relations_instruction})
             
-        messages.append({"role": "user", "content": script_text})
+        messages.append({"role": "user", "content": user_prompt})
+        
+        try:
+            kwargs = {
+                "model": self.model_name,
+                "messages": messages,
+            }
+            if not is_reasoning_model:
+                kwargs["temperature"] = self.temperature
+            if self.service_tier:
+                kwargs["service_tier"] = self.service_tier
+
+            response = self.client.chat.completions.create(**kwargs)
+            relations_text = response.choices[0].message.content
+            if not relations_text:
+                raise ValueError("OpenAI API returned an empty text response for relations analysis.")
+                
+            logger.info("Successfully generated cross-relations analysis.")
+            return relations_text
+            
+        except Exception as e:
+            logger.error(f"Error during OpenAI relations analysis: {e}")
+            raise
+
+    def polish_siman_script(self, script_text: str, relations_text: str, polishing_instruction: str) -> str:
+        logger.info("Polishing generated script for TTS compliance via OpenAI...")
+        
+        user_prompt = self._get_polishing_user_prompt(script_text, relations_text)
+        
+        messages = []
+        is_reasoning_model = self.model_name.startswith("o1") or self.model_name.startswith("o3")
+        
+        if is_reasoning_model:
+            messages.append({"role": "developer", "content": polishing_instruction})
+        else:
+            messages.append({"role": "system", "content": polishing_instruction})
+            
+        messages.append({"role": "user", "content": user_prompt})
         
         try:
             kwargs = {
@@ -319,23 +356,12 @@ class OpenAIScriptGenerator(BaseScriptGenerator):
         siman: int, 
         master_context: str, 
         system_instruction: str,
-        batch_input_path: str
+        batch_input_path: str,
+        commentators_desc: str = 'השפתי כהן (הש"ך) והטורי זהב (הט"ז) והמקורות שהם מביאים'
     ) -> str:
         gematria_siman = int_to_gematria(siman)
         logger.info(f"Creating OpenAI Batch generation job specification for Siman {siman} ({gematria_siman})...")
-
-        user_prompt = (
-            f"להלן קובץ המקורות המלא הכולל מספר סימנים של הטור, בית יוסף, שולחך ערוך, ש\"ך וט\"ז.\n"
-            f"אנא התמקד כעת והפק שיעור שמע (אודיו) מפורט, שלם ומעמיק במיוחד עבור סימן {gematria_siman}.\n\n"
-            f"דרישות קריטיות להשלמה (חובה ליישם):\n"
-            f"1. עליך להקיף את כל הדעות, הסוגיות, והפרטים המופיעים בסימן {gematria_siman} עצמו. אל תסכם באופן כללי ואל תדלג על אף קושיה או שיטה.\n"
-            f"2. מבנה פדגוגי הלכתי (Beit Midrash Flow): עבור כל דין או מחלוקת, התחל תמיד בהסבר המקור מן הטור והבית יוסף ודעות הראשונים השונות (בציון שמותיהם המפורשים), לאחר מכן הבא את פסק מרן המחבר בשולחן ערוך והגהת הרמ\"א, ולבסוף העמק בביאור דעות נושאי הכלים—השפתי כהן (הש\"ך) והטורי זהב (הט\"ז) והמקורות שהם מביאים.\n"
-            f"3. ציין במפורש את שמות בעלי הדעות (הראשונים, האחרונים, והמפרשים) לאורך כל השיעור. הימנע לחלוטין מביטויים סתמיים כמו \"יש מי שסובר\".\n"
-            f"4. הראה קשר רחב לסימנים השונים המופיעים בקובץ המקורות. אם יסוד או דעה פה מתקשרים לדיון בסימנים אחרים בקובץ, ציין זאת במפורש במילים שלך.\n"
-            f"5. הקפד על התאמה מלאה ל-TTS: ללא סימני מרקדאון (בלי כוכביות, בלי כותרות, בלי רשימות), פתח את כל ראשי התיבות (למילים מלאות), ואל תשתמש בסוגריים כלל.\n\n"
-            f"קובץ המקורות:\n"
-            f"{master_context}"
-        )
+        user_prompt = self._get_generation_user_prompt(gematria_siman, master_context, commentators_desc)
 
         messages = []
         is_reasoning_model = self.model_name.startswith("o1") or self.model_name.startswith("o3")

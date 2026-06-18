@@ -2,6 +2,7 @@ import os
 import yaml
 from typing import Dict, Any
 from pipeline.logger import get_logger
+from pipeline.domain import SECTIONS_METADATA
 
 logger = get_logger(__name__)
 
@@ -28,6 +29,19 @@ class PipelineConfig:
                 raise
 
     def _validate_and_setup(self) -> None:
+        # Section validation
+        self.halachic_section = self.config_data.get("halachic_section")
+        if not self.halachic_section:
+            raise ValueError("Configuration must specify 'halachic_section'.")
+
+        if self.halachic_section not in SECTIONS_METADATA:
+            raise ValueError(
+                f"Unsupported halachic_section: '{self.halachic_section}'. "
+                f"Supported sections are: {list(SECTIONS_METADATA.keys())}"
+            )
+        self.section_metadata = SECTIONS_METADATA[self.halachic_section]
+        self.section_slug = self.section_metadata["slug"]
+
         # Load API keys (YAML takes priority, fallback to environment variables)
         api_keys = self.config_data.get("api_keys", {})
         
@@ -41,6 +55,7 @@ class PipelineConfig:
         self.sefaria_base_url = sefaria.get("base_url", "https://www.sefaria.org/api")
         self.sefaria_timeout = sefaria.get("timeout_seconds", 15)
         self.sefaria_retries = sefaria.get("retries", 3)
+        self.ssl_verify = sefaria.get("ssl_verify", True)
 
         # Generator settings (unified or fallback)
         generator = self.config_data.get("generator", {})
@@ -61,6 +76,8 @@ class PipelineConfig:
 
         # Load system instruction (shared at root or falling back to gemini section)
         self.gemini_system_instruction = self.config_data.get("system_instruction") or self.config_data.get("gemini", {}).get("system_instruction", "")
+        self.polishing_instruction = self.config_data.get("polishing_instruction") or ""
+        self.relations_instruction = self.config_data.get("relations_instruction") or ""
 
         # TTS settings
         tts = self.config_data.get("tts", {})
@@ -76,63 +93,13 @@ class PipelineConfig:
         dirs = self.config_data.get("directories", {})
         self.output_dir = dirs.get("output_dir", "./output")
         self.cache_dir = dirs.get("cache_dir", "./cache")
+        self.drafts_dir = os.path.join(self.output_dir, "drafts")
+        self.relations_dir = os.path.join(self.output_dir, "relations")
 
-        # Create output and cache directories if they don't exist
+        # Create directories if they don't exist
         os.makedirs(self.output_dir, exist_ok=True)
         os.makedirs(self.cache_dir, exist_ok=True)
+        os.makedirs(self.drafts_dir, exist_ok=True)
+        os.makedirs(self.relations_dir, exist_ok=True)
         
         logger.info("Configuration validated and directories established.")
-
-    def get_tts_engine(self):
-        """
-        Factory method to return the configured TTS Synthesizer engine.
-        """
-        from pipeline.tts import ElevenLabsTTS, GoogleCloudTTS, OpenAITTS
-        
-        if self.tts_engine == "elevenlabs":
-            return ElevenLabsTTS(
-                api_key=self.elevenlabs_api_key,
-                voice_id=self.elevenlabs_settings.get("voice_id", "Adam"),
-                model_id=self.elevenlabs_settings.get("model_id", "eleven_multilingual_v3"),
-                stability=self.elevenlabs_settings.get("stability", 0.5),
-                similarity_boost=self.elevenlabs_settings.get("similarity_boost", 0.75)
-            )
-        elif self.tts_engine == "google":
-            return GoogleCloudTTS(
-                credentials_path=self.google_tts_credentials,
-                voice_name=self.google_tts_settings.get("voice_name", "he-IL-Neural2-M"),
-                language_code=self.google_tts_settings.get("language_code", "he-IL"),
-                speaking_rate=self.google_tts_settings.get("speaking_rate", 1.0),
-                pitch=self.google_tts_settings.get("pitch", 0.0)
-            )
-        elif self.tts_engine == "openai":
-            return OpenAITTS(
-                api_key=self.openai_api_key,
-                voice=self.openai_tts_settings.get("voice", "alloy"),
-                model=self.openai_tts_settings.get("model", "tts-1"),
-                speed=self.openai_tts_settings.get("speed", 1.0)
-            )
-        else:
-            raise ValueError(f"Unsupported TTS engine: {self.tts_engine}")
-
-    def get_generator_engine(self):
-        """
-        Factory method to return the configured Script Generator engine.
-        """
-        from pipeline.generator import GeminiScriptGenerator, OpenAIScriptGenerator
-        
-        if self.generator_engine == "gemini":
-            return GeminiScriptGenerator(
-                api_key=self.gemini_api_key,
-                model_name=self.gemini_model_name,
-                temperature=self.gemini_temperature
-            )
-        elif self.generator_engine == "openai":
-            return OpenAIScriptGenerator(
-                api_key=self.openai_api_key,
-                model_name=self.openai_model_name,
-                temperature=self.openai_temperature,
-                service_tier=self.openai_service_tier
-            )
-        else:
-            raise ValueError(f"Unsupported Generator engine: {self.generator_engine}")

@@ -1,12 +1,74 @@
 import os
 import argparse
 import sys
+from dotenv import load_dotenv
+
+# Load environment variables from .env file at startup
+load_dotenv()
+
 from pipeline.config import PipelineConfig
 from pipeline.input_parser import parse_simanim_string
 from pipeline.extractor import SefariaExtractor
 from pipeline.logger import get_logger
+from pipeline.utils import save_output_file
+from pipeline.factory import create_generator_engine, create_tts_engine
 
 logger = get_logger("halacha_pipeline_cli")
+
+def process_and_save_outputs(siman: int, script_text: str, relations_text: str, generator, config, args, model_suffix: str):
+    """
+    Polishes the raw draft using the relations map, saves transcripts (both history copy and latest copy),
+    and synthesizes the audio via TTS if not skipped.
+    Consolidates the file saving and verification logic to keep the codebase DRY.
+    """
+    # Save Stage 1 raw draft
+    save_output_file(
+        directory=config.drafts_dir,
+        base_name=f"{config.section_slug}_Siman_{siman}_{model_suffix}_draft",
+        extension="txt",
+        content=script_text,
+        logger=logger
+    )
+        
+    # Perform the Stage 3 polish pass (combining draft and relations)
+    try:
+        polished_text = generator.polish_siman_script(script_text, relations_text, config.polishing_instruction)
+    except Exception as e:
+        logger.error(f"Failed to polish script for Siman {siman}: {e}")
+        raise
+    
+    # Save script transcript file
+    save_output_file(
+        directory=config.output_dir,
+        base_name=f"{config.section_slug}_Siman_{siman}_{model_suffix}_transcript",
+        extension="txt",
+        content=polished_text,
+        logger=logger
+    )
+    
+    # Proceed to TTS if not skipped
+    if args.skip_tts:
+        logger.info("Skipping TTS synthesis as requested by --skip-tts.")
+        return
+        
+    try:
+        tts_engine = create_tts_engine(config)
+        
+        # Synthesize directly to the audio files using a write_callback
+        def tts_callback(path: str) -> None:
+            logger.info(f"Synthesizing script for Siman {siman} to history audio file: {path}...")
+            tts_engine.synthesize(text=polished_text, output_path=path)
+            
+        save_output_file(
+            directory=config.output_dir,
+            base_name=f"{config.section_slug}_Siman_{siman}_{model_suffix}",
+            extension="mp3",
+            content=None,
+            logger=logger,
+            write_callback=tts_callback
+        )
+    except Exception as e:
+        logger.error(f"TTS synthesis failed for Siman {siman}: {e}")
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
@@ -43,28 +105,39 @@ def parse_arguments():
     parser.add_argument(
         "--batch",
         action="store_true",
-        help="Use OpenAI Batch API to submit the generation asynchronously (saves 50% cost and bypasses rate limits)."
+        help="Use OpenAI Batch API to submit the generation asynchronously."
     )
     parser.add_argument(
         "--retrieve-batch",
         type=str,
         default=None,
-        help="Retrieve and complete a previously submitted OpenAI batch generation job using its Batch ID."
+        help="Retrieve and save a previously submitted OpenAI batch generation draft using its Batch ID."
+    )
+    parser.add_argument(
+        "--overwrite-cache",
+        action="store_true",
+        help="Force regeneration of Stage 1 drafts and Stage 2 relations maps, overwriting any cached files."
+    )
+    parser.add_argument(
+        "--relations-file",
+        type=str,
+        default=None,
+        help="Path to a pre-existing cross-relations map file. If specified, Stage 2 relations analysis is skipped."
     )
     return parser.parse_args()
 
 def main():
     args = parse_arguments()
     
-    # 1. Parse Simanim list
+    # 1. Parse Simanim lists
     try:
         simanim_list = parse_simanim_string(args.simanim)
         logger.info(f"Target Simanim parsed: {simanim_list}")
         
-        # Determine context list
+        # Determine context list (all Simanim we need drafts for)
         if args.context_range:
             context_list = parse_simanim_string(args.context_range)
-            # Ensure target Simanim are included in the context list for completeness
+            # Ensure target Simanim are included in the context list
             context_list = sorted(list(set(context_list + simanim_list)))
         else:
             context_list = simanim_list
@@ -81,20 +154,25 @@ def main():
         logger.error(f"Configuration Loading Failed: {e}")
         sys.exit(1)
         
-    # If retrieving batch, bypass Sefaria extraction and normal generation steps
+    # Determine model suffix for naming
+    try:
+        generator = create_generator_engine(config)
+        model_suffix = generator.model_name.replace('.', '_')
+    except Exception as e:
+        logger.error(f"Generator Engine setup failed: {e}")
+        sys.exit(1)
+        
+    # 3. Handle OpenAI Batch Retrieval (Stage 1 Draft retrieval)
     if args.retrieve_batch:
         if not config.openai_api_key:
             logger.error("No OpenAI API key found in config.yaml or OPENAI_API_KEY environment variable. Exiting.")
             sys.exit(1)
             
-        from pipeline.generator import OpenAIScriptGenerator
-        generator = OpenAIScriptGenerator(
-            api_key=config.openai_api_key,
-            model_name=config.openai_model_name,
-            temperature=config.openai_temperature,
-            service_tier=config.openai_service_tier
-        )
-        
+        from pipeline.generator import BatchCapableGenerator
+        if not isinstance(generator, BatchCapableGenerator):
+            logger.error("Batch retrieval is only supported for generator engines that support batch processing.")
+            sys.exit(1)
+            
         logger.info(f"Retrieving OpenAI Batch job: {args.retrieve_batch}...")
         try:
             result = generator.retrieve_batch_result(args.retrieve_batch)
@@ -104,53 +182,17 @@ def main():
             if status == "completed":
                 script_text = result.get("content")
                 siman = simanim_list[0] if simanim_list else 94
-                    
-                # Perform the polish pass synchronously (draft is small enough to stay under TPM)
-                try:
-                    script_text = generator.polish_siman_script(script_text)
-                except Exception as e:
-                    logger.warning(f"Failed to polish script for Siman {siman}: {e}. Using raw draft script.")
                 
-                # Save script transcript file (latest copy and timestamped history copy)
-                from datetime import datetime
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                transcript_filename = f"Yoreh_Deah_Siman_{siman}_transcript.txt"
-                transcript_path = os.path.join(config.output_dir, transcript_filename)
-                with open(transcript_path, "w", encoding="utf-8") as f:
-                    f.write(script_text)
+                save_output_file(
+                    directory=config.drafts_dir,
+                    base_name=f"{config.section_slug}_Siman_{siman}_{model_suffix}_draft",
+                    extension="txt",
+                    content=script_text,
+                    logger=logger
+                )
                 
-                history_filename = f"Yoreh_Deah_Siman_{siman}_transcript_{timestamp}.txt"
-                history_path = os.path.join(config.output_dir, history_filename)
-                with open(history_path, "w", encoding="utf-8") as f:
-                    f.write(script_text)
-                logger.info(f"Saved polished transcript to: {transcript_path} and history copy: {history_path}")
-                
-                # Proceed to TTS if not skipped
-                if args.skip_tts:
-                    logger.info("Skipping TTS synthesis as requested by --skip-tts.")
-                    return
-                    
-                tts_engine = config.get_tts_engine()
-                
-                # Synthesize directly to the timestamped history audio file
-                audio_history_filename = f"Yoreh_Deah_Siman_{siman}_{timestamp}.mp3"
-                audio_history_path = os.path.join(config.output_dir, audio_history_filename)
-                logger.info(f"Synthesizing script for Siman {siman} to history audio file...")
-                tts_engine.synthesize(text=script_text, output_path=audio_history_path)
-                logger.info(f"Generated history MP3 saved: {audio_history_path}")
-                
-                # Attempt to save a copy as the main audio file (Yoreh_Deah_Siman_X.mp3)
-                audio_filename = f"Yoreh_Deah_Siman_{siman}.mp3"
-                audio_path = os.path.join(config.output_dir, audio_filename)
-                try:
-                    import shutil
-                    shutil.copyfile(audio_history_path, audio_path)
-                    logger.info(f"Updated latest MP3 copy at: {audio_path}")
-                except Exception as copy_err:
-                    logger.warning(
-                        f"Could not overwrite latest MP3 copy at '{audio_path}' (it may be locked by a media player): {copy_err}. "
-                        f"The generated audio remains fully saved in: '{audio_history_path}'."
-                    )
+                logger.info("\n--- Batch Retrieval Complete ---")
+                logger.info("The raw Stage 1 draft has been saved. Run the pipeline normally to complete Stage 2 and Stage 3.")
                 
             elif status in ["validating", "in_progress"]:
                 logger.info("The batch job is still running. Please try retrieving it again later.")
@@ -163,159 +205,209 @@ def main():
             sys.exit(1)
         return
         
-    # 3. Sefaria Extraction (v3 text query)
+    # 5. Stage 2: Cross-Siman Relations Analysis - Resolve Relations Map First
+    relations_text = ""
+    relations_path = None
+    range_str = "_".join(str(s) for s in context_list)
+    
+    if args.relations_file:
+        if not os.path.exists(args.relations_file):
+            logger.error(f"Relations file not found at: {args.relations_file}")
+            sys.exit(1)
+        try:
+            with open(args.relations_file, "r", encoding="utf-8") as f:
+                relations_text = f.read()
+            logger.info(f"Loaded pre-existing relations map: {args.relations_file} ({len(relations_text)} chars).")
+        except Exception as e:
+            logger.error(f"Failed to read relations file: {e}")
+            sys.exit(1)
+    else:
+        # Determine cached relations filename based on context range
+        relations_filename = f"{config.section_slug}_Relations_{range_str}_{model_suffix}.txt"
+        relations_path = os.path.join(config.relations_dir, relations_filename)
+        
+        if os.path.exists(relations_path) and not args.overwrite_cache:
+            try:
+                with open(relations_path, "r", encoding="utf-8") as f:
+                    relations_text = f.read()
+                logger.info(f"Loaded cached Stage 2 relations map: {relations_path} ({len(relations_text)} chars).")
+            except Exception as e:
+                logger.warning(f"Failed to read cached relations: {e}. Will regenerate.")
+
+    # Apply debug limit if specified
+    target_generation_simanim = simanim_list
+    if args.limit_lessons is not None:
+        if args.limit_lessons <= 0:
+            logger.error("Limit lessons count must be greater than zero.")
+            sys.exit(1)
+        target_generation_simanim = simanim_list[:args.limit_lessons]
+        logger.info(f"[DEBUG LIMIT] Restricting Stage 3 styling to: {target_generation_simanim}")
+
+    # Determine which drafts we actually need to load/generate
+    if relations_text:
+        # We already have relations, so we only need drafts for the target Simanim we are polishing
+        drafts_needed = target_generation_simanim
+        logger.info(f"Relations map is already loaded. Resolving drafts only for target Simanim: {drafts_needed}")
+    else:
+        # We need to generate relations, so we need drafts for all Simanim in context list
+        drafts_needed = context_list
+        logger.info(f"Relations map needs to be generated. Resolving drafts for entire context range: {drafts_needed}")
+
+    # 6. Sefaria Extractor Setup
     try:
         extractor = SefariaExtractor(
+            section_name=config.halachic_section,
             base_url=config.sefaria_base_url,
             timeout=config.sefaria_timeout,
-            retries=config.sefaria_retries
+            retries=config.sefaria_retries,
+            ssl_verify=config.ssl_verify
         )
-        
-        # Compile consolidated context for all requested Simanim
-        logger.info(f"Compiling consolidated Sefaria context for Simanim: {context_list}...")
-        master_context = extractor.compile_simanim_context(context_list)
-        
-        # Save master context to cache
-        context_cache_path = os.path.join(config.cache_dir, "master_context.txt")
-        with open(context_cache_path, "w", encoding="utf-8") as f:
-            f.write(master_context)
-        logger.info(f"Consolidated master context saved to cache: {context_cache_path}")
-        
     except Exception as e:
-        logger.error(f"Sefaria Extraction Failed: {e}")
+        logger.error(f"Sefaria Extractor initialization failed: {e}")
         sys.exit(1)
 
-    # 4. Script Generation
-    try:
-        # Check API key configuration for the selected generator engine
-        if config.generator_engine == "gemini" and not config.gemini_api_key:
-            logger.error("No Gemini API key found in config.yaml or GEMINI_API_KEY environment variable. Exiting.")
-            sys.exit(1)
-        elif config.generator_engine == "openai" and not config.openai_api_key:
-            logger.error("No OpenAI API key found in config.yaml or OPENAI_API_KEY environment variable. Exiting.")
-            sys.exit(1)
-            
-        generator = config.get_generator_engine()
+    # 7. Resolve Stage 1 Drafts for drafts_needed
+    drafts = {}
+    missing_simanim = []
+    
+    # Check what drafts already exist in cache
+    for siman in drafts_needed:
+        draft_filename = f"{config.section_slug}_Siman_{siman}_{model_suffix}_draft.txt"
+        draft_path = os.path.join(config.drafts_dir, draft_filename)
         
-        # Apply debug limit if specified
-        target_generation_simanim = simanim_list
-        if args.limit_lessons is not None:
-            if args.limit_lessons <= 0:
-                logger.error("Limit lessons count must be greater than zero.")
-                sys.exit(1)
-            target_generation_simanim = simanim_list[:args.limit_lessons]
-            logger.info(
-                f"[DEBUG LIMIT] Restricting generation to the first {args.limit_lessons} Siman(im): "
-                f"{target_generation_simanim} (Master context size remains at {len(context_list)} Simanim)."
-            )
-            
-        # Keep track of successful generation scripts for the TTS step
-        scripts_to_synthesize = {}
-        
-        for siman in target_generation_simanim:
+        if os.path.exists(draft_path) and not args.overwrite_cache:
             try:
-                if args.batch:
-                    from pipeline.generator import OpenAIScriptGenerator
-                    if not isinstance(generator, OpenAIScriptGenerator):
-                        logger.error("Batch processing is only supported for the OpenAI generator engine.")
-                        sys.exit(1)
-                        
+                with open(draft_path, "r", encoding="utf-8") as f:
+                    drafts[siman] = f.read()
+                logger.info(f"Loaded cached Stage 1 draft for Siman {siman} ({len(drafts[siman])} chars).")
+            except Exception as e:
+                logger.warning(f"Failed to read cached draft at '{draft_path}': {e}. Will regenerate.")
+                missing_simanim.append(siman)
+        else:
+            missing_simanim.append(siman)
+
+    # Generate missing drafts
+    if missing_simanim:
+        logger.info(f"Generating missing Stage 1 drafts for Simanim: {missing_simanim}...")
+        
+        if args.batch:
+            # Batch mode: submit OpenAI batch jobs for all missing drafts and exit
+            from pipeline.generator import BatchCapableGenerator
+            if not isinstance(generator, BatchCapableGenerator):
+                logger.error("Batch processing is only supported for generator engines that support batch processing.")
+                sys.exit(1)
+                
+            logger.info("Submitting missing drafts as batch jobs...")
+            for siman in missing_simanim:
+                try:
+                    logger.info(f"Compiling Sefaria context for Siman {siman}...")
+                    micro_context = extractor.compile_simanim_context([siman], target_simanim=[siman])
+                    
                     batch_input_path = os.path.join(config.cache_dir, f"openai_batch_siman_{siman}.jsonl")
                     batch_id = generator.create_batch_generation_job(
                         siman=siman,
-                        master_context=master_context,
+                        master_context=micro_context,
                         system_instruction=config.gemini_system_instruction,
-                        batch_input_path=batch_input_path
+                        batch_input_path=batch_input_path,
+                        commentators_desc=config.section_metadata["prompt_commentators_desc"]
                     )
-                    logger.info("\n--- OpenAI Batch Job Submitted Successfully ---")
-                    logger.info(f"Batch ID: {batch_id}")
-                    logger.info(f"Saved local batch payload definition: {batch_input_path}")
-                    logger.info("The job will complete in the background (typically within a few minutes).")
-                    logger.info(f"To check status or retrieve the result, run the following command once completed:")
-                    logger.info(f"  ..\\v\\Scripts\\python.exe main.py {siman} --retrieve-batch {batch_id} --skip-tts")
-                    print(f"\n[BATCH_ID] {batch_id}\n")
-                    continue
-                    
-                # Generate script using Master Reference Strategy
-                script_text = generator.generate_siman_script(
-                    siman=siman,
-                    master_context=master_context,
-                    system_instruction=config.gemini_system_instruction
-                )
-                
-                # Perform a secondary TTS verification and polish pass
-                try:
-                    script_text = generator.polish_siman_script(script_text)
+                    logger.info(f"Submitted Batch Job for Siman {siman}. Batch ID: {batch_id}")
+                    print(f"\n[BATCH_ID] {batch_id} (Siman {siman})\n")
                 except Exception as e:
-                    logger.warning(f"Failed to polish script for Siman {siman}: {e}. Falling back to draft script.")
-                
-                # Save script transcript file (latest copy and timestamped history copy)
-                from datetime import datetime
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                transcript_filename = f"Yoreh_Deah_Siman_{siman}_transcript.txt"
-                transcript_path = os.path.join(config.output_dir, transcript_filename)
-                with open(transcript_path, "w", encoding="utf-8") as f:
-                    f.write(script_text)
-                
-                history_filename = f"Yoreh_Deah_Siman_{siman}_transcript_{timestamp}.txt"
-                history_path = os.path.join(config.output_dir, history_filename)
-                with open(history_path, "w", encoding="utf-8") as f:
-                    f.write(script_text)
-                logger.info(f"Saved transcript to: {transcript_path} and history copy: {history_path}")
-                
-                scripts_to_synthesize[siman] = script_text
-                
-            except Exception as e:
-                logger.error(f"Failed to generate script for Siman {siman}: {e}. Skipping to next.")
-                
-    except Exception as e:
-        logger.error(f"Gemini client initialization failed: {e}")
-        sys.exit(1)
+                    logger.error(f"Failed to submit batch job for Siman {siman}: {e}")
+            logger.info("Batch submissions complete. Please run with --retrieve-batch <id> once complete.")
+            return
 
-    # 5. Text-to-Speech (TTS) Synthesis
-    if args.skip_tts:
-        logger.info("Skipping Text-to-Speech synthesis stage as requested by --skip-tts.")
-        logger.info("Pipeline execution finished successfully (Transcripts generated).")
-        return
-
-    if not scripts_to_synthesize:
-        logger.warning("No script transcripts were successfully generated. TTS stage aborted.")
-        sys.exit(1)
-
-    try:
-        tts_engine = config.get_tts_engine()
-        
-        for siman, script_text in scripts_to_synthesize.items():
-            from datetime import datetime
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            
-            # Synthesize directly to the timestamped history audio file
-            audio_history_filename = f"Yoreh_Deah_Siman_{siman}_{timestamp}.mp3"
-            audio_history_path = os.path.join(config.output_dir, audio_history_filename)
-            
+        # Normal synchronous mode
+        for siman in missing_simanim:
             try:
-                logger.info(f"Synthesizing script for Siman {siman} to history audio file...")
-                tts_engine.synthesize(text=script_text, output_path=audio_history_path)
-                logger.info(f"Generated history MP3 saved: {audio_history_path}")
+                logger.info(f"Compiling Sefaria context for Siman {siman}...")
+                micro_context = extractor.compile_simanim_context([siman], target_simanim=[siman])
                 
-                # Attempt to save a copy as the main audio file (Yoreh_Deah_Siman_X.mp3)
-                audio_filename = f"Yoreh_Deah_Siman_{siman}.mp3"
-                audio_path = os.path.join(config.output_dir, audio_filename)
-                try:
-                    import shutil
-                    shutil.copyfile(audio_history_path, audio_path)
-                    logger.info(f"Updated latest MP3 copy at: {audio_path}")
-                except Exception as copy_err:
-                    logger.warning(
-                        f"Could not overwrite latest MP3 copy at '{audio_path}' (it may be locked by a media player): {copy_err}. "
-                        f"The generated audio remains fully saved in: '{audio_history_path}'."
-                    )
+                draft_text = generator.generate_siman_script(
+                    siman=siman,
+                    master_context=micro_context,
+                    system_instruction=config.gemini_system_instruction,
+                    commentators_desc=config.section_metadata["prompt_commentators_desc"]
+                )
+                drafts[siman] = draft_text
+                
+                # Save draft immediately
+                save_output_file(
+                    directory=config.drafts_dir,
+                    base_name=f"{config.section_slug}_Siman_{siman}_{model_suffix}_draft",
+                    extension="txt",
+                    content=draft_text,
+                    logger=logger
+                )
             except Exception as e:
-                logger.error(f"TTS synthesis failed for Siman {siman}: {e}")
-                
-    except Exception as e:
-        logger.error(f"TTS Engine initialization failed: {e}")
-        sys.exit(1)
+                logger.error(f"Failed to extract Stage 1 draft for Siman {siman}: {e}")
+                sys.exit(1)
+
+    # 7.5 Run Heuristic Evaluation for resolved drafts
+    logger.info("Executing Heuristic Evaluation on resolved drafts...")
+    from pipeline.evaluator import evaluate_draft
+    
+    for siman in drafts_needed:
+        if siman in drafts:
+            logger.info(f"Evaluating draft quality for Siman {siman}...")
+            try:
+                eval_res = evaluate_draft(siman, drafts[siman], config_path=args.config)
+                if not eval_res["success"]:
+                    logger.warning(
+                        f"\n"
+                        f"============================================================\n"
+                        f"⚠️⚠️⚠️ HEURISTIC EVALUATION WARNING FOR SIMAN {siman} ⚠️⚠️⚠️\n"
+                        f"============================================================\n"
+                        f"The generated Stage 1 draft failed heuristic coverage checks.\n\n"
+                        f"{eval_res['report']}\n"
+                        f"============================================================\n"
+                    )
+                else:
+                    logger.info(f"Heuristic coverage evaluation for Siman {siman} PASSED.")
+            except Exception as e:
+                logger.error(f"Failed to run heuristic evaluation for Siman {siman}: {e}")
+
+    # 8. Generate relations map if it was not loaded
+    if not relations_text:
+        # Generate new relations map
+        logger.info("Executing Stage 2: Cross-Siman Relations Analysis...")
+        try:
+            relations_text = generator.analyze_cross_relations(drafts, config.relations_instruction)
+            
+            # Save relations map immediately
+            save_output_file(
+                directory=config.relations_dir,
+                base_name=f"{config.section_slug}_Relations_{range_str}_{model_suffix}",
+                extension="txt",
+                content=relations_text,
+                logger=logger
+            )
+        except Exception as e:
+            logger.error(f"Stage 2 Relations Analysis failed: {e}")
+            sys.exit(1)
+
+    # 9. Stage 3: Lesson Monologue styling & TTS
+    for siman in target_generation_simanim:
+        if siman not in drafts:
+            logger.error(f"Cannot polish Siman {siman}: Stage 1 draft is missing from drafts database.")
+            continue
+            
+        logger.info(f"\n--- Starting Stage 3 Monologue Generation for Siman {siman} ---")
+        try:
+            draft_text = drafts[siman]
+            process_and_save_outputs(
+                siman=siman,
+                script_text=draft_text,
+                relations_text=relations_text,
+                generator=generator,
+                config=config,
+                args=args,
+                model_suffix=model_suffix
+            )
+        except Exception as e:
+            logger.error(f"Failed Stage 3 Monologue Generation for Siman {siman}: {e}")
+            sys.exit(1)
 
     logger.info("Pipeline execution completed successfully.")
 

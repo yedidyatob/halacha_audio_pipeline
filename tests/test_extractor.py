@@ -37,7 +37,7 @@ def test_fetch_text_v3_success(mock_get, extractor):
     lines = extractor.fetch_text("Beit Yosef, Yoreh De'ah.94.1")
     assert lines == ["שורה א", "שורה ב"]
     # Verify that request was sent to v3 endpoint
-    mock_get.assert_called_with("https://fake-sefaria.org/v3/texts/Beit_Yosef,_Yoreh_De'ah.94.1?version=hebrew", timeout=5, verify=False)
+    mock_get.assert_called_with("https://fake-sefaria.org/v3/texts/Beit_Yosef,_Yoreh_De'ah.94.1?version=hebrew", timeout=5, verify=True)
 
 @patch("requests.get")
 def test_fetch_text_v1_fallback(mock_get, extractor):
@@ -61,7 +61,7 @@ def test_fetch_text_v1_fallback(mock_get, extractor):
     
     # Assert that it did fall back and queried v1
     assert mock_get.call_count == 3
-    mock_get.assert_any_call("https://fake-sefaria.org/texts/Tur,_Yoreh_De'ah.94.1?context=0", timeout=5, verify=False)
+    mock_get.assert_any_call("https://fake-sefaria.org/texts/Tur,_Yoreh_De'ah.94.1?context=0", timeout=5, verify=True)
 
 @patch("requests.get")
 def test_compile_simanim_context(mock_get, extractor):
@@ -83,3 +83,63 @@ def test_compile_simanim_context(mock_get, extractor):
     assert "--- Beit Yosef (סימן 94) ---" in context
     assert "--- Shulchan Arukh (סימן 94) ---" in context
     assert "[1] טקסט דוגמה" in context
+
+
+@patch("requests.get")
+def test_compile_simanim_context_with_target_simanim(mock_get, extractor):
+    # Simulates success return for Sefaria works
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "versions": [
+            {"language": "he", "text": ["טקסט דוגמה"]}
+        ]
+    }
+    mock_get.return_value = mock_response
+
+    # Compile context for Siman 93 and 94, with only 94 as target
+    context = extractor.compile_simanim_context([93, 94], target_simanim=[94])
+    
+    assert "=== סימן 93 ===" in context
+    assert "--- Tur (סימן 93) ---" in context
+    assert "--- Shulchan Arukh (סימן 93) ---" in context
+    assert "--- Beit Yosef (סימן 93) ---" not in context
+    assert "--- Shach (סימן 93) ---" not in context
+    assert "--- Taz (סימן 93) ---" not in context
+    
+    assert "=== סימן 94 ===" in context
+    assert "--- Tur (סימן 94) ---" in context
+    assert "--- Beit Yosef (סימן 94) ---" in context
+    assert "--- Shulchan Arukh (סימן 94) ---" in context
+    assert "--- Shach (סימן 94) ---" in context
+    assert "--- Taz (סימן 94) ---" in context
+
+
+@patch("requests.get")
+def test_fetch_text_ssl_disabled(mock_get):
+    # Test that SefariaExtractor passes verify=False when ssl_verify=False
+    extractor_no_ssl = SefariaExtractor(base_url="https://fake-sefaria.org", timeout=5, retries=1, ssl_verify=False)
+    
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "versions": [{"language": "he", "text": ["שורה"]}]
+    }
+    mock_get.return_value = mock_response
+
+    lines = extractor_no_ssl.fetch_text("Tur, Yoreh De'ah.94.1")
+    assert lines == ["שורה"]
+    mock_get.assert_called_with("https://fake-sefaria.org/v3/texts/Tur,_Yoreh_De'ah.94.1?version=hebrew", timeout=5, verify=False)
+
+
+def test_extractor_section_name():
+    extractor_oc = SefariaExtractor(section_name="Orach Chayim", base_url="https://fake-sefaria.org", timeout=5, retries=1)
+    assert extractor_oc.works["Tur"] == "Tur, Orach Chayim"
+    assert extractor_oc.works["Magen Avraham"] == "Magen Avraham"
+    assert extractor_oc.works["Taz"] == "Turei Zahav on Shulchan Arukh, Orach Chayim"
+    assert extractor_oc.works["Mishna Berura"] == "Mishnah Berurah"
+    
+    with pytest.raises(ValueError):
+        SefariaExtractor(section_name="Invalid Section")
+
+

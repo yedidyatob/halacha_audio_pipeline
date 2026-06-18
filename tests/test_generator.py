@@ -49,7 +49,7 @@ def test_polish_siman_script_success(mock_client_cls):
     mock_client.models.generate_content.return_value = mock_response
 
     generator = GeminiScriptGenerator(api_key="fake-key", model_name="fake-model")
-    polished = generator.polish_siman_script("טקסט גולמי")
+    polished = generator.polish_siman_script("טקסט גולמי", "", "עורך לשוני מקצועי")
 
     assert polished == "שיעור שמע מוגה ומלוטש"
     mock_client.models.generate_content.assert_called_once()
@@ -57,7 +57,7 @@ def test_polish_siman_script_success(mock_client_cls):
     assert call_kwargs["model"] == "fake-model"
     assert call_kwargs["contents"] == "טקסט גולמי"
     assert call_kwargs["config"].temperature == 0.1
-    assert "עורך לשוני מקצועי" in call_kwargs["config"].system_instruction
+    assert call_kwargs["config"].system_instruction.startswith("עורך לשוני מקצועי")
 
 
 
@@ -162,7 +162,7 @@ def test_openai_polish_siman_script_success(mock_openai_cls):
     mock_client.chat.completions.create.return_value = mock_response
 
     generator = OpenAIScriptGenerator(api_key="fake-key", model_name="gpt-4o")
-    polished = generator.polish_siman_script("טקסט גולמי")
+    polished = generator.polish_siman_script("טקסט גולמי", "", "עורך לשוני מקצועי")
 
     assert polished == "שיעור שמע מלוטש מאופנאיי"
     mock_client.chat.completions.create.assert_called_once()
@@ -170,7 +170,7 @@ def test_openai_polish_siman_script_success(mock_openai_cls):
     assert call_kwargs["model"] == "gpt-4o"
     assert call_kwargs["temperature"] == 0.1
     assert call_kwargs["messages"][0]["role"] == "system"
-    assert "עורך לשוני מקצועי" in call_kwargs["messages"][0]["content"]
+    assert call_kwargs["messages"][0]["content"].startswith("עורך לשוני מקצועי")
 
 
 @patch("pipeline.generator.OpenAI")
@@ -184,7 +184,7 @@ def test_openai_polish_siman_script_with_service_tier(mock_openai_cls):
     mock_client.chat.completions.create.return_value = mock_response
 
     generator = OpenAIScriptGenerator(api_key="fake-key", model_name="gpt-4o", service_tier="flex")
-    polished = generator.polish_siman_script("טקסט גולמי")
+    polished = generator.polish_siman_script("טקסט גולמי", "", "עורך לשוני מקצועי")
 
     assert polished == "שיעור שמע מלוטש מאופנאיי עם שירות פלקס"
     mock_client.chat.completions.create.assert_called_once()
@@ -272,4 +272,49 @@ def test_openai_retrieve_batch_result_running(mock_openai_cls):
 
     assert result["status"] == "in_progress"
     assert "content" not in result
+
+
+@patch("google.genai.Client")
+def test_gemini_analyze_cross_relations_success(mock_client_cls):
+    mock_client = MagicMock()
+    mock_client_cls.return_value = mock_client
+    
+    mock_response = MagicMock()
+    mock_response.text = "ניתוח יחסים בין סימנים"
+    mock_client.models.generate_content.return_value = mock_response
+
+    generator = GeminiScriptGenerator(api_key="fake-key", model_name="fake-model")
+    drafts = {94: "טיוטה 94", 95: "טיוטה 95"}
+    relations = generator.analyze_cross_relations(drafts, "הנחיית יחסים")
+
+    assert relations == "ניתוח יחסים בין סימנים"
+    mock_client.models.generate_content.assert_called_once()
+    call_args, call_kwargs = mock_client.models.generate_content.call_args
+    assert call_kwargs["model"] == "fake-model"
+    assert "=== סימן 94 ===" in call_kwargs["contents"]
+    assert "=== סימן 95 ===" in call_kwargs["contents"]
+    assert call_kwargs["config"].system_instruction == "הנחיית יחסים"
+
+
+@patch("pipeline.generator.OpenAI")
+def test_openai_analyze_cross_relations_success(mock_openai_cls):
+    mock_client = MagicMock()
+    mock_openai_cls.return_value = mock_client
+    
+    mock_response = MagicMock()
+    mock_response.choices = [MagicMock()]
+    mock_response.choices[0].message.content = "ניתוח יחסים מאופנאיי"
+    mock_client.chat.completions.create.return_value = mock_response
+
+    generator = OpenAIScriptGenerator(api_key="fake-key", model_name="gpt-4o")
+    drafts = {94: "טיוטה 94", 95: "טיוטה 95"}
+    relations = generator.analyze_cross_relations(drafts, "הנחיית יחסים")
+
+    assert relations == "ניתוח יחסים מאופנאיי"
+    mock_client.chat.completions.create.assert_called_once()
+    call_kwargs = mock_client.chat.completions.create.call_args[1]
+    assert call_kwargs["model"] == "gpt-4o"
+    assert call_kwargs["messages"][0] == {"role": "system", "content": "הנחיית יחסים"}
+    assert "=== סימן 94 ===" in call_kwargs["messages"][1]["content"]
+    assert "=== סימן 95 ===" in call_kwargs["messages"][1]["content"]
 

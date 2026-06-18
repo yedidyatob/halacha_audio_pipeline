@@ -1,18 +1,15 @@
 # Halacha Audio Lesson Generation Pipeline Configuration Template
 # Copy this file to config.yaml and populate with your credentials/preferences
 
-# API Credentials - Replace these with your actual keys or use environment variables
-api_keys:
-  gemini_api_key: "YOUR_GEMINI_API_KEY"         # Can also be set via GEMINI_API_KEY env var
-  openai_api_key: "YOUR_OPENAI_API_KEY"         # Can also be set via OPENAI_API_KEY env var
-  elevenlabs_api_key: "YOUR_ELEVENLABS_API_KEY" # Can also be set via ELEVENLABS_API_KEY env var
-  google_tts_credentials: "path/to/your/google-service-account.json" # Path to Google Cloud Service Account JSON file (or use GOOGLE_APPLICATION_CREDENTIALS)
+# Halachic Section Settings (options: "Yoreh De'ah", "Orach Chayim")
+halachic_section: "Yoreh De'ah"
 
 # Sefaria API settings
 sefaria:
   base_url: "https://www.sefaria.org/api"
   timeout_seconds: 15
   retries: 3
+  ssl_verify: true
 
 # Script Generator Engine Selection and Settings
 generator:

@@ -5,10 +5,6 @@ import time
 import urllib3
 from typing import List, Dict, Any, Optional
 from pipeline.logger import get_logger
-
-# Disable SSL verification warnings for Sefaria API requests
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 logger = get_logger(__name__)
 
 class SefariaExtractor:
@@ -16,19 +12,31 @@ class SefariaExtractor:
     Fetches and cleans classical Jewish texts from the Sefaria API.
     Handles nested list structures and HTML sanitization.
     """
-    def __init__(self, base_url: str = "https://www.sefaria.org/api", timeout: int = 15, retries: int = 3):
+    def __init__(self, section_name: str = "Yoreh De'ah", base_url: str = "https://www.sefaria.org/api", timeout: int = 15, retries: int = 3, ssl_verify: bool = True):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.retries = retries
+        self.ssl_verify = ssl_verify
+        self.section_name = section_name
         
-        # Sefaria canonical text references for Yoreh De'ah
+        if not self.ssl_verify:
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        
+        from pipeline.domain import SECTIONS_METADATA
+        if section_name not in SECTIONS_METADATA:
+            raise ValueError(f"Unsupported section name: '{section_name}'")
+            
+        metadata = SECTIONS_METADATA[section_name]
+        sefaria_name = metadata["sefaria_name"]
+        
+        # Sefaria canonical text references resolved dynamically
         self.works = {
-            "Tur": "Tur, Yoreh De'ah",
-            "Beit Yosef": "Beit Yosef, Yoreh De'ah",
-            "Shulchan Arukh": "Shulchan Arukh, Yoreh De'ah",
-            "Shach": "Siftei Kohen on Shulchan Arukh, Yoreh De'ah",
-            "Taz": "Turei Zahav on Shulchan Arukh, Yoreh De'ah"
+            "Tur": f"Tur, {sefaria_name}",
+            "Beit Yosef": f"Beit Yosef, {sefaria_name}",
+            "Shulchan Arukh": f"Shulchan Arukh, {sefaria_name}"
         }
+        for comm_name, comm_info in metadata["commentators"].items():
+            self.works[comm_name] = comm_info["sefaria_name"]
 
     def clean_html_text(self, text: str) -> str:
         """
@@ -71,7 +79,7 @@ class SefariaExtractor:
             try:
                 logger.info(f"Fetching (v3) ref '{ref}' (Attempt {attempt + 1}/{self.retries})...")
                 # Using verify=False to bypass certificate errors in environments with SSL inspection
-                response = requests.get(v3_url, timeout=self.timeout, verify=False)
+                response = requests.get(v3_url, timeout=self.timeout, verify=self.ssl_verify)
                 if response.status_code == 200:
                     payload = response.json()
                     versions = payload.get("versions", [])
@@ -93,7 +101,7 @@ class SefariaExtractor:
             try:
                 logger.info(f"Falling back (v1) for ref '{ref}' (Attempt {attempt + 1}/{self.retries})...")
                 # Using verify=False to bypass certificate errors in environments with SSL inspection
-                response = requests.get(v1_url, timeout=self.timeout, verify=False)
+                response = requests.get(v1_url, timeout=self.timeout, verify=self.ssl_verify)
                 if response.status_code == 200:
                     payload = response.json()
                     hebrew_data = payload.get("he", [])
@@ -122,7 +130,7 @@ class SefariaExtractor:
                 siman_data[work_name] = []
         return siman_data
 
-    def compile_simanim_context(self, simanim: List[int]) -> str:
+    def compile_simanim_context(self, simanim: List[int], target_simanim: Optional[List[int]] = None) -> str:
         """
         Extracts and compiles a range of Simanim into a single structured master text context.
         """
@@ -137,10 +145,26 @@ class SefariaExtractor:
             )
             compiled_sections.append(siman_header)
             
-            siman_sources = self.fetch_siman_sources(siman)
+            # Determine works to fetch/include for this Siman
+            is_target = target_simanim is None or siman in target_simanim
+            if is_target:
+                works_to_include = ["Tur", "Beit Yosef", "Shulchan Arukh", "Shach", "Taz"]
+            else:
+                works_to_include = ["Tur", "Shulchan Arukh"]
+                logger.info(f"Siman {siman} is context-only. Fetching only Tur and Shulchan Arukh to optimize context length.")
+                
+            siman_sources = {}
+            for work_name in works_to_include:
+                ref = f"{self.works[work_name]}.{siman}"
+                text_lines = self.fetch_text(ref)
+                if text_lines:
+                    siman_sources[work_name] = text_lines
+                else:
+                    logger.warning(f"Work '{work_name}' was empty or not found for Siman {siman}")
+                    siman_sources[work_name] = []
             
             # Format and append each work to the context file
-            for work_name in ["Tur", "Beit Yosef", "Shulchan Arukh", "Shach", "Taz"]:
+            for work_name in works_to_include:
                 lines = siman_sources.get(work_name, [])
                 if lines:
                     section_title = f"--- {work_name} (סימן {siman}) ---\n\n"
