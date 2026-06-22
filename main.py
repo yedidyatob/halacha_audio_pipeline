@@ -21,15 +21,6 @@ def process_and_save_outputs(siman: int, script_text: str, relations_text: str, 
     and synthesizes the audio via TTS if not skipped.
     Consolidates the file saving and verification logic to keep the codebase DRY.
     """
-    # Save Stage 1 raw draft
-    save_output_file(
-        directory=config.drafts_dir,
-        base_name=f"{config.section_slug}_Siman_{siman}_{model_suffix}_draft",
-        extension="txt",
-        content=script_text,
-        logger=logger
-    )
-        
     # Perform the Stage 3 polish pass (combining draft and relations)
     try:
         polished_text = generator.polish_siman_script(script_text, relations_text, config.polishing_instruction)

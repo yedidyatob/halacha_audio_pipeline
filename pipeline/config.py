@@ -75,9 +75,24 @@ class PipelineConfig:
         self.openai_service_tier = openai_settings.get("service_tier", "flex")
 
         # Load system instruction (shared at root or falling back to gemini section)
-        self.gemini_system_instruction = self.config_data.get("system_instruction") or self.config_data.get("gemini", {}).get("system_instruction", "")
-        self.polishing_instruction = self.config_data.get("polishing_instruction") or ""
-        self.relations_instruction = self.config_data.get("relations_instruction") or ""
+        raw_system_instruction = self.config_data.get("system_instruction") or self.config_data.get("gemini", {}).get("system_instruction", "")
+        self.gemini_system_instruction = raw_system_instruction.format(
+            commentators_list_hebrew=self.section_metadata.get("commentators_list_hebrew", ""),
+            prompt_commentators_desc=self.section_metadata.get("prompt_commentators_desc", "")
+        ) if raw_system_instruction else ""
+        
+        raw_polishing_instruction = self.config_data.get("polishing_instruction") or ""
+        self.polishing_instruction = raw_polishing_instruction.format(
+            commentators_list_short=self.section_metadata.get("commentators_list_short", ""),
+            tts_abbreviations=self.section_metadata.get("tts_abbreviations", "")
+        ) if raw_polishing_instruction else ""
+        
+        raw_relations_instruction = self.config_data.get("relations_instruction") or ""
+        self.relations_instruction = raw_relations_instruction.format(
+            hebrew_name=self.section_metadata.get("hebrew_name", ""),
+            prompt_commentators_desc=self.section_metadata.get("prompt_commentators_desc", "")
+        ) if raw_relations_instruction else ""
+
 
         # TTS settings
         tts = self.config_data.get("tts", {})
