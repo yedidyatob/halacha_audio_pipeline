@@ -1,5 +1,4 @@
 # Local Configuration
-config.yaml
 *.json
 
 # Output & Cache Directories
