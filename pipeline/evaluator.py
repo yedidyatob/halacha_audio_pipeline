@@ -1,6 +1,6 @@
 import re
 import requests
-from typing import Dict, List, Any, Set, Tuple
+from typing import Dict, List, Any, Set, Tuple, Optional
 from pipeline.config import PipelineConfig
 from pipeline.extractor import SefariaExtractor
 from pipeline.gematria import int_to_gematria
@@ -15,7 +15,7 @@ def get_clean_gematria_without_quotes(num: int) -> str:
     g = int_to_gematria(num)
     return g.replace('"', '').replace("'", "")
 
-def get_seif_from_ref(ref_str: str, siman: int, sefaria_name: str = "Yoreh De'ah") -> int:
+def get_seif_from_ref(ref_str: str, siman: int, sefaria_name: str = "Yoreh De'ah") -> Optional[int]:
     """Parses the Shulchan Arukh Se'if number from a Sefaria reference string"""
     escaped_name = re.escape(sefaria_name)
     match = re.search(rf"Shulchan Arukh, {escaped_name} {siman}:(\d+)", ref_str)
