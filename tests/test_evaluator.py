@@ -60,7 +60,7 @@ def test_evaluate_draft_success(mock_fetch_sources, mock_get):
 המחבר פוסק להלכה.
 """
 
-    result = evaluate_draft(siman=94, draft_text=draft_text, config_path="config.example.yaml")
+    result = evaluate_draft(siman=94, draft_text=draft_text, config_path="config.yaml")
     
     assert result["success"] is True
     assert result["total_localized_flags"] == 0
@@ -98,7 +98,7 @@ def test_evaluate_draft_failures(mock_fetch_sources, mock_get):
 המחבר פוסק להלכה.
 """
 
-    result = evaluate_draft(siman=94, draft_text=draft_text, config_path="config.example.yaml")
+    result = evaluate_draft(siman=94, draft_text=draft_text, config_path="config.yaml")
     
     assert result["success"] is False
     assert result["total_localized_flags"] >= 2  # Missing Shach in Se'if 1 + Se'if 2 missing block

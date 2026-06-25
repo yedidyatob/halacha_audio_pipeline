@@ -8,6 +8,14 @@ def get_logger(name: str) -> logging.Logger:
     """
     logger = logging.getLogger(name)
     if not logger.handlers:
+        # Reconfigure stdout/stderr encoding on Windows to prevent UnicodeEncodeError when printing emojis/Hebrew
+        for stream in (sys.stdout, sys.stderr):
+            if hasattr(stream, "reconfigure"):
+                try:
+                    stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+                except Exception:
+                    pass
+        
         logger.setLevel(logging.INFO)
         handler = logging.StreamHandler(sys.stdout)
         handler.setFormatter(
@@ -18,3 +26,4 @@ def get_logger(name: str) -> logging.Logger:
         )
         logger.addHandler(handler)
     return logger
+

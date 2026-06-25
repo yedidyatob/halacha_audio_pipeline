@@ -115,6 +115,11 @@ def parse_arguments():
         default=None,
         help="Path to a pre-existing cross-relations map file. If specified, Stage 2 relations analysis is skipped."
     )
+    parser.add_argument(
+        "--stage-1-only",
+        action="store_true",
+        help="Only run Stage 1 (Data Extraction) and exit."
+    )
     return parser.parse_args()
 
 def main():
@@ -358,6 +363,10 @@ def main():
                     logger.info(f"Heuristic coverage evaluation for Siman {siman} PASSED.")
             except Exception as e:
                 logger.error(f"Failed to run heuristic evaluation for Siman {siman}: {e}")
+
+    if args.stage_1_only:
+        logger.info("Stage 1 completed. Exiting as requested by --stage-1-only.")
+        sys.exit(0)
 
     # 8. Generate relations map if it was not loaded
     if not relations_text:

@@ -55,7 +55,8 @@ def test_polish_siman_script_success(mock_client_cls):
     mock_client.models.generate_content.assert_called_once()
     call_args, call_kwargs = mock_client.models.generate_content.call_args
     assert call_kwargs["model"] == "fake-model"
-    assert call_kwargs["contents"] == "טקסט גולמי"
+    expected_prompt = generator._get_polishing_user_prompt("טקסט גולמי", "")
+    assert call_kwargs["contents"] == expected_prompt
     assert call_kwargs["config"].temperature == 0.1
     assert call_kwargs["config"].system_instruction.startswith("עורך לשוני מקצועי")
 
