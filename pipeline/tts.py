@@ -10,10 +10,17 @@ class BaseTTS(ABC):
     """
     Abstract Base Class for Text-to-Speech synthesis engines.
     """
+    @property
+    def file_extension(self) -> str:
+        """
+        Default file extension for synthesized audio.
+        """
+        return "mp3"
+
     @abstractmethod
     def synthesize(self, text: str, output_path: str) -> None:
         """
-        Synthesizes the given text to an audio file (.mp3) at output_path.
+        Synthesizes the given text to an audio file at output_path.
         """
         pass
 
@@ -126,6 +133,8 @@ class ElevenLabsTTS(BaseTTS):
                         text=chunk,
                         voice_id=self.voice_id,
                         model_id=self.model_id,
+                        output_format="mp3_44100_128",
+                        optimize_streaming_latency=None,
                         voice_settings=VoiceSettings(
                             stability=self.stability,
                             similarity_boost=self.similarity_boost
@@ -266,4 +275,118 @@ class OpenAITTS(BaseTTS):
             raise
         except Exception as e:
             logger.error(f"OpenAI TTS synthesis failed: {e}")
+            raise
+
+
+class GeminiTTS(BaseTTS):
+    """
+    Synthesizes speech using the Gemini 3.1 TTS preview models via the GCP Text-to-Speech API.
+    Bypasses the buggy google-genai SDK and bills based on input characters instead of output tokens.
+    """
+    def __init__(
+        self, 
+        model_id: str,
+        voice_name: str,
+        temperature: float,
+        api_key: str = None
+    ):
+        self.model_id = model_id
+        self.voice_name = voice_name
+        
+        # Load GCP credentials
+        try:
+            import google.auth
+            from google.auth.transport.requests import Request
+            self.credentials, self.project = google.auth.default(scopes=['https://www.googleapis.com/auth/cloud-platform'])
+        except Exception as e:
+            logger.warning(f"Failed to load Google Cloud credentials: {e}. Gemini TTS calls may fail.")
+            self.credentials = None
+            self.project = None
+
+    @property
+    def file_extension(self) -> str:
+        return "mp3"
+
+    def synthesize(self, text: str, output_path: str) -> None:
+        logger.info(f"Synthesizing audio via Gemini GCP TTS (Model: {self.model_id}, Voice: {self.voice_name})...")
+        try:
+            import requests
+            import base64
+            import lameenc
+            from google.auth.transport.requests import Request
+            
+            if not self.credentials:
+                raise ValueError("GCP Credentials not loaded. Ensure GOOGLE_APPLICATION_CREDENTIALS is set.")
+                
+            self.credentials.refresh(Request())
+            token = self.credentials.token
+            
+            # Use chunks of 2000 chars to avoid hitting length limits
+            text_chunks = self._chunk_text(text, max_chars=2000)
+            logger.info(f"Text length {len(text)} split into {len(text_chunks)} chunk(s) for Gemini TTS.")
+            
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            
+            all_pcm_data = b""
+            url = "https://texttospeech.googleapis.com/v1beta1/text:synthesize"
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json; charset=utf-8",
+                "x-goog-user-project": self.project if self.project else ""
+            }
+            
+            for idx, chunk in enumerate(text_chunks, 1):
+                logger.info(f"Generating audio for chunk {idx}/{len(text_chunks)} ({len(chunk)} chars)...")
+                
+                payload = {
+                    "audioConfig": {
+                        "audioEncoding": "LINEAR16",
+                        "pitch": 0,
+                        "speakingRate": 1
+                    },
+                    "input": {
+                        "text": chunk
+                    },
+                    "voice": {
+                        "languageCode": "he-il",
+                        "modelName": self.model_id,
+                        "name": self.voice_name
+                    }
+                }
+                
+                if hasattr(self, 'prompt') and self.prompt:
+                    payload["input"]["prompt"] = self.prompt
+                
+                response = requests.post(url, headers=headers, json=payload, timeout=120)
+                
+                if response.status_code != 200:
+                    logger.error(f"GCP API Error: {response.text}")
+                    raise ValueError(f"GCP TTS API failed with status {response.status_code}")
+                    
+                data = response.json()
+                audio_content = data.get("audioContent")
+                if not audio_content:
+                    raise ValueError("No audioContent returned by GCP API.")
+                    
+                pcm_chunk = base64.b64decode(audio_content)
+                all_pcm_data += pcm_chunk
+                
+            logger.info("Encoding raw PCM to MP3 using lameenc...")
+            encoder = lameenc.Encoder()
+            encoder.set_bit_rate(128)
+            encoder.set_in_sample_rate(24000)
+            encoder.set_channels(1)
+            encoder.set_quality(2)
+            
+            mp3_data = encoder.encode(all_pcm_data)
+            mp3_data += encoder.flush()
+            
+            logger.info(f"Writing compressed MP3 to {output_path}...")
+            with open(output_path, "wb") as f:
+                f.write(mp3_data)
+                
+            logger.info(f"Successfully saved compressed Gemini native TTS audio to {output_path}")
+            
+        except Exception as e:
+            logger.error(f"Gemini native TTS synthesis failed: {e}")
             raise

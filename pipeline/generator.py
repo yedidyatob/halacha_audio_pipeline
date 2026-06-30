@@ -5,6 +5,7 @@ from google.genai import types
 from openai import OpenAI
 from pipeline.gematria import int_to_gematria
 from pipeline.logger import get_logger
+from pipeline.utils import log_gemini_usage
 
 logger = get_logger(__name__)
 
@@ -148,6 +149,8 @@ class GeminiScriptGenerator(BaseScriptGenerator):
                 config=config
             )
             
+            log_gemini_usage(logger, response, self.model_name)
+            
             script_text = response.text
             if not script_text:
                 raise ValueError("Gemini API returned an empty text response.")
@@ -174,6 +177,8 @@ class GeminiScriptGenerator(BaseScriptGenerator):
                 contents=user_prompt,
                 config=config
             )
+            
+            log_gemini_usage(logger, response, self.model_name)
             
             relations_text = response.text
             if not relations_text:
@@ -202,6 +207,8 @@ class GeminiScriptGenerator(BaseScriptGenerator):
                 contents=user_prompt,
                 config=config
             )
+            
+            log_gemini_usage(logger, response, self.model_name)
             
             polished_text = response.text
             if not polished_text:

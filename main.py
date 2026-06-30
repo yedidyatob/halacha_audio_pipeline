@@ -53,7 +53,7 @@ def process_and_save_outputs(siman: int, script_text: str, relations_text: str, 
         save_output_file(
             directory=config.output_dir,
             base_name=f"{config.section_slug}_Siman_{siman}_{model_suffix}",
-            extension="mp3",
+            extension=getattr(tts_engine, "file_extension", "mp3"),
             content=None,
             logger=logger,
             write_callback=tts_callback

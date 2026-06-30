@@ -97,12 +97,42 @@ class PipelineConfig:
         # TTS settings
         tts = self.config_data.get("tts", {})
         self.tts_engine = tts.get("engine", "elevenlabs").lower()
-        if self.tts_engine not in ["elevenlabs", "google", "openai"]:
-            raise ValueError(f"Invalid TTS engine choice: '{self.tts_engine}'. Must be 'elevenlabs', 'google', or 'openai'.")
+        if self.tts_engine not in ["elevenlabs", "google", "openai", "gemini"]:
+            raise ValueError(f"Invalid TTS engine choice: '{self.tts_engine}'. Must be 'elevenlabs', 'google', 'openai', or 'gemini'.")
 
         self.elevenlabs_settings = tts.get("elevenlabs", {})
         self.google_tts_settings = tts.get("google", {})
         self.openai_tts_settings = tts.get("openai", {})
+        self.gemini_tts_settings = tts.get("gemini", {})
+        
+        # Validation for Gemini TTS settings (no hardcoded defaults allowed in pipeline)
+        if self.tts_engine == "gemini":
+            if not self.gemini_tts_settings:
+                raise ValueError("TTS engine is set to 'gemini' but the 'gemini' configuration section is missing under 'tts' in config.yaml.")
+            self.gemini_tts_model = self.gemini_tts_settings.get("model_name")
+            if not self.gemini_tts_model:
+                raise ValueError("Missing required configuration parameter 'model_name' under 'tts.gemini' in config.yaml.")
+            
+            raw_voice = self.gemini_tts_settings.get("voice_name")
+            if not raw_voice:
+                raise ValueError("Missing required configuration parameter 'voice_name' under 'tts.gemini' in config.yaml.")
+            
+            # Map/clean legacy Google voice names to Gemini prebuilt voices
+            if "Achird" in raw_voice:
+                self.gemini_tts_voice = "Achird"
+            elif "Achernar" in raw_voice:
+                self.gemini_tts_voice = "Aoede"
+            elif raw_voice in ["Puck", "Charon", "Kore", "Fenrir", "Aoede", "Achird"]:
+                self.gemini_tts_voice = raw_voice
+            else:
+                raise ValueError(
+                    f"Unsupported Gemini TTS voice: '{raw_voice}'. "
+                    f"Supported prebuilt voices are: Puck, Charon, Kore, Fenrir, Aoede, Achird."
+                )
+                
+            self.gemini_tts_temp = self.gemini_tts_settings.get("temperature")
+            if self.gemini_tts_temp is None:
+                raise ValueError("Missing required configuration parameter 'temperature' under 'tts.gemini' in config.yaml.")
 
         # Directory setup
         dirs = self.config_data.get("directories", {})
