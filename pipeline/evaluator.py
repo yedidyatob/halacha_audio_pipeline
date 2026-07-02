@@ -49,6 +49,33 @@ def parse_draft_into_seifim(draft_text: str, num_seifim: int) -> Dict[int, str]:
             end_pos = matches[idx+1].start() if idx + 1 < len(matches) else len(draft_text)
             seif_blocks[seif_num] = draft_text[start_pos:end_pos]
             
+    # Fallback 1: If we didn't find all seifim, try scanning for bold "**הסעיף בשולחן ערוך:**"
+    if len(seif_blocks) < num_seifim:
+        indicator_pattern = r"\*\*הסעיף בשולחן ערוך:\*\*"
+        marker_matches = list(re.finditer(indicator_pattern, draft_text))
+        
+        if len(marker_matches) > 0:
+            for idx, match in enumerate(marker_matches):
+                seif_num = idx + 1
+                if seif_num > num_seifim:
+                    break
+                start_pos = match.end()
+                end_pos = marker_matches[idx+1].start() if idx + 1 < len(marker_matches) else len(draft_text)
+                block_content = draft_text[start_pos:end_pos]
+                block_content = re.sub(r"\n\s*(?:\*\*\*|---|___)\s*\n", "\n", block_content)
+                seif_blocks[seif_num] = block_content
+
+    # Fallback 2: Split by *** or --- and assign sequentially
+    if len(seif_blocks) < num_seifim:
+        sep_pattern = r"\n\s*(?:\*\*\*|---|___)\s*\n"
+        parts = re.split(sep_pattern, draft_text)
+        if len(parts) == num_seifim:
+            for idx, part in enumerate(parts):
+                seif_blocks[idx + 1] = part
+        elif len(parts) == num_seifim + 1:
+            for idx, part in enumerate(parts[1:]):
+                seif_blocks[idx + 1] = part
+            
     return seif_blocks
 
 def evaluate_draft(siman: int, draft_text: str, config_path: str = "config.yaml") -> Dict[str, Any]:
