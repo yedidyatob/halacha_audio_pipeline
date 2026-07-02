@@ -93,24 +93,36 @@ class BaseScriptGenerator(ABC):
 class BatchCapableGenerator(ABC):
     """
     Interface for generators that support asynchronous batch operations.
+    Provides a unified 3-method interface for submitting, polling, and retrieving batch jobs.
+    Works with both Gemini (inline requests) and OpenAI (JSONL file upload) batch APIs.
     """
     @abstractmethod
-    def create_batch_generation_job(
-        self, 
-        siman: int, 
-        master_context: str, 
+    def submit_batch(
+        self,
         system_instruction: str,
-        batch_input_path: str,
-        commentators_desc: str = 'השפתי כהן (הש"ך) והטורי זהב (הט"ז) והמקורות שהם מביאים'
+        user_prompt: str,
+        temperature: float,
+        custom_id: str,
+        cache_dir: str = "./cache"
     ) -> str:
+        """Submit a single request as a batch job. Returns a job identifier string."""
         pass
 
     @abstractmethod
-    def retrieve_batch_result(self, batch_id: str) -> dict:
+    def get_batch_status(self, job_id: str) -> str:
+        """
+        Check the status of a batch job.
+        Returns one of: 'pending', 'completed', 'failed'.
+        """
+        pass
+
+    @abstractmethod
+    def get_batch_result(self, job_id: str) -> str:
+        """Retrieve the text content from a completed batch job."""
         pass
 
 
-class GeminiScriptGenerator(BaseScriptGenerator):
+class GeminiScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
     """
     Generates custom, TTS-optimized Hebrew script files using Gemini API (google-genai SDK).
     """
@@ -220,6 +232,49 @@ class GeminiScriptGenerator(BaseScriptGenerator):
         except Exception as e:
             logger.error(f"Error during Gemini script polish call: {e}")
             raise
+
+    def submit_batch(
+        self,
+        system_instruction: str,
+        user_prompt: str,
+        temperature: float,
+        custom_id: str,
+        cache_dir: str = "./cache"
+    ) -> str:
+        logger.info(f"Submitting Gemini batch job (custom_id: {custom_id})...")
+        inline_request = {
+            'contents': [{'role': 'user', 'parts': [{'text': user_prompt}]}],
+            'config': {
+                'system_instruction': system_instruction,
+                'temperature': temperature
+            }
+        }
+        batch_job = self.client.batches.create(
+            model=self.model_name,
+            src=[inline_request]
+        )
+        logger.info(f"Gemini batch job created: {batch_job.name} (custom_id: {custom_id})")
+        return batch_job.name
+
+    def get_batch_status(self, job_id: str) -> str:
+        job = self.client.batches.get(name=job_id)
+        state_str = str(job.state)
+        if "SUCCEEDED" in state_str:
+            return "completed"
+        elif "FAILED" in state_str or "CANCELLED" in state_str:
+            return "failed"
+        return "pending"
+
+    def get_batch_result(self, job_id: str) -> str:
+        job = self.client.batches.get(name=job_id)
+        try:
+            response = job.dest.inlined_responses[0]
+            text = response.candidates[0].content.parts[0].text
+            if not text:
+                raise ValueError("Gemini batch returned empty text response.")
+            return text
+        except (IndexError, AttributeError) as e:
+            raise ValueError(f"Failed to extract text from Gemini batch result: {e}")
 
 
 class OpenAIScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
@@ -356,26 +411,24 @@ class OpenAIScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
             logger.error(f"Error during OpenAI script polish call: {e}")
             raise
 
-    def create_batch_generation_job(
-        self, 
-        siman: int, 
-        master_context: str, 
+    def submit_batch(
+        self,
         system_instruction: str,
-        batch_input_path: str,
-        commentators_desc: str = 'השפתי כהן (הש"ך) והטורי זהב (הט"ז) והמקורות שהם מביאים'
+        user_prompt: str,
+        temperature: float,
+        custom_id: str,
+        cache_dir: str = "./cache"
     ) -> str:
-        gematria_siman = int_to_gematria(siman)
-        logger.info(f"Creating OpenAI Batch generation job specification for Siman {siman} ({gematria_siman})...")
-        user_prompt = self._get_generation_user_prompt(gematria_siman, master_context, commentators_desc)
+        logger.info(f"Submitting OpenAI batch job (custom_id: {custom_id})...")
 
         messages = []
         is_reasoning_model = self.model_name.startswith("o1") or self.model_name.startswith("o3")
-        
+
         if is_reasoning_model:
             messages.append({"role": "developer", "content": system_instruction})
         else:
             messages.append({"role": "system", "content": system_instruction})
-            
+
         messages.append({"role": "user", "content": user_prompt})
 
         import json
@@ -384,55 +437,57 @@ class OpenAIScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
             "messages": messages,
         }
         if not is_reasoning_model:
-            body["temperature"] = self.temperature
+            body["temperature"] = temperature
 
         batch_request = {
-            "custom_id": f"siman_{siman}_generation",
+            "custom_id": custom_id,
             "method": "POST",
             "url": "/v1/chat/completions",
             "body": body
         }
 
-        os.makedirs(os.path.dirname(batch_input_path), exist_ok=True)
+        batch_input_path = os.path.join(cache_dir, f"openai_batch_{custom_id}.jsonl")
+        os.makedirs(cache_dir, exist_ok=True)
         with open(batch_input_path, "w", encoding="utf-8") as f:
             f.write(json.dumps(batch_request, ensure_ascii=False) + "\n")
-            
+
         logger.info(f"Uploading batch file {batch_input_path} to OpenAI...")
         with open(batch_input_path, "rb") as f:
             file_response = self.client.files.create(file=f, purpose="batch")
-            
+
         logger.info(f"Starting batch job using file ID: {file_response.id}...")
         batch_response = self.client.batches.create(
             input_file_id=file_response.id,
             endpoint="/v1/chat/completions",
             completion_window="24h"
         )
+        logger.info(f"OpenAI batch job created: {batch_response.id} (custom_id: {custom_id})")
         return batch_response.id
 
-    def retrieve_batch_result(self, batch_id: str) -> dict:
-        logger.info(f"Retrieving batch status for {batch_id}...")
-        batch = self.client.batches.retrieve(batch_id)
-        
-        if batch.status != "completed":
-            return {"status": batch.status}
-            
+    def get_batch_status(self, job_id: str) -> str:
+        batch = self.client.batches.retrieve(job_id)
+        if batch.status == "completed":
+            return "completed"
+        elif batch.status in ("failed", "cancelled", "expired"):
+            return "failed"
+        return "pending"
+
+    def get_batch_result(self, job_id: str) -> str:
+        logger.info(f"Retrieving OpenAI batch result for {job_id}...")
+        batch = self.client.batches.retrieve(job_id)
+
         if not batch.output_file_id:
-            logger.error(f"Batch completed but no output_file_id found: {batch}")
-            return {"status": "failed", "error": "No output file generated by OpenAI."}
-            
+            raise ValueError(f"OpenAI batch completed but no output_file_id found.")
+
         logger.info(f"Downloading batch results from file ID: {batch.output_file_id}...")
         file_content = self.client.files.content(batch.output_file_id).text
-        
+
         import json
         for line in file_content.strip().split("\n"):
             if not line:
                 continue
             data = json.loads(line)
             if "response" in data and "body" in data["response"] and "choices" in data["response"]["body"]:
-                content = data["response"]["body"]["choices"][0]["message"]["content"]
-                return {
-                    "status": "completed",
-                    "content": content
-                }
-                
-        return {"status": "failed", "error": "Target content choice not found in batch output lines."}
+                return data["response"]["body"]["choices"][0]["message"]["content"]
+
+        raise ValueError("Failed to extract content from OpenAI batch output.")

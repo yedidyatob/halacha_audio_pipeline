@@ -1,6 +1,7 @@
 import os
 import argparse
 import sys
+import time
 from dotenv import load_dotenv
 
 # Load environment variables from .env file at startup
@@ -12,6 +13,7 @@ from pipeline.extractor import SefariaExtractor
 from pipeline.logger import get_logger
 from pipeline.utils import save_output_file
 from pipeline.factory import create_generator_engine, create_tts_engine
+from pipeline.gematria import int_to_gematria
 
 logger = get_logger("halacha_pipeline_cli")
 
@@ -61,6 +63,54 @@ def process_and_save_outputs(siman: int, script_text: str, relations_text: str, 
     except Exception as e:
         logger.error(f"TTS synthesis failed for Siman {siman}: {e}")
 
+def poll_batch_jobs(generator, jobs: dict, poll_interval: int, timeout: int, stage_name: str, logger_ref=None):
+    """
+    Polls a dict of {label: job_id} until all complete or timeout.
+    Raises RuntimeError on failure, TimeoutError on timeout.
+    """
+    log = logger_ref or logger
+    start_time = time.time()
+    pending = dict(jobs)
+    results = {}
+
+    log.info(f"Polling {len(pending)} {stage_name} batch job(s) (interval: {poll_interval}s, timeout: {timeout}s)...")
+
+    while pending:
+        elapsed = time.time() - start_time
+        if elapsed > timeout:
+            raise TimeoutError(
+                f"Batch {stage_name} timed out after {int(elapsed)}s. "
+                f"Still pending: {list(pending.keys())}"
+            )
+
+        for label, job_id in list(pending.items()):
+            status = generator.get_batch_status(job_id)
+            if status == "completed":
+                log.info(f"\u2705 {stage_name} batch job completed: {label}")
+                results[label] = status
+                del pending[label]
+            elif status == "failed":
+                log.error(f"\u274c {stage_name} batch job failed: {label} (job_id: {job_id})")
+                results[label] = status
+                del pending[label]
+
+        if pending:
+            elapsed_min = int((time.time() - start_time) / 60)
+            log.info(
+                f"\u23f3 {stage_name}: {len(pending)} job(s) still pending, "
+                f"{len(results)} completed. Elapsed: {elapsed_min}m. "
+                f"Polling again in {poll_interval}s..."
+            )
+            time.sleep(poll_interval)
+
+    # Check for any failures
+    failed = [label for label, status in results.items() if status == "failed"]
+    if failed:
+        raise RuntimeError(f"{stage_name} batch jobs failed: {failed}")
+
+    log.info(f"{stage_name}: All {len(results)} batch job(s) completed successfully.")
+    return results
+
 def parse_arguments():
     parser = argparse.ArgumentParser(
         description="Halacha Audio Lesson Generation Pipeline - End to End."
@@ -96,13 +146,19 @@ def parse_arguments():
     parser.add_argument(
         "--batch",
         action="store_true",
-        help="Use OpenAI Batch API to submit the generation asynchronously."
+        help="Use Batch API to run the full pipeline asynchronously (supports both Gemini and OpenAI). Submits all 3 stages as batch jobs with automatic polling between them."
     )
     parser.add_argument(
-        "--retrieve-batch",
-        type=str,
-        default=None,
-        help="Retrieve and save a previously submitted OpenAI batch generation draft using its Batch ID."
+        "--batch-poll-interval",
+        type=int,
+        default=60,
+        help="Seconds between batch job status polls (default: 60)."
+    )
+    parser.add_argument(
+        "--batch-timeout",
+        type=int,
+        default=86400,
+        help="Maximum seconds to wait for batch jobs before timing out (default: 86400 = 24 hours)."
     )
     parser.add_argument(
         "--overwrite-cache",
@@ -158,48 +214,13 @@ def main():
         logger.error(f"Generator Engine setup failed: {e}")
         sys.exit(1)
         
-    # 3. Handle OpenAI Batch Retrieval (Stage 1 Draft retrieval)
-    if args.retrieve_batch:
-        if not config.openai_api_key:
-            logger.error("No OpenAI API key found in config.yaml or OPENAI_API_KEY environment variable. Exiting.")
-            sys.exit(1)
-            
+    # 3. Validate batch mode compatibility (early check before any stage)
+    if args.batch:
         from pipeline.generator import BatchCapableGenerator
         if not isinstance(generator, BatchCapableGenerator):
-            logger.error("Batch retrieval is only supported for generator engines that support batch processing.")
+            logger.error("Batch mode requires a generator engine that supports batch operations (Gemini or OpenAI).")
             sys.exit(1)
-            
-        logger.info(f"Retrieving OpenAI Batch job: {args.retrieve_batch}...")
-        try:
-            result = generator.retrieve_batch_result(args.retrieve_batch)
-            status = result.get("status")
-            logger.info(f"Batch status: {status}")
-            
-            if status == "completed":
-                script_text = result.get("content")
-                siman = simanim_list[0] if simanim_list else 94
-                
-                save_output_file(
-                    directory=config.drafts_dir,
-                    base_name=f"{config.section_slug}_Siman_{siman}_{model_suffix}_draft",
-                    extension="txt",
-                    content=script_text,
-                    logger=logger
-                )
-                
-                logger.info("\n--- Batch Retrieval Complete ---")
-                logger.info("The raw Stage 1 draft has been saved. Run the pipeline normally to complete Stage 2 and Stage 3.")
-                
-            elif status in ["validating", "in_progress"]:
-                logger.info("The batch job is still running. Please try retrieving it again later.")
-            else:
-                logger.error(f"Batch job failed or was cancelled. Status: {status}")
-                sys.exit(1)
-                
-        except Exception as e:
-            logger.error(f"Failed to retrieve batch job: {e}")
-            sys.exit(1)
-        return
+        logger.info("Batch mode enabled. All stages will use the Batch API with polling.")
         
     # 5. Stage 2: Cross-Siman Relations Analysis - Resolve Relations Map First
     relations_text = ""
@@ -287,48 +308,37 @@ def main():
         logger.info(f"Generating missing Stage 1 drafts for Simanim: {missing_simanim}...")
         
         if args.batch:
-            # Batch mode: submit OpenAI batch jobs for all missing drafts and exit
-            from pipeline.generator import BatchCapableGenerator
-            if not isinstance(generator, BatchCapableGenerator):
-                logger.error("Batch processing is only supported for generator engines that support batch processing.")
-                sys.exit(1)
-                
-            logger.info("Submitting missing drafts as batch jobs...")
+            # Batch mode: submit batch jobs for all missing drafts, poll until complete
+            logger.info("Submitting Stage 1 batch jobs for missing drafts...")
+            stage1_jobs = {}
             for siman in missing_simanim:
                 try:
                     logger.info(f"Compiling Sefaria context for Siman {siman}...")
                     micro_context = extractor.compile_simanim_context([siman], target_simanim=[siman])
-                    
-                    batch_input_path = os.path.join(config.cache_dir, f"openai_batch_siman_{siman}.jsonl")
-                    batch_id = generator.create_batch_generation_job(
-                        siman=siman,
-                        master_context=micro_context,
-                        system_instruction=config.gemini_system_instruction,
-                        batch_input_path=batch_input_path,
-                        commentators_desc=config.section_metadata["prompt_commentators_desc"]
+                    gematria_siman = int_to_gematria(siman)
+                    user_prompt = generator._get_generation_user_prompt(
+                        gematria_siman, micro_context, config.section_metadata["prompt_commentators_desc"]
                     )
-                    logger.info(f"Submitted Batch Job for Siman {siman}. Batch ID: {batch_id}")
-                    print(f"\n[BATCH_ID] {batch_id} (Siman {siman})\n")
+                    job_id = generator.submit_batch(
+                        system_instruction=config.gemini_system_instruction,
+                        user_prompt=user_prompt,
+                        temperature=generator.temperature,
+                        custom_id=f"stage1_siman_{siman}",
+                        cache_dir=config.cache_dir
+                    )
+                    stage1_jobs[siman] = job_id
+                    logger.info(f"Submitted Stage 1 batch job for Siman {siman}. Job ID: {job_id}")
                 except Exception as e:
-                    logger.error(f"Failed to submit batch job for Siman {siman}: {e}")
-            logger.info("Batch submissions complete. Please run with --retrieve-batch <id> once complete.")
-            return
+                    logger.error(f"Failed to submit Stage 1 batch job for Siman {siman}: {e}")
+                    sys.exit(1)
 
-        # Normal synchronous mode
-        for siman in missing_simanim:
-            try:
-                logger.info(f"Compiling Sefaria context for Siman {siman}...")
-                micro_context = extractor.compile_simanim_context([siman], target_simanim=[siman])
-                
-                draft_text = generator.generate_siman_script(
-                    siman=siman,
-                    master_context=micro_context,
-                    system_instruction=config.gemini_system_instruction,
-                    commentators_desc=config.section_metadata["prompt_commentators_desc"]
-                )
+            # Poll until all Stage 1 jobs complete
+            poll_batch_jobs(generator, stage1_jobs, args.batch_poll_interval, args.batch_timeout, "Stage 1 (Drafts)")
+
+            # Retrieve and save Stage 1 results
+            for siman, job_id in stage1_jobs.items():
+                draft_text = generator.get_batch_result(job_id)
                 drafts[siman] = draft_text
-                
-                # Save draft immediately
                 save_output_file(
                     directory=config.drafts_dir,
                     base_name=f"{config.section_slug}_Siman_{siman}_{model_suffix}_draft",
@@ -336,9 +346,32 @@ def main():
                     content=draft_text,
                     logger=logger
                 )
-            except Exception as e:
-                logger.error(f"Failed to extract Stage 1 draft for Siman {siman}: {e}")
-                sys.exit(1)
+        else:
+            # Normal synchronous mode
+            for siman in missing_simanim:
+                try:
+                    logger.info(f"Compiling Sefaria context for Siman {siman}...")
+                    micro_context = extractor.compile_simanim_context([siman], target_simanim=[siman])
+                    
+                    draft_text = generator.generate_siman_script(
+                        siman=siman,
+                        master_context=micro_context,
+                        system_instruction=config.gemini_system_instruction,
+                        commentators_desc=config.section_metadata["prompt_commentators_desc"]
+                    )
+                    drafts[siman] = draft_text
+                    
+                    # Save draft immediately
+                    save_output_file(
+                        directory=config.drafts_dir,
+                        base_name=f"{config.section_slug}_Siman_{siman}_{model_suffix}_draft",
+                        extension="txt",
+                        content=draft_text,
+                        logger=logger
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to extract Stage 1 draft for Siman {siman}: {e}")
+                    sys.exit(1)
 
     # 7.5 Run Heuristic Evaluation for resolved drafts
     logger.info("Executing Heuristic Evaluation on resolved drafts...")
@@ -370,44 +403,110 @@ def main():
 
     # 8. Generate relations map if it was not loaded
     if not relations_text:
-        # Generate new relations map
         logger.info("Executing Stage 2: Cross-Siman Relations Analysis...")
-        try:
-            relations_text = generator.analyze_cross_relations(drafts, config.relations_instruction)
-            
-            # Save relations map immediately
-            save_output_file(
-                directory=config.relations_dir,
-                base_name=f"{config.section_slug}_Relations_{range_str}_{model_suffix}",
-                extension="txt",
-                content=relations_text,
-                logger=logger
+        if args.batch:
+            # Batch mode: submit relations analysis as batch job
+            user_prompt = generator._get_relations_user_prompt(drafts)
+            job_id = generator.submit_batch(
+                system_instruction=config.relations_instruction,
+                user_prompt=user_prompt,
+                temperature=generator.temperature,
+                custom_id="stage2_relations",
+                cache_dir=config.cache_dir
             )
-        except Exception as e:
-            logger.error(f"Stage 2 Relations Analysis failed: {e}")
-            sys.exit(1)
+            logger.info(f"Submitted Stage 2 batch job. Job ID: {job_id}")
+            poll_batch_jobs(generator, {"relations": job_id}, args.batch_poll_interval, args.batch_timeout, "Stage 2 (Relations)")
+            relations_text = generator.get_batch_result(job_id)
+        else:
+            # Synchronous mode
+            try:
+                relations_text = generator.analyze_cross_relations(drafts, config.relations_instruction)
+            except Exception as e:
+                logger.error(f"Stage 2 Relations Analysis failed: {e}")
+                sys.exit(1)
+
+        # Save relations map
+        save_output_file(
+            directory=config.relations_dir,
+            base_name=f"{config.section_slug}_Relations_{range_str}_{model_suffix}",
+            extension="txt",
+            content=relations_text,
+            logger=logger
+        )
 
     # 9. Stage 3: Lesson Monologue styling & TTS
-    for siman in target_generation_simanim:
-        if siman not in drafts:
-            logger.error(f"Cannot polish Siman {siman}: Stage 1 draft is missing from drafts database.")
-            continue
-            
-        logger.info(f"\n--- Starting Stage 3 Monologue Generation for Siman {siman} ---")
-        try:
-            draft_text = drafts[siman]
-            process_and_save_outputs(
-                siman=siman,
-                script_text=draft_text,
-                relations_text=relations_text,
-                generator=generator,
-                config=config,
-                args=args,
-                model_suffix=model_suffix
+    if args.batch:
+        # Batch mode: Submit all polishing jobs, poll, then save and run TTS
+        stage3_jobs = {}
+        for siman in target_generation_simanim:
+            if siman not in drafts:
+                logger.error(f"Cannot polish Siman {siman}: Stage 1 draft is missing.")
+                continue
+            user_prompt = generator._get_polishing_user_prompt(drafts[siman], relations_text)
+            job_id = generator.submit_batch(
+                system_instruction=config.polishing_instruction,
+                user_prompt=user_prompt,
+                temperature=0.1,
+                custom_id=f"stage3_siman_{siman}",
+                cache_dir=config.cache_dir
             )
-        except Exception as e:
-            logger.error(f"Failed Stage 3 Monologue Generation for Siman {siman}: {e}")
-            sys.exit(1)
+            stage3_jobs[siman] = job_id
+            logger.info(f"Submitted Stage 3 batch job for Siman {siman}. Job ID: {job_id}")
+
+        if stage3_jobs:
+            poll_batch_jobs(generator, stage3_jobs, args.batch_poll_interval, args.batch_timeout, "Stage 3 (Polishing)")
+
+            for siman, job_id in stage3_jobs.items():
+                polished_text = generator.get_batch_result(job_id)
+
+                # Save polished transcript
+                save_output_file(
+                    directory=config.output_dir,
+                    base_name=f"{config.section_slug}_Siman_{siman}_{model_suffix}_transcript",
+                    extension="txt",
+                    content=polished_text,
+                    logger=logger
+                )
+
+                # Proceed to TTS if not skipped
+                if not args.skip_tts:
+                    try:
+                        tts_engine = create_tts_engine(config)
+                        def tts_callback(path: str, _text=polished_text, _siman=siman) -> None:
+                            logger.info(f"Synthesizing script for Siman {_siman} to: {path}...")
+                            tts_engine.synthesize(text=_text, output_path=path)
+                        save_output_file(
+                            directory=config.output_dir,
+                            base_name=f"{config.section_slug}_Siman_{siman}_{model_suffix}",
+                            extension=getattr(tts_engine, "file_extension", "mp3"),
+                            content=None,
+                            logger=logger,
+                            write_callback=tts_callback
+                        )
+                    except Exception as e:
+                        logger.error(f"TTS synthesis failed for Siman {siman}: {e}")
+    else:
+        # Synchronous mode
+        for siman in target_generation_simanim:
+            if siman not in drafts:
+                logger.error(f"Cannot polish Siman {siman}: Stage 1 draft is missing from drafts database.")
+                continue
+                
+            logger.info(f"\n--- Starting Stage 3 Monologue Generation for Siman {siman} ---")
+            try:
+                draft_text = drafts[siman]
+                process_and_save_outputs(
+                    siman=siman,
+                    script_text=draft_text,
+                    relations_text=relations_text,
+                    generator=generator,
+                    config=config,
+                    args=args,
+                    model_suffix=model_suffix
+                )
+            except Exception as e:
+                logger.error(f"Failed Stage 3 Monologue Generation for Siman {siman}: {e}")
+                sys.exit(1)
 
     logger.info("Pipeline execution completed successfully.")
 
