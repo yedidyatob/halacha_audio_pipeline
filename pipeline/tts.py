@@ -116,8 +116,8 @@ class ElevenLabsTTS(BaseTTS):
             from elevenlabs import VoiceSettings
             import httpx
             
-            custom_httpx = httpx.Client(verify=self.ssl_verify)
-            client = ElevenLabs(api_key=self.api_key, httpx_client=custom_httpx)
+            custom_httpx = httpx.Client(verify=self.ssl_verify, timeout=300.0)
+            client = ElevenLabs(api_key=self.api_key, httpx_client=custom_httpx, timeout=300.0)
             
             # Chunk the text to stay within ElevenLabs' request limits (e.g. 4000 chars to be safe)
             text_chunks = self._chunk_text(text, max_chars=4000)
@@ -248,7 +248,7 @@ class OpenAITTS(BaseTTS):
         try:
             import httpx
             
-            custom_httpx = httpx.Client(verify=self.ssl_verify)
+            custom_httpx = httpx.Client(verify=self.ssl_verify, timeout=300.0)
             client = OpenAI(api_key=self.api_key, http_client=custom_httpx)
             
             # Chunk the text to stay within OpenAI's 4096 character limit

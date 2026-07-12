@@ -209,13 +209,14 @@ def test_openai_create_batch_generation_job(mock_openai_cls, tmp_path):
     mock_client.batches.create.return_value = mock_batch_response
 
     generator = OpenAIScriptGenerator(api_key="fake-key", model_name="o1")
-    batch_file = os.path.join(tmp_path, "batch_input.jsonl")
+    batch_file = os.path.join(tmp_path, "openai_batch_siman_94_generation.jsonl")
     
-    batch_id = generator.create_batch_generation_job(
-        siman=94,
-        master_context="קובץ מקורות",
+    batch_id = generator.submit_batch(
         system_instruction="הוראות",
-        batch_input_path=batch_file
+        user_prompt="קובץ מקורות",
+        temperature=1.0,
+        custom_id="siman_94_generation",
+        cache_dir=tmp_path
     )
 
     assert batch_id == "batch-555"
@@ -237,7 +238,7 @@ def test_openai_create_batch_generation_job(mock_openai_cls, tmp_path):
 
 
 @patch("pipeline.generator.OpenAI")
-def test_openai_retrieve_batch_result_completed(mock_openai_cls):
+def test_openai_get_batch_result_completed(mock_openai_cls):
     mock_client = MagicMock()
     mock_openai_cls.return_value = mock_client
     
@@ -251,16 +252,15 @@ def test_openai_retrieve_batch_result_completed(mock_openai_cls):
     mock_client.files.content.return_value = mock_content_response
 
     generator = OpenAIScriptGenerator(api_key="fake-key", model_name="o1")
-    result = generator.retrieve_batch_result("batch-555")
+    result = generator.get_batch_result("batch-555")
 
-    assert result["status"] == "completed"
-    assert result["content"] == "שיעור הלכה שלם ומפורט"
+    assert result == "שיעור הלכה שלם ומפורט"
     mock_client.batches.retrieve.assert_called_once_with("batch-555")
     mock_client.files.content.assert_called_once_with("output-file-456")
 
 
 @patch("pipeline.generator.OpenAI")
-def test_openai_retrieve_batch_result_running(mock_openai_cls):
+def test_openai_get_batch_status(mock_openai_cls):
     mock_client = MagicMock()
     mock_openai_cls.return_value = mock_client
     
@@ -269,10 +269,10 @@ def test_openai_retrieve_batch_result_running(mock_openai_cls):
     mock_client.batches.retrieve.return_value = mock_batch
 
     generator = OpenAIScriptGenerator(api_key="fake-key", model_name="o1")
-    result = generator.retrieve_batch_result("batch-555")
+    status = generator.get_batch_status("batch-555")
 
-    assert result["status"] == "in_progress"
-    assert "content" not in result
+    assert status == "pending"
+    mock_client.batches.retrieve.assert_called_once_with("batch-555")
 
 
 @patch("google.genai.Client")
