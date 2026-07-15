@@ -14,6 +14,7 @@ from pipeline.logger import get_logger
 from pipeline.utils import save_output_file
 from pipeline.factory import create_generator_engine, create_tts_engine
 from pipeline.gematria import int_to_gematria
+from pipeline.apply_nikkid import apply_nikkud_to_abbreviations
 
 logger = get_logger("halacha_pipeline_cli")
 
@@ -29,7 +30,11 @@ def process_and_save_outputs(siman: int, script_text: str, relations_text: str, 
     except Exception as e:
         logger.error(f"Failed to polish script for Siman {siman}: {e}")
         raise
-    
+
+    # Stage 3.5: Replace Rabbinic abbreviations with nikkud/expanded forms for TTS
+    logger.info(f"Applying nikkud abbreviation replacements for Siman {siman}...")
+    polished_text = apply_nikkud_to_abbreviations(polished_text)
+
     # Save script transcript file
     save_output_file(
         directory=config.output_dir,
@@ -458,6 +463,10 @@ def main():
 
             for siman, job_id in stage3_jobs.items():
                 polished_text = generator.get_batch_result(job_id)
+
+                # Stage 3.5: Replace Rabbinic abbreviations with nikkud/expanded forms for TTS
+                logger.info(f"Applying nikkud abbreviation replacements for Siman {siman}...")
+                polished_text = apply_nikkud_to_abbreviations(polished_text)
 
                 # Save polished transcript
                 save_output_file(

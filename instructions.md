@@ -101,3 +101,38 @@ If you made prompt changes or want to ignore the cache for Stages 1 and 2:
 ```bash
 python main.py 94 --overwrite-cache
 ```
+
+## 4. Stage 3.5: ElevenLabs Tag Enhancement
+
+After the main pipeline produces a polished transcript, you can optionally run `enhance_transcript.py` to inject ElevenLabs audio expression tags (`[energetic]`, `[thoughtful]`, `[short pause]`, etc.) into the text. This makes the TTS output sound more like a live, passionate teacher rather than a flat reading.
+
+The enhancer **does not alter any words** — it only adds tags between clauses and adjusts punctuation for expressiveness.
+
+### Enhance the Latest Transcript Automatically
+```bash
+python enhance_transcript.py --latest
+```
+Scans the `output/` directory, finds the most recently generated transcript, and enhances it.
+
+### Enhance a Specific Transcript File
+```bash
+python enhance_transcript.py output/Yoreh_Deah_Siman_94_gemini-3_1-pro-preview_transcript.txt
+```
+
+### Options
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--latest` | — | Auto-detect and enhance the newest transcript in `--search-dir` |
+| `--search-dir <path>` | `output` | Directory to search when using `--latest` |
+| `--output-dir <path>` | Same as input | Directory to write the enhanced file into |
+| `--model <name>` | `gemini-3.1-flash-lite` | Gemini model used for tag injection |
+| `--temperature <float>` | `0.2` | Lower = stricter text preservation |
+
+### Output Files
+The enhanced transcript is saved alongside the regular transcripts in `output/`, following the same versioning pattern:
+- **Latest:** `Yoreh_Deah_Siman_94_gemini-3_1-pro-preview_enhanced.txt`
+- **History:** `Yoreh_Deah_Siman_94_gemini-3_1-pro-preview_enhanced_YYYYMMDD_HHMMSS.txt`
+
+### Cost
+Enhancement uses `gemini-3.1-flash-lite` by default. A typical Siman transcript (~15,000 chars) costs roughly **$0.003**.
+Use `--model gemini-3.1-pro-preview` if you need higher fidelity tag placement.
