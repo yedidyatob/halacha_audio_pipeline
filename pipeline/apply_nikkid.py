@@ -58,7 +58,10 @@ RABBINIC_NIKKUD_DICT = {
     'נ"ט': 'נַט', # Fixed: הושאר כקיצור עם ניקוד קריא
     'ע"פ': 'עַל פִּי',
     'אע"פ': 'אַף עַל פִּי',
-    'שו"ת': 'שׁוּ"ת'
+    'שו"ת': 'שׁוּ"ת',
+
+    # === Letters ===
+    " הא ": " הֵא "
 }
 
 def apply_nikkud_to_abbreviations(text: str) -> str:
@@ -74,3 +77,36 @@ def apply_nikkud_to_abbreviations(text: str) -> str:
         text = text.replace(key, RABBINIC_NIKKUD_DICT[key])
         
     return text
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Strip Hebrew nikkud (vowels) and cantillation marks from a text file."
+    )
+    parser.add_argument(
+        "input_file", 
+        help="Path to the input Hebrew text file with nikkud"
+    )
+    parser.add_argument(
+        "-o", "--output", 
+        dest="output_file",
+        help="Path to save the clean text file (optional; defaults to appending '_no_nikkud')"
+    )
+    args = parser.parse_args()
+    
+    # Read the input file
+    
+    with open(args.input_file, 'r', encoding='utf-8') as f:
+        content = f.read()
+        
+    # Apply nikkud replacement
+    result = apply_nikkud_to_abbreviations(content)
+    
+    # Determine output file path
+    output_path = args.output_file or args.input_file.replace('.txt', '_nikkud.txt')
+    
+    # Write result to output file
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(result)
+    print(f"Nikkud applied and saved to {output_path}")

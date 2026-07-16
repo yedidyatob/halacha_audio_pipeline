@@ -1,5 +1,6 @@
 import os
 import re
+import tempfile
 from abc import ABC, abstractmethod
 from pipeline.logger import get_logger
 from openai import OpenAI
@@ -82,6 +83,27 @@ class BaseTTS(ABC):
             
         return chunks
 
+    def _merge_audio_chunks(self, chunk_paths: list[str], output_path: str) -> None:
+        """
+        Merges a list of MP3 chunk files into a single MP3 at output_path using pydub.
+        This avoids the truncated-tail bug caused by raw byte concatenation, where
+        each MP3 encoder holds back the last few frames in its internal buffer and
+        never flushes them when bytes are appended directly.
+        """
+        try:
+            from pydub import AudioSegment
+        except ImportError:
+            logger.error("The 'pydub' package is not installed. Please run: pip install pydub")
+            raise
+
+        combined = AudioSegment.empty()
+        for path in chunk_paths:
+            combined += AudioSegment.from_mp3(path)
+
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        combined.export(output_path, format="mp3", bitrate="128k")
+        logger.info(f"Merged {len(chunk_paths)} audio chunk(s) into {output_path}")
+
 
 class ElevenLabsTTS(BaseTTS):
     """
@@ -115,22 +137,21 @@ class ElevenLabsTTS(BaseTTS):
             from elevenlabs.client import ElevenLabs
             from elevenlabs import VoiceSettings
             import httpx
-            
+
             custom_httpx = httpx.Client(verify=self.ssl_verify, timeout=300.0)
             client = ElevenLabs(api_key=self.api_key, httpx_client=custom_httpx, timeout=300.0)
-            
-            # Chunk the text to stay within ElevenLabs' request limits (e.g. 4000 chars to be safe)
-            text_chunks = self._chunk_text(text, max_chars=4000)
+
+            # ElevenLabs streaming endpoint terminates early above ~2000 chars.
+            # Use 1500 as a safe ceiling to account for Unicode normalization variance.
+            text_chunks = self._chunk_text(text, max_chars=1500)
             logger.info(f"Text length {len(text)} split into {len(text_chunks)} chunk(s) for synthesis.")
-            
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            
-            # We open the file in write-binary mode and append chunks
-            with open(output_path, "wb") as f:
-                for idx, chunk in enumerate(text_chunks, 1):
-                    logger.info(f"Synthesizing chunk {idx}/{len(text_chunks)} ({len(chunk)} chars)...")
+
+            if len(text_chunks) == 1:
+                # Single chunk: write directly to output, no merge needed
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                with open(output_path, "wb") as f:
                     audio_generator = client.text_to_speech.convert(
-                        text=chunk,
+                        text=text_chunks[0],
                         voice_id=self.voice_id,
                         model_id=self.model_id,
                         output_format="mp3_44100_128",
@@ -142,9 +163,34 @@ class ElevenLabsTTS(BaseTTS):
                     )
                     for audio_chunk in audio_generator:
                         f.write(audio_chunk)
-                        
-            logger.info(f"Successfully saved concatenated ElevenLabs audio to {output_path}")
-            
+            else:
+                # Multiple chunks: write each to a temp file, then merge via pydub
+                # to avoid truncated-tail artifacts from raw MP3 byte concatenation.
+                chunk_paths = []
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    for idx, chunk in enumerate(text_chunks, 1):
+                        logger.info(f"Synthesizing chunk {idx}/{len(text_chunks)} ({len(chunk)} chars)...")
+                        chunk_path = os.path.join(tmp_dir, f"chunk_{idx:04d}.mp3")
+                        with open(chunk_path, "wb") as f:
+                            audio_generator = client.text_to_speech.convert(
+                                text=chunk,
+                                voice_id=self.voice_id,
+                                model_id=self.model_id,
+                                output_format="mp3_44100_128",
+                                optimize_streaming_latency=None,
+                                voice_settings=VoiceSettings(
+                                    stability=self.stability,
+                                    similarity_boost=self.similarity_boost
+                                )
+                            )
+                            for audio_chunk in audio_generator:
+                                f.write(audio_chunk)
+                        chunk_paths.append(chunk_path)
+
+                    self._merge_audio_chunks(chunk_paths, output_path)
+
+            logger.info(f"Successfully saved ElevenLabs audio to {output_path}")
+
         except ImportError:
             logger.error("The 'elevenlabs' package is not installed. Please install it using pip.")
             raise
@@ -181,38 +227,52 @@ class GoogleCloudTTS(BaseTTS):
         logger.info(f"Synthesizing audio via Google Cloud TTS (Voice: {self.voice_name}, Rate: {self.speaking_rate})...")
         try:
             from google.cloud import texttospeech
-            
+
             client = texttospeech.TextToSpeechClient()
-            
-            # Chunk the text to stay within Google's 5000 byte limit (use 2000 chars to be safe for 2-byte Hebrew)
+
+            # Chunk the text to stay within Google's 5000 byte limit (2000 chars to be safe for 2-byte Hebrew)
             text_chunks = self._chunk_text(text, max_chars=2000)
             logger.info(f"Text length {len(text)} split into {len(text_chunks)} chunk(s) for Google TTS.")
-            
+
             voice = texttospeech.VoiceSelectionParams(
                 language_code=self.language_code,
                 name=self.voice_name
             )
-            
             audio_config = texttospeech.AudioConfig(
                 audio_encoding=texttospeech.AudioEncoding.MP3,
                 speaking_rate=self.speaking_rate,
                 pitch=self.pitch
             )
-            
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            with open(output_path, "wb") as out:
-                for idx, chunk in enumerate(text_chunks, 1):
-                    logger.info(f"Synthesizing chunk {idx}/{len(text_chunks)} ({len(chunk)} chars)...")
-                    synthesis_input = texttospeech.SynthesisInput(text=chunk)
-                    response = client.synthesize_speech(
-                        input=synthesis_input, 
-                        voice=voice, 
-                        audio_config=audio_config
-                    )
+
+            if len(text_chunks) == 1:
+                # Single chunk: write directly to output, no merge needed
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                synthesis_input = texttospeech.SynthesisInput(text=text_chunks[0])
+                response = client.synthesize_speech(
+                    input=synthesis_input, voice=voice, audio_config=audio_config
+                )
+                with open(output_path, "wb") as out:
                     out.write(response.audio_content)
-                
-            logger.info(f"Successfully saved concatenated Google TTS audio to {output_path}")
-            
+            else:
+                # Multiple chunks: write each to a temp file, then merge via pydub
+                # to avoid truncated-tail artifacts from raw MP3 byte concatenation.
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    chunk_paths = []
+                    for idx, chunk in enumerate(text_chunks, 1):
+                        logger.info(f"Synthesizing chunk {idx}/{len(text_chunks)} ({len(chunk)} chars)...")
+                        synthesis_input = texttospeech.SynthesisInput(text=chunk)
+                        response = client.synthesize_speech(
+                            input=synthesis_input, voice=voice, audio_config=audio_config
+                        )
+                        chunk_path = os.path.join(tmp_dir, f"chunk_{idx:04d}.mp3")
+                        with open(chunk_path, "wb") as out:
+                            out.write(response.audio_content)
+                        chunk_paths.append(chunk_path)
+
+                    self._merge_audio_chunks(chunk_paths, output_path)
+
+            logger.info(f"Successfully saved Google TTS audio to {output_path}")
+
         except ImportError:
             logger.error("The 'google-cloud-texttospeech' package is not installed. Please install it using pip.")
             raise
@@ -247,29 +307,47 @@ class OpenAITTS(BaseTTS):
         logger.info(f"Synthesizing audio via OpenAI TTS (Voice: {self.voice}, Model: {self.model}, Speed: {self.speed})...")
         try:
             import httpx
-            
+
             custom_httpx = httpx.Client(verify=self.ssl_verify, timeout=300.0)
             client = OpenAI(api_key=self.api_key, http_client=custom_httpx)
-            
+
             # Chunk the text to stay within OpenAI's 4096 character limit
             text_chunks = self._chunk_text(text, max_chars=4000)
             logger.info(f"Text length {len(text)} split into {len(text_chunks)} chunk(s) for OpenAI TTS.")
-            
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            
-            with open(output_path, "wb") as f:
-                for idx, chunk in enumerate(text_chunks, 1):
-                    logger.info(f"Synthesizing chunk {idx}/{len(text_chunks)} ({len(chunk)} chars)...")
-                    response = client.audio.speech.create(
-                        model=self.model,
-                        voice=self.voice,
-                        input=chunk,
-                        speed=self.speed
-                    )
+
+            if len(text_chunks) == 1:
+                # Single chunk: write directly to output, no merge needed
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                response = client.audio.speech.create(
+                    model=self.model,
+                    voice=self.voice,
+                    input=text_chunks[0],
+                    speed=self.speed
+                )
+                with open(output_path, "wb") as f:
                     f.write(response.content)
-                        
-            logger.info(f"Successfully saved concatenated OpenAI TTS audio to {output_path}")
-            
+            else:
+                # Multiple chunks: write each to a temp file, then merge via pydub
+                # to avoid truncated-tail artifacts from raw MP3 byte concatenation.
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    chunk_paths = []
+                    for idx, chunk in enumerate(text_chunks, 1):
+                        logger.info(f"Synthesizing chunk {idx}/{len(text_chunks)} ({len(chunk)} chars)...")
+                        response = client.audio.speech.create(
+                            model=self.model,
+                            voice=self.voice,
+                            input=chunk,
+                            speed=self.speed
+                        )
+                        chunk_path = os.path.join(tmp_dir, f"chunk_{idx:04d}.mp3")
+                        with open(chunk_path, "wb") as f:
+                            f.write(response.content)
+                        chunk_paths.append(chunk_path)
+
+                    self._merge_audio_chunks(chunk_paths, output_path)
+
+            logger.info(f"Successfully saved OpenAI TTS audio to {output_path}")
+
         except ImportError:
             logger.error("The 'openai' package is not installed. Please install it using pip.")
             raise
