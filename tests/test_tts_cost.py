@@ -39,7 +39,6 @@ def main():
     tts_engine = GeminiTTS(
         model_id=config.gemini_tts_model,
         voice_name=config.gemini_tts_voice,
-        temperature=config.gemini_tts_temp,
         api_key=config.gemini_api_key
     )
 
