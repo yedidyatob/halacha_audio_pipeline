@@ -268,7 +268,9 @@ class GeminiScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
     def get_batch_result(self, job_id: str) -> str:
         job = self.client.batches.get(name=job_id)
         try:
-            response = job.dest.inlined_responses[0]
+            inlined_response = job.dest.inlined_responses[0]
+            # Access the nested response object first
+            response = inlined_response.response
             text = response.candidates[0].content.parts[0].text
             if not text:
                 raise ValueError("Gemini batch returned empty text response.")

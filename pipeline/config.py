@@ -130,10 +130,6 @@ class PipelineConfig:
                     f"Supported prebuilt voices are: Puck, Charon, Kore, Fenrir, Aoede, Achird."
                 )
                 
-            self.gemini_tts_temp = self.gemini_tts_settings.get("temperature")
-            if self.gemini_tts_temp is None:
-                raise ValueError("Missing required configuration parameter 'temperature' under 'tts.gemini' in config.yaml.")
-
         # Directory setup
         dirs = self.config_data.get("directories", {})
         self.output_dir = dirs.get("output_dir", "./output")

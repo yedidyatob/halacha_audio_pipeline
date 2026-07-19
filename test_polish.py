@@ -3,7 +3,16 @@ import os
 import traceback
 import signal
 from dotenv import load_dotenv
-load_dotenv()
+from pathlib import Path
+
+# Get the path to the directory where the current script resides
+current_dir = Path(__file__).resolve().parent
+
+# Build the path to the .env file one level up
+dotenv_path = current_dir.parent / ".env"
+
+# Load the file
+load_dotenv(dotenv_path=dotenv_path)
 
 from pipeline.config import PipelineConfig
 from pipeline.generator import GeminiScriptGenerator
