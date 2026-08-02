@@ -32,7 +32,7 @@ def main():
     with open(context_path, "r", encoding="utf-8") as f:
         master_context = f.read()
         
-    print(f"Requesting native audio generation from {model_name}...")
+    print(f"Hey! Let's generate some audio with {model_name}...")
     print("Using Voice: Puck (Upbeat Male)")
     
     # Configure the native audio generation request
