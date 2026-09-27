@@ -1,6 +1,6 @@
 from pipeline.config import PipelineConfig
 from pipeline.generator import BaseScriptGenerator, GeminiScriptGenerator, OpenAIScriptGenerator
-from pipeline.tts import BaseTTS, ElevenLabsTTS, GoogleCloudTTS, OpenAITTS
+from pipeline.tts import BaseTTS, ElevenLabsTTS, GoogleCloudTTS, OpenAITTS, GeminiTTS
 
 def create_generator_engine(config: PipelineConfig) -> BaseScriptGenerator:
     """
@@ -50,6 +50,13 @@ def create_tts_engine(config: PipelineConfig) -> BaseTTS:
             model=config.openai_tts_settings.get("model", "tts-1"),
             speed=config.openai_tts_settings.get("speed", 1.0),
             ssl_verify=config.ssl_verify
+        )
+    elif config.tts_engine == "gemini":
+        return GeminiTTS(
+            model_id=config.gemini_tts_model,
+            voice_name=config.gemini_tts_voice,
+            temperature=config.gemini_tts_temp,
+            api_key=config.gemini_api_key
         )
     else:
         raise ValueError(f"Unsupported TTS engine: {config.tts_engine}")

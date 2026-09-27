@@ -55,3 +55,43 @@ def save_output_file(
         )
         
     return history_path
+
+
+def log_gemini_usage(logger, response, model_name: str) -> None:
+    """
+    Extracts usage_metadata from the Gemini response, calculates the estimated
+    cost on the fly based on current pricing, and logs it.
+    """
+    if not hasattr(response, "usage_metadata") or not response.usage_metadata:
+        return
+        
+    prompt_tokens = getattr(response.usage_metadata, "prompt_token_count", 0)
+    output_tokens = getattr(response.usage_metadata, "candidates_token_count", 0)
+    total_tokens = getattr(response.usage_metadata, "total_token_count", 0)
+    
+    # Handle mock objects in unit tests gracefully
+    if not isinstance(prompt_tokens, (int, float)) or not isinstance(output_tokens, (int, float)):
+        return
+    
+    # Determine pricing based on model class
+    model_lower = model_name.lower()
+    if "tts" in model_lower:
+        # Gemini Flash TTS pricing: $0.075/1M input, $20.00/1M audio output
+        input_rate = 0.075 / 1_000_000
+        output_rate = 20.00 / 1_000_000
+    elif "pro" in model_lower:
+        # Gemini Pro pricing: $1.25/1M input, $5.00/1M output
+        input_rate = 1.25 / 1_000_000
+        output_rate = 5.00 / 1_000_000
+    else:
+        # Gemini Flash pricing: $0.075/1M input, $0.30/1M output
+        input_rate = 0.075 / 1_000_000
+        output_rate = 0.30 / 1_000_000
+        
+    estimated_cost = (prompt_tokens * input_rate) + (output_tokens * output_rate)
+    
+    logger.info(
+        f"[Gemini Cost Tracker] Model: {model_name} | "
+        f"Tokens Used: Input={prompt_tokens}, Output={output_tokens}, Total={total_tokens} | "
+        f"Estimated Cost: ${estimated_cost:.6f} USD"
+    )
