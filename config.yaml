@@ -123,7 +123,7 @@ relations_instruction: |
 
 # TTS Engine Selection and Settings
 tts:
-  engine: "gemini"  # "elevenlabs", "google", "openai", or "gemini"
+  engine: "elevenlabs"  # "elevenlabs", "google", "openai", or "gemini"
   
   gemini:
     model_name: "gemini-3.1-flash-tts-preview"
@@ -131,7 +131,7 @@ tts:
     temperature: 0.3
 
   elevenlabs:
-    voice_id: "UEKYgullGqaF0keqT8Bu"    # Voice name or ID to use
+    voice_id: "UEKYgullGqaF0keqT8Bu"    # Chris Brift
     model_id: "eleven_v3"
     stability: 0.5
     similarity_boost: 0.75
