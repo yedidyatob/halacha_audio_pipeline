@@ -93,6 +93,10 @@ class PipelineConfig:
             prompt_commentators_desc=self.section_metadata.get("prompt_commentators_desc", "")
         ) if raw_relations_instruction else ""
 
+        # Fixed lesson framing (prepended/appended in code after Stage 3 polish)
+        framing = self.config_data.get("lesson_framing", {}) or {}
+        self.lesson_intro_template = (framing.get("intro") or "").strip()
+        self.lesson_outro_template = (framing.get("outro") or "").strip()
 
         # TTS settings
         tts = self.config_data.get("tts", {})
