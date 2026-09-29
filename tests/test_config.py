@@ -55,20 +55,51 @@ generator:
          patch("os.path.exists", return_value=True), \
          patch("os.makedirs"):
         config = PipelineConfig("config.yaml")
-        assert "ש\"ך וט\"ז" in config.gemini_system_instruction
-        assert "שפתי כהן" in config.gemini_system_instruction
-        assert "השפתי כהן" in config.relations_instruction
-        assert "יורה דעה" in config.relations_instruction
-        assert "מהרש\"ל" in config.polishing_instruction
+        assert "×©\"×š ×•×˜\"×–" in config.gemini_system_instruction
+        assert "×©×¤×ª×™ ×›×”×Ÿ" in config.gemini_system_instruction
+        assert "×”×©×¤×ª×™ ×›×”×Ÿ" in config.relations_instruction
+        assert "×™×•×¨×” ×“×¢×”" in config.relations_instruction
+        assert "×ž×”×¨×©\"×œ" in config.polishing_instruction
 
     # Test Orach Chayim
     with patch("builtins.open", mock_open(read_data=yaml_content.format(section="Orach Chayim"))), \
          patch("os.path.exists", return_value=True), \
          patch("os.makedirs"):
         config = PipelineConfig("config.yaml")
-        assert "מגן אברהם, טורי זהב" in config.gemini_system_instruction
-        assert "המגן אברהם" in config.gemini_system_instruction
-        assert "המגן אברהם" in config.relations_instruction
-        assert "אורח חיים" in config.relations_instruction
-        assert "משנה ברורה" in config.polishing_instruction
+        assert "×ž×’×Ÿ ××‘×¨×”×, ×˜×•×¨×™ ×–×”×‘" in config.gemini_system_instruction
+        assert "×”×ž×’×Ÿ ××‘×¨×”×" in config.gemini_system_instruction
+        assert "×”×ž×’×Ÿ ××‘×¨×”×" in config.relations_instruction
+        assert "××•×¨×— ×—×™×™×" in config.relations_instruction
+        assert "×ž×©× ×” ×‘×¨×•×¨×”" in config.polishing_instruction
 
+
+
+def test_pipeline_config_lesson_framing_optional():
+    yaml_content = """
+halachic_section: "Yoreh De'ah"
+generator:
+  engine: "gemini"
+"""
+    with patch("builtins.open", mock_open(read_data=yaml_content)), \
+         patch("os.path.exists", return_value=True), \
+         patch("os.makedirs"):
+        config = PipelineConfig("config.yaml")
+        assert config.lesson_intro_template == ""
+        assert config.lesson_outro_template == ""
+
+
+def test_pipeline_config_lesson_framing_loaded():
+    yaml_content = """
+halachic_section: "Yoreh De'ah"
+generator:
+  engine: "gemini"
+lesson_framing:
+  intro: "×©×œ×•×, ×¡×™×ž×Ÿ {spoken_siman}."
+  outro: "×œ×”×ª×¨××•×ª, ×¡×™×ž×Ÿ {gematria_siman}."
+"""
+    with patch("builtins.open", mock_open(read_data=yaml_content)), \
+         patch("os.path.exists", return_value=True), \
+         patch("os.makedirs"):
+        config = PipelineConfig("config.yaml")
+        assert "spoken_siman" in config.lesson_intro_template
+        assert "gematria_siman" in config.lesson_outro_template

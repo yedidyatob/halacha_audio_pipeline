@@ -15,6 +15,7 @@ from pipeline.utils import save_output_file
 from pipeline.factory import create_generator_engine, create_tts_engine
 from pipeline.gematria import int_to_gematria
 from pipeline.apply_nikkid import apply_nikkud_to_abbreviations
+from pipeline.lesson_framing import wrap_lesson_with_frames
 
 logger = get_logger("halacha_pipeline_cli")
 
@@ -34,6 +35,15 @@ def process_and_save_outputs(siman: int, script_text: str, relations_text: str, 
     # Stage 3.5: Replace Rabbinic abbreviations with nikkud/expanded forms for TTS
     logger.info(f"Applying nikkud abbreviation replacements for Siman {siman}...")
     polished_text = apply_nikkud_to_abbreviations(polished_text)
+
+    # Stage 3.6: Fixed intro/outro (not LLM-generated)
+    polished_text = wrap_lesson_with_frames(
+        body=polished_text,
+        siman=siman,
+        hebrew_section=config.section_metadata.get("hebrew_name", ""),
+        intro_template=config.lesson_intro_template,
+        outro_template=config.lesson_outro_template,
+    )
 
     # Save script transcript file
     save_output_file(
@@ -391,7 +401,7 @@ def main():
                     logger.warning(
                         f"\n"
                         f"============================================================\n"
-                        f"⚠️⚠️⚠️ HEURISTIC EVALUATION WARNING FOR SIMAN {siman} ⚠️⚠️⚠️\n"
+                        f"âš ï¸âš ï¸âš ï¸ HEURISTIC EVALUATION WARNING FOR SIMAN {siman} âš ï¸âš ï¸âš ï¸\n"
                         f"============================================================\n"
                         f"The generated Stage 1 draft failed heuristic coverage checks.\n\n"
                         f"{eval_res['report']}\n"
@@ -467,6 +477,15 @@ def main():
                 # Stage 3.5: Replace Rabbinic abbreviations with nikkud/expanded forms for TTS
                 logger.info(f"Applying nikkud abbreviation replacements for Siman {siman}...")
                 polished_text = apply_nikkud_to_abbreviations(polished_text)
+
+                # Stage 3.6: Fixed intro/outro (not LLM-generated)
+                polished_text = wrap_lesson_with_frames(
+                    body=polished_text,
+                    siman=siman,
+                    hebrew_section=config.section_metadata.get("hebrew_name", ""),
+                    intro_template=config.lesson_intro_template,
+                    outro_template=config.lesson_outro_template,
+                )
 
                 # Save polished transcript
                 save_output_file(
