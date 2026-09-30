@@ -126,11 +126,23 @@ class GeminiScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
     """
     Generates custom, TTS-optimized Hebrew script files using Gemini API (google-genai SDK).
     """
-    def __init__(self, api_key: str = None, model_name: str = "gemini-3.5-flash", temperature: float = 0.3):
+    def __init__(self, api_key: str = None, model_name: str = "gemini-3.5-flash", temperature: float = 0.3, ssl_verify: bool = True):
         super().__init__(api_key, model_name, temperature)
+        self.ssl_verify = ssl_verify
         kwargs = {}
         if api_key:
             kwargs["api_key"] = api_key
+        
+        # Configure httpx client with SSL verification setting
+        if not ssl_verify:
+            try:
+                import urllib3
+                # Disable SSL warnings when verification is disabled
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                # Pass verify=False to the underlying httpx client via http_options
+                kwargs["http_options"] = {"client_args": {"verify": False}}
+            except ImportError:
+                logger.warning("urllib3 not available for disabling SSL warnings")
             
         try:
             self.client = genai.Client(**kwargs)
@@ -284,12 +296,24 @@ class OpenAIScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
     Generates custom, TTS-optimized Hebrew script files using OpenAI's API.
     Supports o1/o3 reasoning models automatically.
     """
-    def __init__(self, api_key: str = None, model_name: str = "o1", temperature: float = 1.0, service_tier: str = None):
+    def __init__(self, api_key: str = None, model_name: str = "o1", temperature: float = 1.0, service_tier: str = None, ssl_verify: bool = True):
         super().__init__(api_key, model_name, temperature)
         self.service_tier = service_tier
+        self.ssl_verify = ssl_verify
         kwargs = {}
         if api_key:
             kwargs["api_key"] = api_key
+        
+        # Configure httpx client with SSL verification setting
+        if not ssl_verify:
+            try:
+                import httpx
+                import urllib3
+                # Disable SSL warnings when verification is disabled
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                kwargs["http_client"] = httpx.Client(verify=False, timeout=300.0)
+            except ImportError:
+                logger.warning("httpx not available, SSL verification setting may not be applied")
             
         try:
             self.client = OpenAI(**kwargs)

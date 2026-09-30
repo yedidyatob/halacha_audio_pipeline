@@ -10,14 +10,16 @@ def create_generator_engine(config: PipelineConfig) -> BaseScriptGenerator:
         return GeminiScriptGenerator(
             api_key=config.gemini_api_key,
             model_name=config.gemini_model_name,
-            temperature=config.gemini_temperature
+            temperature=config.gemini_temperature,
+            ssl_verify=config.ssl_verify
         )
     elif config.generator_engine == "openai":
         return OpenAIScriptGenerator(
             api_key=config.openai_api_key,
             model_name=config.openai_model_name,
             temperature=config.openai_temperature,
-            service_tier=config.openai_service_tier
+            service_tier=config.openai_service_tier,
+            ssl_verify=config.ssl_verify
         )
     else:
         raise ValueError(f"Unsupported Generator engine: {config.generator_engine}")
