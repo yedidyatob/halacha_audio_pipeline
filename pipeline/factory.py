@@ -25,30 +25,34 @@ def create_generator_engine(config: PipelineConfig) -> BaseScriptGenerator:
 def create_tts_engine(config: PipelineConfig) -> BaseTTS:
     """
     Factory function to return the configured TTS Synthesizer engine.
+    All engine-specific settings come from config.yaml (single source of truth).
     """
     if config.tts_engine == "elevenlabs":
+        el = config.elevenlabs_settings
         return ElevenLabsTTS(
             api_key=config.elevenlabs_api_key,
-            voice_id=config.elevenlabs_settings.get("voice_id", "Adam"),
-            model_id=config.elevenlabs_settings.get("model_id", "eleven_multilingual_v3"),
-            stability=config.elevenlabs_settings.get("stability", 0.5),
-            similarity_boost=config.elevenlabs_settings.get("similarity_boost", 0.75),
+            voice_id=el["voice_id"],
+            model_id=el["model_id"],
+            stability=el["stability"],
+            similarity_boost=el["similarity_boost"],
             ssl_verify=config.ssl_verify
         )
     elif config.tts_engine == "google":
+        g = config.google_tts_settings
         return GoogleCloudTTS(
             credentials_path=config.google_tts_credentials,
-            voice_name=config.google_tts_settings.get("voice_name", "he-IL-Neural2-M"),
-            language_code=config.google_tts_settings.get("language_code", "he-IL"),
-            speaking_rate=config.google_tts_settings.get("speaking_rate", 1.0),
-            pitch=config.google_tts_settings.get("pitch", 0.0)
+            voice_name=g["voice_name"],
+            language_code=g["language_code"],
+            speaking_rate=g.get("speaking_rate", 1.0),
+            pitch=g.get("pitch", 0.0)
         )
     elif config.tts_engine == "openai":
+        o = config.openai_tts_settings
         return OpenAITTS(
             api_key=config.openai_api_key,
-            voice=config.openai_tts_settings.get("voice", "alloy"),
-            model=config.openai_tts_settings.get("model", "tts-1"),
-            speed=config.openai_tts_settings.get("speed", 1.0),
+            voice=o["voice"],
+            model=o["model"],
+            speed=o.get("speed", 1.0),
             ssl_verify=config.ssl_verify
         )
     elif config.tts_engine == "gemini":

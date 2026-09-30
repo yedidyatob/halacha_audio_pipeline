@@ -1,5 +1,5 @@
 import pytest
-from pipeline.gematria import int_to_gematria
+from pipeline.gematria import int_to_gematria, gematria_to_int
 
 def test_single_digit_gematria():
     assert int_to_gematria(1) == "א'"
@@ -36,3 +36,24 @@ def test_invalid_range_raises_error():
         int_to_gematria(-5)
     with pytest.raises(ValueError):
         int_to_gematria(1000)
+
+def test_gematria_to_int():
+    assert gematria_to_int("א") == 1
+    assert gematria_to_int("א'") == 1
+    assert gematria_to_int("ב") == 2
+    assert gematria_to_int("ט'") == 9
+    assert gematria_to_int("י") == 10
+    assert gematria_to_int("י'") == 10
+    assert gematria_to_int("יא") == 11
+    assert gematria_to_int('י"א') == 11
+    assert gematria_to_int('י״א') == 11
+    assert gematria_to_int("י'א") == 11
+    assert gematria_to_int('ט"ו') == 15
+    assert gematria_to_int('ט"ז') == 16
+    assert gematria_to_int('כ"ב') == 22
+    assert gematria_to_int('צ"ד') == 94
+    assert gematria_to_int('11') == 11
+    assert gematria_to_int('1') == 1
+    assert gematria_to_int('') is None
+    assert gematria_to_int('0') is None
+    assert gematria_to_int('invalid') is None

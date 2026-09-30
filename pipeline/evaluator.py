@@ -3,7 +3,7 @@ import requests
 from typing import Dict, List, Any, Set, Tuple, Optional
 from pipeline.config import PipelineConfig
 from pipeline.extractor import SefariaExtractor
-from pipeline.gematria import int_to_gematria
+from pipeline.gematria import int_to_gematria, gematria_to_int
 from pipeline.logger import get_logger
 
 # Logger initialization
@@ -28,23 +28,26 @@ def parse_draft_into_seifim(draft_text: str, num_seifim: int) -> Dict[int, str]:
     seif_blocks = {}
     
     # Locate all markdown headers for Se'ifim
-    # Matches "## סעיף א", "## סעיף א (...", "## סעיף 1", etc.
-    header_pattern = r"##\s+(סעיף|בסעיף)\s+[\(\'\"]*([א-ת]+|\d+)[\)\'\"]*"
+    # Matches "## סעיף א", "## סעיף א':", "## סעיף י"א", "## סעיף י״א", "## סעיף 1", etc.
+    header_pattern = r"#+\s+(סעיף|בסעיף)\s+[\(\[\'\"]*([א-ת\"״\'׳’`]+|\d+)[\)\]\'\"]*"
     matches = list(re.finditer(header_pattern, draft_text))
     
     for idx, match in enumerate(matches):
         seif_indicator = match.group(2)
         
         # Match indicator to Se'if number
-        seif_num = None
-        for i in range(1, num_seifim + 1):
-            g_with_quotes = int_to_gematria(i)
-            g_without_quotes = get_clean_gematria_without_quotes(i)
-            if seif_indicator in [g_with_quotes, g_without_quotes, str(i)]:
-                seif_num = i
-                break
+        seif_num = gematria_to_int(seif_indicator)
+        if seif_num is None or seif_num < 1 or seif_num > num_seifim:
+            # Fallback comparison if gematria_to_int didn't match within range
+            clean_indicator = re.sub(r'["״\'׳’`\s]', '', seif_indicator)
+            for i in range(1, num_seifim + 1):
+                g_with_quotes = int_to_gematria(i)
+                g_without_quotes = get_clean_gematria_without_quotes(i)
+                if clean_indicator in [g_without_quotes, str(i)] or seif_indicator in [g_with_quotes, g_without_quotes, str(i)]:
+                    seif_num = i
+                    break
                 
-        if seif_num is not None:
+        if seif_num is not None and 1 <= seif_num <= num_seifim:
             start_pos = match.end()
             end_pos = matches[idx+1].start() if idx + 1 < len(matches) else len(draft_text)
             seif_blocks[seif_num] = draft_text[start_pos:end_pos]

@@ -29,3 +29,34 @@ def int_to_gematria(num: int) -> str:
     elif len(res) == 1:
         return res + "'"
     return ""
+
+import re
+from typing import Optional
+
+HEBREW_GEMATRIA_VALUES = {
+    'א': 1, 'ב': 2, 'ג': 3, 'ד': 4, 'ה': 5, 'ו': 6, 'ז': 7, 'ח': 8, 'ט': 9,
+    'י': 10, 'כ': 20, 'ך': 20, 'ל': 30, 'מ': 40, 'ם': 40, 'נ': 50, 'ן': 50,
+    'ס': 60, 'ע': 70, 'פ': 80, 'ף': 80, 'צ': 90, 'ץ': 90,
+    'ק': 100, 'ר': 200, 'ש': 300, 'ת': 400
+}
+
+def gematria_to_int(text: str) -> Optional[int]:
+    """
+    Converts a Hebrew gematria string or digit string (e.g. 'יא', 'י"א', 'י״א', '11') to an integer.
+    Returns None if the string cannot be converted.
+    """
+    if not text:
+        return None
+    clean = re.sub(r'["״\'׳’`\s]', '', str(text))
+    if clean.isdigit():
+        val = int(clean)
+        return val if val > 0 else None
+    if not clean:
+        return None
+    val = 0
+    for char in clean:
+        if char in HEBREW_GEMATRIA_VALUES:
+            val += HEBREW_GEMATRIA_VALUES[char]
+        else:
+            return None
+    return val if val > 0 else None

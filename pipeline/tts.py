@@ -205,10 +205,10 @@ class ElevenLabsTTS(BaseTTS):
     def __init__(
         self,
         api_key: str = None,
-        voice_id: str = "pNInz6obpgDQGcFmaJgB",
-        model_id: str = "eleven_v3",
-        stability: float = 0.5,
-        similarity_boost: float = 0.75,
+        voice_id: str = None,
+        model_id: str = None,
+        stability: float = None,
+        similarity_boost: float = None,
         ssl_verify: bool = True,
     ):
         self.api_key = api_key or os.environ.get("ELEVENLABS_API_KEY")

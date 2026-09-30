@@ -1,8 +1,8 @@
 # Halacha Audio Lesson Generation Pipeline
 
-An end-to-end, production-grade Python pipeline to download classical Jewish Halachic source texts from the Sefaria API, generate custom Text-to-Speech (TTS) optimized Hebrew monologue scripts using Gemini (google-genai) or OpenAI (including reasoning models like `o1` and `o3-mini`), and synthesize them to high-quality audio files (.mp3) using ElevenLabs, OpenAI TTS, or Google Cloud TTS.
+An end-to-end Python pipeline that downloads classical Jewish Halachic texts from Sefaria, generates TTS-optimized Hebrew scripts using Gemini or OpenAI, and synthesizes them to high-quality audio using ElevenLabs, Google Cloud TTS, or OpenAI TTS.
 
-This pipeline is designed specifically for advanced students preparing for the Rabbinical Ordination exams, producing single-voice monologue lessons that sound like an authentic rabbi speaking directly to you, incorporating spoken transitions, definitions, and cross-references.
+Designed for advanced students preparing for Rabbinical Ordination exams, producing authentic-sounding monologue lessons with spoken transitions, definitions, and cross-references.
 
 ---
 
@@ -11,121 +11,197 @@ This pipeline is designed specifically for advanced students preparing for the R
 ```
 halacha_audio_pipeline/
 │
-├── config.example.yaml       # Template configuration (credentials, TTS voice selection, prompts)
-├── config.yaml               # Application configuration (git-ignored, local sensitive keys)
-├── requirements.txt          # Python dependencies
-├── main.py                   # CLI Orchestrator entry point
-├── .gitignore                # Excludes credentials, caches, outputs, and JSON dumps
+├── main.py               # CLI entry point
+├── config.yaml           # Configuration file (see config.example.yaml for reference)
+├── requirements.txt      # Python dependencies
+├── .gitignore            # Excludes credentials, caches, outputs
 │
-├── pipeline/
-│   ├── __init__.py
-│   ├── config.py             # Configuration loader & validator
-│   ├── gematria.py           # Gematria converter (e.g. 94 -> צ"ד)
-│   ├── input_parser.py       # Commas and ranges string parser (e.g. "94,95-97")
-│   ├── extractor.py          # Sefaria v3/v1 API client & HTML clean parser
-│   ├── generator.py          # Gemini & OpenAI API wrappers (Master Reference Strategy)
-│   ├── tts.py                # Abstract TTS interface (ElevenLabs, OpenAI, Google Cloud TTS)
-│   └── logger.py             # Standard logging configuration
+├── pipeline/             # Core pipeline modules
+│   ├── config.py         # Configuration loader & validator
+│   ├── extractor.py      # Sefaria API client
+│   ├── generator.py      # Gemini & OpenAI API wrappers
+│   ├── tts.py            # TTS interface (ElevenLabs, OpenAI, Google, Gemini)
+│   ├── factory.py        # Engine factory functions
+│   ├── domain.py         # Section metadata and abbreviations
+│   ├── utils.py          # Utility functions
+│   └── ...               # Other modules
 │
-└── tests/                    # Complete pytest suite (38 passing tests)
-    ├── __init__.py
-    ├── test_extractor.py
-    ├── test_gematria.py
-    ├── test_generator.py
-    ├── test_input_parser.py
-    └── test_tts.py
+└── tests/                # Pytest suite
 ```
 
 ---
 
-## Setup Instructions
+## Quick Start
 
-### 1. Prerequisite Python Environment
-Use the pre-installed virtual environment at `..\v` or activate a local virtual environment:
-```bash
-# To run commands with the existing virtual environment:
-..\v\Scripts\python.exe main.py <arguments>
-```
+### 1. Install Dependencies
 
-To initialize your own:
 ```bash
-py -m venv venv
-.\venv\Scripts\activate
+python -m venv venv
+source venv/bin/activate  # On Windows: .\venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2. Configure Local Environment
-1. Copy `config.example.yaml` to `config.yaml`:
-   ```bash
-   cp config.example.yaml config.yaml
-   ```
-2. Open `config.yaml` and fill in your API credentials:
-   ```yaml
-   api_keys:
-     gemini_api_key: "YOUR_GEMINI_API_KEY"
-     openai_api_key: "YOUR_OPENAI_API_KEY"         # Required if using OpenAI generator or OpenAI TTS
-     elevenlabs_api_key: "YOUR_ELEVENLABS_API_KEY" # Required if using ElevenLabs
-     google_tts_credentials: "C:/path/to/credentials.json" # Required if using Google Cloud TTS
-   ```
+### 2. Configure API Keys
 
-*Note: You can also set these via standard environment variables (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`), which the pipeline will automatically detect.*
+Create a `.env` file with your API keys:
 
----
-
-## How to Run the Pipeline
-
-Run the pipeline from the command line by supplying the target Simanim.
-
-### 1. Standard Synchronous Run
-To extract, generate, and synthesize lessons for Simanim 94, 95, 96, and 97:
 ```bash
-..\v\Scripts\python.exe main.py 94,95-97
+# .env
+GEMINI_API_KEY=your_gemini_key
+OPENAI_API_KEY=your_openai_key
+ELEVENLABS_API_KEY=your_elevenlabs_key
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/google-credentials.json
 ```
 
-### 2. Broad Context Range
-To target a specific Siman (e.g., 94) but feed the model the context of a wider range (e.g., 87-111) to allow it to construct cross-references:
-```bash
-..\v\Scripts\python.exe main.py 94 --context-range 87-111
-```
+Create `config.yaml` based on the structure in `config.example.yaml` (copy that file and fill in your details).
 
-### 3. OpenAI Batch API (Cost-saving & Rate Limit Bypass)
-For very large context ranges, run asynchronously using the OpenAI Batch API (50% cheaper, bypasses tokens-per-minute limits):
-```bash
-# Submit the batch job:
-..\v\Scripts\python.exe main.py 94 --context-range 87-111 --batch
+### 3. Run Your First Lesson
 
-# Retrieve and polish the results once completed (typically takes a few minutes):
-..\v\Scripts\python.exe main.py 94 --retrieve-batch <batch_id>
-```
-
-### 4. Skip TTS (Text Only / Transcript Optimization)
-To download texts and generate scripts without running the TTS synthesis (saves credits while testing script content):
 ```bash
-..\v\Scripts\python.exe main.py 94 --context-range 93-95 --skip-tts
-```
-
-### 5. Debug / Limit Mode
-To compile a large range of context (e.g. 91-97) but limit generation and audio synthesis to only the first Siman (91) for testing:
-```bash
-..\v\Scripts\python.exe main.py 91-97 --limit-lessons 1
+# Generate audio for Simanim 94-97
+python main.py 94,95-97
 ```
 
 ---
 
-## Versioning & Output Files
+## Pipeline Stages
 
-Transcripts and audio lessons are saved in the `./output` directory.
-To prevent overwriting previous versions during prompt optimization, the pipeline saves two files:
-1. `Yoreh_Deah_Siman_X_transcript.txt` (and `.mp3`) — The latest copy, overwritten on each run.
-2. `Yoreh_Deah_Siman_X_transcript_YYYYMMDD_HHMMSS.txt` (and `.mp3`) — A timestamped history file that preserves the version history.
+The pipeline runs in three stages:
 
-If the latest `.mp3` copy is locked (e.g. playing in your media player), the script will output a warning and continue, leaving the timestamped file fully saved.
+| Stage | Description |
+|-------|-------------|
+| **Stage 1** | Extract Halachic content from Sefaria API |
+| **Stage 2** | Analyze cross-simanim relations for context |
+| **Stage 3** | Generate polished TTS-ready script & synthesize audio |
+
+Output files are saved to `./output/` with timestamps preserved.
 
 ---
 
-## Running Tests
+## CLI Usage
 
-To run the automated test suite and ensure all components are working:
-```bash
-..\v\Scripts\python.exe -m pytest tests/
 ```
+python main.py <SIMANIM> [OPTIONS]
+```
+
+### Basic Usage
+
+```bash
+# Single siman
+python main.py 94
+
+# Multiple simanim and ranges
+python main.py 94,95-97,100
+
+# Add broader context for cross-references
+python main.py 94 --context-range 87-111
+```
+
+### Running Options
+
+| Option | Description |
+|--------|-------------|
+| `--stage-1-only` | Extract only (skip Stages 2-3) |
+| `--skip-tts` | Generate transcripts only, no audio |
+| `--limit-lessons N` | Process only first N simanim (debug mode) |
+| `--overwrite-cache` | Regenerate cached drafts and relations |
+| `--relations-file PATH` | Use pre-existing relations map |
+
+### Batch Mode (Cost-Saving)
+
+```bash
+# Submit batch job (50% cheaper, bypasses rate limits)
+python main.py 94 --context-range 87-111 --batch
+
+# Retrieve results when complete
+python main.py 94 --retrieve-batch <batch_id>
+```
+
+---
+
+## Configuration
+
+### Generator Engine
+
+```yaml
+generator:
+  engine: "gemini"  # or "openai"
+  
+  gemini:
+    model_name: "gemini-3.1-pro-preview"
+    temperature: 0.3
+    
+  openai:
+    model_name: "gpt-5.2"
+    temperature: 1.0
+    service_tier: "auto"
+```
+
+### TTS Engine
+
+```yaml
+tts:
+  engine: "gemini"  # "elevenlabs", "google", "openai", or "gemini"
+  
+  gemini:
+    voice_name: "Achird"  # Achird, Puck, Charon, Kore, Fenrir, Aoede
+    
+  elevenlabs:
+    voice_id: "lJylpTXX0sNdqq5EUv4M"
+    
+  google:
+    voice_name: "he-IL-Chirp3-HD-Achird"
+    
+  openai:
+    voice: "alloy"  # alloy, echo, fable, onyx, nova, shimmer
+```
+
+---
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `GEMINI_API_KEY` | Gemini API key |
+| `OPENAI_API_KEY` | OpenAI API key |
+| `ELEVENLABS_API_KEY` | ElevenLabs API key |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Path to Google service account JSON |
+
+---
+
+## Output Files
+
+```
+output/
+├── {section}_Siman_{N}_{model}_transcript.txt      # Latest transcript
+├── {section}_Siman_{N}_{model}_transcript_YYYYMMDD_HHMMSS.txt  # Timestamped history
+├── {section}_Siman_{N}_{model}.mp3               # Audio file
+├── drafts/                                         # Stage 1 cached drafts
+│   └── {section}_Siman_{N}_{model}_draft.txt
+└── relations/                                      # Stage 2 cached relations
+    └── {section}_Relations_{range}_{model}.txt
+```
+
+- **Latest files**: Overwritten on each run
+- **Timestamped files**: Preserve version history
+
+---
+
+## Testing
+
+```bash
+# Run the test suite
+python -m pytest tests/ -v
+```
+
+---
+
+## License
+
+MIT License - see LICENSE file for details.
+
+---
+
+## Support
+
+For issues or questions, please open an issue on GitHub.

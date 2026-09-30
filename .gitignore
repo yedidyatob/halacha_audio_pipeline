@@ -17,3 +17,5 @@ v/
 venv/
 .venv/
 .env
+.aider*
+.kiro/

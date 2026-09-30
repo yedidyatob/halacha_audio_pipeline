@@ -40,7 +40,7 @@ To change the TTS provider, locate the `tts` section in `config.yaml` and change
 tts:
   engine: "elevenlabs"
   elevenlabs:
-    voice_id: "pNInz6obpgDQGcFmaJgB"
+    voice_id: "lJylpTXX0sNdqq5EUv4M"
     model_id: "eleven_v3"
     # ...
 ```

@@ -23,7 +23,7 @@ from pipeline.logger import get_logger
 from pipeline.utils import save_output_file
 from pipeline.factory import create_generator_engine, create_tts_engine
 from pipeline.gematria import int_to_gematria
-from pipeline.apply_nikkid import apply_nikkud_to_abbreviations
+from pipeline.apply_nikkud import apply_nikkud_to_abbreviations
 
 logger = get_logger("halacha_pipeline_cli")
 
