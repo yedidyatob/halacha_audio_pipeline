@@ -3,6 +3,11 @@ import yaml
 from typing import Dict, Any
 from pipeline.logger import get_logger
 from pipeline.domain import SECTIONS_METADATA
+from pipeline.tts import (
+    DEFAULT_CHUNK_GAP_PARAGRAPH_MS,
+    DEFAULT_CHUNK_GAP_SENTENCE_MS,
+    validate_gap_ms,
+)
 
 logger = get_logger(__name__)
 
@@ -104,6 +109,17 @@ class PipelineConfig:
         self.google_tts_settings = tts.get("google", {})
         self.openai_tts_settings = tts.get("openai", {})
         self.gemini_tts_settings = tts.get("gemini", {})
+
+        # Silence inserted between synthesized chunks (ms). Optional; 0 and 0 disables
+        # the feature (chunks are stream-copied together exactly as before).
+        self.tts_chunk_gap_paragraph_ms = validate_gap_ms(
+            tts.get("chunk_gap_paragraph_ms", DEFAULT_CHUNK_GAP_PARAGRAPH_MS),
+            "tts.chunk_gap_paragraph_ms",
+        )
+        self.tts_chunk_gap_sentence_ms = validate_gap_ms(
+            tts.get("chunk_gap_sentence_ms", DEFAULT_CHUNK_GAP_SENTENCE_MS),
+            "tts.chunk_gap_sentence_ms",
+        )
         
         # Validation for Gemini TTS settings (no hardcoded defaults allowed in pipeline)
         if self.tts_engine == "gemini":

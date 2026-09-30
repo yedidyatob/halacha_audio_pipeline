@@ -1,6 +1,9 @@
 from pipeline.config import PipelineConfig
 from pipeline.generator import BaseScriptGenerator, GeminiScriptGenerator, OpenAIScriptGenerator
-from pipeline.tts import BaseTTS, ElevenLabsTTS, GoogleCloudTTS, OpenAITTS, GeminiTTS
+from pipeline.tts import (
+    BaseTTS, ElevenLabsTTS, GoogleCloudTTS, OpenAITTS, GeminiTTS,
+    DEFAULT_CHUNK_GAP_PARAGRAPH_MS, DEFAULT_CHUNK_GAP_SENTENCE_MS,
+)
 
 def create_generator_engine(config: PipelineConfig) -> BaseScriptGenerator:
     """
@@ -29,6 +32,15 @@ def create_tts_engine(config: PipelineConfig) -> BaseTTS:
     Factory function to return the configured TTS Synthesizer engine.
     All engine-specific settings come from config.yaml (single source of truth).
     """
+    # Silence between synthesized chunks (shared by all engines).
+    gaps = dict(
+        chunk_gap_paragraph_ms=getattr(
+            config, "tts_chunk_gap_paragraph_ms", DEFAULT_CHUNK_GAP_PARAGRAPH_MS
+        ),
+        chunk_gap_sentence_ms=getattr(
+            config, "tts_chunk_gap_sentence_ms", DEFAULT_CHUNK_GAP_SENTENCE_MS
+        ),
+    )
     if config.tts_engine == "elevenlabs":
         el = config.elevenlabs_settings
         return ElevenLabsTTS(
@@ -37,7 +49,8 @@ def create_tts_engine(config: PipelineConfig) -> BaseTTS:
             model_id=el["model_id"],
             stability=el["stability"],
             similarity_boost=el["similarity_boost"],
-            ssl_verify=config.ssl_verify
+            ssl_verify=config.ssl_verify,
+            **gaps
         )
     elif config.tts_engine == "google":
         g = config.google_tts_settings
@@ -46,7 +59,8 @@ def create_tts_engine(config: PipelineConfig) -> BaseTTS:
             voice_name=g["voice_name"],
             language_code=g["language_code"],
             speaking_rate=g.get("speaking_rate", 1.0),
-            pitch=g.get("pitch", 0.0)
+            pitch=g.get("pitch", 0.0),
+            **gaps
         )
     elif config.tts_engine == "openai":
         o = config.openai_tts_settings
@@ -55,13 +69,15 @@ def create_tts_engine(config: PipelineConfig) -> BaseTTS:
             voice=o["voice"],
             model=o["model"],
             speed=o.get("speed", 1.0),
-            ssl_verify=config.ssl_verify
+            ssl_verify=config.ssl_verify,
+            **gaps
         )
     elif config.tts_engine == "gemini":
         return GeminiTTS(
             model_id=config.gemini_tts_model,
             voice_name=config.gemini_tts_voice,
-            api_key=config.gemini_api_key
+            api_key=config.gemini_api_key,
+            **gaps
         )
     else:
         raise ValueError(f"Unsupported TTS engine: {config.tts_engine}")
