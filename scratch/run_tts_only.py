@@ -7,7 +7,16 @@ import os
 import argparse
 from dotenv import load_dotenv
 
-load_dotenv()
+from pathlib import Path
+
+# Get the path to the directory where the current script resides
+current_dir = Path(__file__).resolve().parent
+
+# Build the path to the .env file in the parent folder of the directory root
+dotenv_path = current_dir.parent.parent / ".env"
+
+# Load the file
+load_dotenv(dotenv_path=dotenv_path)
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from pipeline.config import PipelineConfig
@@ -37,13 +46,13 @@ def main():
     # Force ElevenLabs regardless of what's in config
     from pipeline.tts import ElevenLabsTTS
     el_settings = config.elevenlabs_settings
-    voice_id = args.voice_id or el_settings.get("voice_id", "pNInz6obpgDQGcFmaJgB")
+    voice_id = args.voice_id or el_settings["voice_id"]
     tts_engine = ElevenLabsTTS(
         api_key=config.elevenlabs_api_key if hasattr(config, 'elevenlabs_api_key') else None,
         voice_id=voice_id,
-        model_id=el_settings.get("model_id", "eleven_v3"),
-        stability=el_settings.get("stability", 0.5),
-        similarity_boost=el_settings.get("similarity_boost", 0.75),
+        model_id=el_settings["model_id"],
+        stability=el_settings["stability"],
+        similarity_boost=el_settings["similarity_boost"],
         ssl_verify=config.ssl_verify
     )
     logger.info(f"Using ElevenLabs voice ID: {voice_id}")

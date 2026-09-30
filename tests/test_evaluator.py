@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import patch, MagicMock
-from pipeline.evaluator import evaluate_draft, get_seif_from_ref, get_clean_gematria_without_quotes
+from pipeline.evaluator import evaluate_draft, get_seif_from_ref, get_clean_gematria_without_quotes, parse_draft_into_seifim
 
 def test_gematria_helpers():
     assert get_clean_gematria_without_quotes(1) == "א"
@@ -160,3 +160,62 @@ def test_evaluate_draft_failures(mock_fetch_sources, mock_get):
     assert result["total_general_flags"] == 2    # Missing Tur & Beit Yosef globally
     assert 2 in result["missing_seifim"]
     assert "Status: WARNING" in result["report"]
+
+def test_parse_draft_into_seifim_with_abbreviations():
+    draft = """
+# סימן פז
+
+## סעיף ט': דין ראשון
+תוכן סעיף ט
+
+## סעיף י': דין עשירי
+תוכן סעיף י
+
+## סעיף י"א: דין אחד עשר
+תוכן סעיף יא
+
+## סעיף י״ב (דין שנים עשר)
+תוכן סעיף יב
+"""
+    blocks = parse_draft_into_seifim(draft, num_seifim=12)
+    assert 9 in blocks
+    assert 10 in blocks
+    assert 11 in blocks
+    assert 12 in blocks
+    assert "תוכן סעיף ט" in blocks[9]
+    assert "תוכן סעיף י" in blocks[10]
+    assert "תוכן סעיף יא" in blocks[11]
+    assert "תוכן סעיף יב" in blocks[12]
+
+@patch("requests.get")
+@patch("pipeline.extractor.SefariaExtractor.fetch_siman_sources")
+def test_evaluate_draft_seif_11_with_quotes(mock_fetch_sources, mock_get):
+    # Mock Shulchan Arukh sources for Siman with 11 Se'ifim
+    mock_fetch_sources.return_value = {
+        "Shulchan Arukh": [f"סעיף {i}" for i in range(1, 12)],
+        "Tur": ["טקסט טור"],
+        "Beit Yosef": ["טקסט בית יוסף"],
+    }
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = []
+    mock_get.return_value = mock_response
+
+    # Draft has Se'if 10 as סעיף י' and Se'if 11 as סעיף י"א
+    draft_lines = [
+        "# סימן מבחן",
+        "הטור והבית יוסף דנים בדינים האלה.",
+    ]
+    for i in range(1, 10):
+        draft_lines.append(f"## סעיף {i}\nהמחבר פוסק כרגיל.")
+    draft_lines.append("## סעיף י': דין עשירי\nהמחבר פוסק בסעיף י.")
+    draft_lines.append("## סעיף י\"א: דין אחד עשר\nהמחבר פוסק בסעיף יא.")
+
+    draft_text = "\n\n".join(draft_lines)
+
+    result = evaluate_draft(siman=87, draft_text=draft_text, config_path="config.yaml")
+
+    assert 10 not in result["missing_seifim"]
+    assert 11 not in result["missing_seifim"]
+    assert "Draft has no section block for this Se'if!" not in result["report"]
+    assert result["success"] is True
