@@ -57,6 +57,8 @@ tts:
 ```
 *(Make sure `OPENAI_API_KEY` is set in your `.env`)*
 
+**Pauses between audio chunks:** long scripts are synthesized in chunks. `tts.chunk_gap_paragraph_ms` (default 700) and `tts.chunk_gap_sentence_ms` (default 300) set the silence inserted where chunks are stitched together (after a paragraph boundary vs. after a mid-paragraph sentence/word split). Set both to `0` to keep the old no-silence behavior. With any gap above 0 the merged MP3 is re-encoded once at 128 kbps / 44.1 kHz.
+
 You can similarly switch the generation engine (Stage 1 & 2) between Gemini and OpenAI under the `generator:` block by changing `engine: "gemini"` to `engine: "openai"`.
 
 ## 3. Dev: Running Specific Stages
