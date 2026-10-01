@@ -31,11 +31,85 @@ def test_public_api_importable():
 
 
 def test_prefix_list_is_clean():
+    assert DEFAULT_PREFIXES[0] == ""  # bare word
     assert len(DEFAULT_PREFIXES) == len(set(DEFAULT_PREFIXES))
     for p in DEFAULT_PREFIXES:
         assert all("\u05D0" <= c <= "\u05EA" for c in p)
     for expected in ("ו", "ה", "ב", "כ", "ל", "מ", "ש", "וב", "וה", "מה", "שה", "ול", "וכש", "כש"):
         assert expected in DEFAULT_PREFIXES
+
+
+def test_generated_prefix_set_is_exactly_the_rule():
+    expected = {
+        # single letters
+        "ו", "ה", "ב", "כ", "ל", "מ", "ש", "כש",
+        # ו + one piece
+        "וב", "וה", "וכ", "ול", "ומ", "וש", "וכש",
+        # preposition combos with ש / כש / מ
+        "שב", "שכ", "של", "שמ", "כשב", "כשל", "כשמ", "מש",
+        "וש" + "ב", "וש" + "כ", "וש" + "ל", "וש" + "מ", "וכשב", "וכשל", "וכשמ", "ומש",
+        # ה after nothing / ו / מ / ש / כש
+        "מה", "שה", "כשה", "שמה", "כשמה", "משה",
+        "ומה", "ושה", "וכשה", "ושמה", "וכשמה", "ומשה",
+    }
+    assert set(DEFAULT_PREFIXES) == expected | {""}
+    assert len(DEFAULT_PREFIXES) == 44
+
+
+def test_he_never_follows_bet_kaf_lamed():
+    """The article merges into ב/כ/ל, so a written ה may never follow them directly."""
+    for p in DEFAULT_PREFIXES:
+        for bad in ("בה", "כה", "לה"):
+            assert bad not in p, (p, bad)
+
+
+@pytest.mark.parametrize("invalid", [
+    "בה", "כה", "לה", "ובה", "וכה", "ולה",      # ה after ב/כ/ל
+    "שלה", "ושלה", "שבה", "שכה", "כשלה", "כשבה",  # ש/כש + ל/ב/כ then ה
+    "ולכ", "ולכש", "בל", "כב", "בב", "ההה", "הו", "וו", "שש", "כשכ", "כשש",
+])
+def test_invalid_prefixes_not_generated(invalid):
+    assert invalid not in DEFAULT_PREFIXES
+
+
+@pytest.mark.parametrize("valid", [
+    "מה", "שה", "כשה", "וכשה", "שמה", "כשמה", "ומה", "משה", "ושמה", "וה", "וכש", "כשל", "כשב", "כשמ",
+])
+def test_valid_prefixes_generated(valid):
+    assert valid in DEFAULT_PREFIXES
+
+
+def test_generated_set_contains_every_old_prefix_valid_under_the_rule():
+    old_valid = ("ו", "ה", "ב", "כ", "ל", "מ", "ש", "וב", "וה", "וכ", "ול", "ומ", "וש", "מה", "מש",
+                 "שה", "שב", "שכ", "של", "שמ", "כש", "ומה", "ומש", "ושה", "ושב", "ושל", "ושמ",
+                 "וכש", "כשה", "וכשה")
+    for p in old_valid:
+        assert p in DEFAULT_PREFIXES, p
+
+
+# ---------------------------------------------------------------------------
+# Prefix + abbreviation (rule-based prefixes)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("prefix", ["מה", "שה", "כשה", "וכשה", "שמה", "ול", "וב", "כשב", "ו", "ב", "ל", "כ", "מ", "ש", "ה"])
+def test_valid_prefix_before_abbreviation(prefix):
+    assert apply(f'{prefix}רמב"ם') == prefix + RAMBAM
+
+
+@pytest.mark.parametrize("word", ['מהרמב"ם', 'שהרמב"ם', 'כשהרמב"ם', 'וכשהרמב"ם', 'שמהרמב"ם',
+                                  'ולרמב"ם', 'וברמב"ם', 'כשברמב"ם'])
+def test_issue_examples_replaced_with_prefix_preserved(word):
+    expected = word[: -len('רמב"ם')] + RAMBAM
+    assert apply(word) == expected
+
+
+@pytest.mark.parametrize("word", ['בהרמב"ם', 'להרמב"ם', 'כהרמב"ם', 'ובהרמב"ם', 'ולהרמב"ם',
+                                  'וכהרמב"ם', 'שלהרמב"ם', 'שבהרמב"ם', 'כשלהרמב"ם'])
+def test_he_after_bet_kaf_lamed_is_not_a_valid_prefix(word):
+    assert apply(word) == word
+    # also for plain correction words
+    plain = word.replace('רמב"ם', "שפתי")
+    assert apply(plain) == plain
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +143,7 @@ def test_boundaries(text, expected):
     assert apply(text) == expected
 
 
-@pytest.mark.parametrize("prefix", ["ב", "ו", "ל", "מ", "ה", "כ", "ש", "וב", "וה", "ול", "מה", "שה", "וכש", "כש", "ולכ"])
+@pytest.mark.parametrize("prefix", ["ב", "ו", "ל", "מ", "ה", "כ", "ש", "וב", "וה", "ול", "מה", "שה", "וכש", "כש", "כשה", "וכשה", "שמ", "שמה", "כשב", "ומה"])
 def test_prefixes_are_preserved(prefix):
     assert apply(f"אמר {prefix}שפתי כהן") == f"אמר {prefix}{SHAFTEI} כהן"
     assert apply(f"{prefix}שפתי") == f"{prefix}{SHAFTEI}"
