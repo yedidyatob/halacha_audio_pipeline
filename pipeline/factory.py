@@ -1,9 +1,6 @@
 from pipeline.config import PipelineConfig
 from pipeline.generator import BaseScriptGenerator, GeminiScriptGenerator, OpenAIScriptGenerator
-from pipeline.tts import (
-    BaseTTS, ElevenLabsTTS, GoogleCloudTTS, OpenAITTS, GeminiTTS,
-    DEFAULT_CHUNK_GAP_PARAGRAPH_MS, DEFAULT_CHUNK_GAP_SENTENCE_MS,
-)
+from pipeline.tts import BaseTTS, ElevenLabsTTS, GoogleCloudTTS, OpenAITTS, GeminiTTS
 
 def create_generator_engine(config: PipelineConfig) -> BaseScriptGenerator:
     """
@@ -34,12 +31,8 @@ def create_tts_engine(config: PipelineConfig) -> BaseTTS:
     """
     # Silence between synthesized chunks (shared by all engines).
     gaps = dict(
-        chunk_gap_paragraph_ms=getattr(
-            config, "tts_chunk_gap_paragraph_ms", DEFAULT_CHUNK_GAP_PARAGRAPH_MS
-        ),
-        chunk_gap_sentence_ms=getattr(
-            config, "tts_chunk_gap_sentence_ms", DEFAULT_CHUNK_GAP_SENTENCE_MS
-        ),
+        chunk_gap_paragraph_ms=config.tts_chunk_gap_paragraph_ms,
+        chunk_gap_sentence_ms=config.tts_chunk_gap_sentence_ms,
     )
     if config.tts_engine == "elevenlabs":
         el = config.elevenlabs_settings

@@ -12,11 +12,6 @@ logger = get_logger(__name__)
 BREAK_PARAGRAPH = "paragraph"  # chunk ended at a paragraph boundary
 BREAK_SENTENCE = "sentence"    # chunk was cut mid-paragraph (sentence or word split)
 
-# Default silence inserted between synthesized chunks (milliseconds).
-# Single source of truth: pipeline/config.py and the engine constructors use these.
-DEFAULT_CHUNK_GAP_PARAGRAPH_MS = 700
-DEFAULT_CHUNK_GAP_SENTENCE_MS = 300
-
 # Gemini returns raw 24 kHz, 16-bit, mono LINEAR16 PCM.
 _GEMINI_PCM_SAMPLE_RATE = 24000
 _GEMINI_PCM_BYTES_PER_SAMPLE = 2
@@ -63,21 +58,16 @@ class BaseTTS(ABC):
     which accumulates PCM and encodes at the end) should override synthesize() directly.
     """
 
-    # Silence inserted between chunks, by how the preceding chunk ended.
-    # 0/0 means "no silence": chunks are joined with a lossless stream copy.
-    chunk_gap_paragraph_ms: int = DEFAULT_CHUNK_GAP_PARAGRAPH_MS
-    chunk_gap_sentence_ms: int = DEFAULT_CHUNK_GAP_SENTENCE_MS
+    # Silence (ms) inserted between chunks, by how the preceding chunk ended.
+    # The values come from config.yaml (tts.chunk_gap_*_ms); there are no defaults here.
+    # 0 and 0 means "no silence": chunks are joined with a lossless stream copy.
+    chunk_gap_paragraph_ms: int
+    chunk_gap_sentence_ms: int
 
-    def _set_chunk_gaps(self, paragraph_ms=None, sentence_ms=None) -> None:
-        """Validates and stores the inter-chunk gap settings (None -> defaults)."""
-        self.chunk_gap_paragraph_ms = validate_gap_ms(
-            DEFAULT_CHUNK_GAP_PARAGRAPH_MS if paragraph_ms is None else paragraph_ms,
-            "chunk_gap_paragraph_ms",
-        )
-        self.chunk_gap_sentence_ms = validate_gap_ms(
-            DEFAULT_CHUNK_GAP_SENTENCE_MS if sentence_ms is None else sentence_ms,
-            "chunk_gap_sentence_ms",
-        )
+    def _set_chunk_gaps(self, paragraph_ms: int, sentence_ms: int) -> None:
+        """Validates and stores the inter-chunk gap settings."""
+        self.chunk_gap_paragraph_ms = validate_gap_ms(paragraph_ms, "chunk_gap_paragraph_ms")
+        self.chunk_gap_sentence_ms = validate_gap_ms(sentence_ms, "chunk_gap_sentence_ms")
 
     def _plan_gaps(self, break_types: list) -> list:
         """Silence (ms) to insert between consecutive chunks, per this engine's settings."""
@@ -394,8 +384,9 @@ class ElevenLabsTTS(BaseTTS):
         stability: float = None,
         similarity_boost: float = None,
         ssl_verify: bool = True,
-        chunk_gap_paragraph_ms: int = None,
-        chunk_gap_sentence_ms: int = None,
+        *,
+        chunk_gap_paragraph_ms: int,
+        chunk_gap_sentence_ms: int,
     ):
         self._set_chunk_gaps(chunk_gap_paragraph_ms, chunk_gap_sentence_ms)
         self.api_key = api_key or os.environ.get("ELEVENLABS_API_KEY")
@@ -464,8 +455,9 @@ class GoogleCloudTTS(BaseTTS):
         language_code: str = "he-IL",
         speaking_rate: float = 1.0,
         pitch: float = 0.0,
-        chunk_gap_paragraph_ms: int = None,
-        chunk_gap_sentence_ms: int = None,
+        *,
+        chunk_gap_paragraph_ms: int,
+        chunk_gap_sentence_ms: int,
     ):
         self._set_chunk_gaps(chunk_gap_paragraph_ms, chunk_gap_sentence_ms)
         if credentials_path:
@@ -535,8 +527,9 @@ class OpenAITTS(BaseTTS):
         model: str = "tts-1",
         speed: float = 1.0,
         ssl_verify: bool = True,
-        chunk_gap_paragraph_ms: int = None,
-        chunk_gap_sentence_ms: int = None,
+        *,
+        chunk_gap_paragraph_ms: int,
+        chunk_gap_sentence_ms: int,
     ):
         self._set_chunk_gaps(chunk_gap_paragraph_ms, chunk_gap_sentence_ms)
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
@@ -599,8 +592,9 @@ class GeminiTTS(BaseTTS):
         model_id: str,
         voice_name: str,
         api_key: str = None,
-        chunk_gap_paragraph_ms: int = None,
-        chunk_gap_sentence_ms: int = None,
+        *,
+        chunk_gap_paragraph_ms: int,
+        chunk_gap_sentence_ms: int,
     ):
         self._set_chunk_gaps(chunk_gap_paragraph_ms, chunk_gap_sentence_ms)
         self.model_id = model_id

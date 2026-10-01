@@ -3,11 +3,7 @@ import yaml
 from typing import Dict, Any
 from pipeline.logger import get_logger
 from pipeline.domain import SECTIONS_METADATA
-from pipeline.tts import (
-    DEFAULT_CHUNK_GAP_PARAGRAPH_MS,
-    DEFAULT_CHUNK_GAP_SENTENCE_MS,
-    validate_gap_ms,
-)
+from pipeline.tts import validate_gap_ms
 
 logger = get_logger(__name__)
 
@@ -110,16 +106,15 @@ class PipelineConfig:
         self.openai_tts_settings = tts.get("openai", {})
         self.gemini_tts_settings = tts.get("gemini", {})
 
-        # Silence inserted between synthesized chunks (ms). Optional; 0 and 0 disables
-        # the feature (chunks are stream-copied together exactly as before).
-        self.tts_chunk_gap_paragraph_ms = validate_gap_ms(
-            tts.get("chunk_gap_paragraph_ms", DEFAULT_CHUNK_GAP_PARAGRAPH_MS),
-            "tts.chunk_gap_paragraph_ms",
-        )
-        self.tts_chunk_gap_sentence_ms = validate_gap_ms(
-            tts.get("chunk_gap_sentence_ms", DEFAULT_CHUNK_GAP_SENTENCE_MS),
-            "tts.chunk_gap_sentence_ms",
-        )
+        # Silence inserted between synthesized chunks (ms). Required: config.yaml is the
+        # single source of truth. Set both to 0 to disable (chunks are stream-copied).
+        for key, attr in (
+            ("chunk_gap_paragraph_ms", "tts_chunk_gap_paragraph_ms"),
+            ("chunk_gap_sentence_ms", "tts_chunk_gap_sentence_ms"),
+        ):
+            if tts.get(key) is None:
+                raise ValueError(f"Missing required configuration parameter '{key}' under 'tts' in config.yaml.")
+            setattr(self, attr, validate_gap_ms(tts[key], f"tts.{key}"))
         
         # Validation for Gemini TTS settings (no hardcoded defaults allowed in pipeline)
         if self.tts_engine == "gemini":
