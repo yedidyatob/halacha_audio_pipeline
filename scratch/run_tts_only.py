@@ -53,7 +53,9 @@ def main():
         model_id=el_settings["model_id"],
         stability=el_settings["stability"],
         similarity_boost=el_settings["similarity_boost"],
-        ssl_verify=config.ssl_verify
+        ssl_verify=config.ssl_verify,
+        chunk_gap_paragraph_ms=config.tts_chunk_gap_paragraph_ms,
+        chunk_gap_sentence_ms=config.tts_chunk_gap_sentence_ms,
     )
     logger.info(f"Using ElevenLabs voice ID: {voice_id}")
 
