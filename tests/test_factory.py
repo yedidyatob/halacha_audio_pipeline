@@ -12,6 +12,7 @@ def test_create_generator_engine_gemini(mock_client, tmp_path):
     config.gemini_api_key = "fake-key"
     config.gemini_model_name = "gemini-3.5-flash"
     config.gemini_temperature = 0.3
+    config.ssl_verify = True
     
     engine = create_generator_engine(config)
     assert isinstance(engine, GeminiScriptGenerator)
@@ -25,6 +26,7 @@ def test_create_generator_engine_openai(mock_client, tmp_path):
     config.openai_model_name = "gpt-4o"
     config.openai_temperature = 0.7
     config.openai_service_tier = "flex"
+    config.ssl_verify = True
     
     engine = create_generator_engine(config)
     assert isinstance(engine, OpenAIScriptGenerator)
