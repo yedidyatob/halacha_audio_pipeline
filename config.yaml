@@ -133,7 +133,16 @@ relations_instruction: |
 # TTS Engine Selection and Settings
 tts:
   engine: "elevenlabs"  # "elevenlabs", "google", "openai", or "gemini"
-  
+
+  # Silence (ms) inserted between synthesized chunks of a long script, so the stitch
+  # points don't sound like abrupt cuts. Applies to all engines.
+  #   chunk_gap_paragraph_ms: pause where a chunk ended at a paragraph boundary
+  #   chunk_gap_sentence_ms:  pause where a chunk was cut mid-paragraph (sentence/word split)
+  # Set both to 0 to disable (chunks are joined losslessly with no added silence).
+  # With any gap > 0 the final MP3 is re-encoded once (128 kbps, 44.1 kHz).
+  chunk_gap_paragraph_ms: 700
+  chunk_gap_sentence_ms: 300
+
   gemini:
     model_name: "gemini-3.1-flash-tts-preview"
     voice_name: "Achird" # Options: Puck, Charon, Kore, Fenrir, Aoede, Achird

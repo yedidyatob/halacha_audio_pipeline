@@ -142,6 +142,8 @@ generator:
 ```yaml
 tts:
   engine: "gemini"  # "elevenlabs", "google", "openai", or "gemini"
+  chunk_gap_paragraph_ms: 700  # silence between TTS chunks split at a paragraph (0 = none)
+  chunk_gap_sentence_ms: 300   # silence between TTS chunks split mid-paragraph (0 = none)
   
   gemini:
     voice_name: "Achird"  # Achird, Puck, Charon, Kore, Fenrir, Aoede

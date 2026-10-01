@@ -13,6 +13,9 @@ sefaria:
   base_url: "https://www.sefaria.org/api"
 generator:
   engine: "gemini"
+tts:
+  chunk_gap_paragraph_ms: 700
+  chunk_gap_sentence_ms: 300
 """
     with patch("builtins.open", mock_open(read_data=yaml_content)), \
          patch("os.path.exists", return_value=True), \
@@ -31,6 +34,9 @@ sefaria:
   ssl_verify: false
 generator:
   engine: "gemini"
+tts:
+  chunk_gap_paragraph_ms: 700
+  chunk_gap_sentence_ms: 300
 """
     with patch("builtins.open", mock_open(read_data=yaml_content)), \
          patch("os.path.exists", return_value=True), \
@@ -48,6 +54,9 @@ polishing_instruction: "Including {{commentators_list_short}} and {{tts_abbrevia
 relations_instruction: "In {{hebrew_name}} with {{prompt_commentators_desc}}"
 generator:
   engine: "gemini"
+tts:
+  chunk_gap_paragraph_ms: 700
+  chunk_gap_sentence_ms: 300
 """
 
     # Test Yoreh De'ah

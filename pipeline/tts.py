@@ -7,6 +7,45 @@ from openai import OpenAI
 
 logger = get_logger(__name__)
 
+# Break types describing how a text chunk ENDS (i.e. the kind of boundary that
+# follows it in the final audio).
+BREAK_PARAGRAPH = "paragraph"  # chunk ended at a paragraph boundary
+BREAK_SENTENCE = "sentence"    # chunk was cut mid-paragraph (sentence or word split)
+
+# Gemini returns raw 24 kHz, 16-bit, mono LINEAR16 PCM.
+_GEMINI_PCM_SAMPLE_RATE = 24000
+_GEMINI_PCM_BYTES_PER_SAMPLE = 2
+
+# Sample rate / layout of the re-encoded MP3 produced when gaps are inserted.
+_MERGE_SAMPLE_RATE = 44100
+_MERGE_BITRATE = "128k"
+
+
+def validate_gap_ms(value, name: str = "chunk gap") -> int:
+    """Returns `value` as a non-negative int number of milliseconds, or raises ValueError."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a non-negative number of milliseconds, got {value!r}.")
+    if value < 0 or value != value or value == float("inf"):
+        raise ValueError(f"{name} must be a non-negative number of milliseconds, got {value!r}.")
+    return int(round(value))
+
+
+def plan_gaps(break_types: list, paragraph_ms: int, sentence_ms: int) -> list:
+    """
+    Pure helper: maps the break type of each chunk to the silence (ms) to insert after it.
+
+    `break_types[i]` describes how chunk i ends, so the returned list has
+    len(break_types) - 1 entries: entry i is the gap between chunk i and chunk i+1.
+    The last chunk's break type is irrelevant (nothing follows it).
+    """
+    durations = {BREAK_PARAGRAPH: paragraph_ms, BREAK_SENTENCE: sentence_ms}
+    gaps = []
+    for break_type in break_types[:-1]:
+        if break_type not in durations:
+            raise ValueError(f"Unknown chunk break type: {break_type!r}")
+        gaps.append(durations[break_type])
+    return gaps
+
 
 class BaseTTS(ABC):
     """
@@ -18,6 +57,21 @@ class BaseTTS(ABC):
     Subclasses with a fundamentally different encoding pipeline (e.g. GeminiTTS,
     which accumulates PCM and encodes at the end) should override synthesize() directly.
     """
+
+    # Silence (ms) inserted between chunks, by how the preceding chunk ended.
+    # The values come from config.yaml (tts.chunk_gap_*_ms); there are no defaults here.
+    # 0 and 0 means "no silence": chunks are joined with a lossless stream copy.
+    chunk_gap_paragraph_ms: int
+    chunk_gap_sentence_ms: int
+
+    def _set_chunk_gaps(self, paragraph_ms: int, sentence_ms: int) -> None:
+        """Validates and stores the inter-chunk gap settings."""
+        self.chunk_gap_paragraph_ms = validate_gap_ms(paragraph_ms, "chunk_gap_paragraph_ms")
+        self.chunk_gap_sentence_ms = validate_gap_ms(sentence_ms, "chunk_gap_sentence_ms")
+
+    def _plan_gaps(self, break_types: list) -> list:
+        """Silence (ms) to insert between consecutive chunks, per this engine's settings."""
+        return plan_gaps(break_types, self.chunk_gap_paragraph_ms, self.chunk_gap_sentence_ms)
 
     @property
     def file_extension(self) -> str:
@@ -49,11 +103,15 @@ class BaseTTS(ABC):
         Template Method: chunks text, synthesizes each chunk, and writes the final file.
 
         For a single chunk the bytes are written directly.
-        For multiple chunks each chunk is written to a temp file, then merged via
-        pydub to avoid truncated-tail artifacts from raw MP3 byte concatenation.
+        For multiple chunks each chunk is written to a temp file, then merged with
+        ffmpeg (see _merge_audio_chunks) to avoid truncated-tail artifacts from raw
+        MP3 byte concatenation.  Silence is inserted between chunks according to
+        chunk_gap_paragraph_ms / chunk_gap_sentence_ms.
         """
         self._setup()
-        text_chunks = self._chunk_text(text, max_chars=self._chunk_size)
+        chunks_with_breaks = self._chunk_text_with_breaks(text, max_chars=self._chunk_size)
+        text_chunks = [chunk for chunk, _ in chunks_with_breaks]
+        gaps_ms = self._plan_gaps([break_type for _, break_type in chunks_with_breaks])
         logger.info(
             f"Text length {len(text)} split into {len(text_chunks)} chunk(s) for synthesis."
         )
@@ -77,39 +135,57 @@ class BaseTTS(ABC):
                         f.write(audio_bytes)
                     chunk_paths.append(chunk_path)
 
-                self._merge_audio_chunks(chunk_paths, output_path)
+                self._merge_audio_chunks(chunk_paths, output_path, gaps_ms=gaps_ms)
 
     def _chunk_text(self, text: str, max_chars: int = 4000) -> list:
         """
         Splits text into chunks of at most max_chars, splitting on paragraph or sentence boundaries.
+        Returns only the chunk strings; see _chunk_text_with_breaks for break types.
+        """
+        return [chunk for chunk, _ in self._chunk_text_with_breaks(text, max_chars)]
+
+    def _chunk_text_with_breaks(self, text: str, max_chars: int = 4000) -> list:
+        """
+        Like _chunk_text, but returns a list of (chunk, break_type) tuples.
+
+        break_type describes how the chunk ENDS, i.e. the boundary that follows it:
+          - BREAK_PARAGRAPH ("paragraph"): the chunk ended at a paragraph boundary.
+          - BREAK_SENTENCE  ("sentence"):  the chunk was cut in the middle of a paragraph
+            (at a sentence end, or between words of an over-long sentence).
+        The last chunk's break type is never used; it is reported as "paragraph".
+        Empty chunks are never emitted.
         """
         if len(text) <= max_chars:
-            return [text]
+            return [(text, BREAK_PARAGRAPH)]
 
-        paragraphs = text.split("\n")
-        chunks = []
-        current_chunk = []
+        chunks: list = []
+        current_chunk: list = []
         current_length = 0
 
-        for para in paragraphs:
+        def flush(break_type: str) -> None:
+            nonlocal current_chunk, current_length
+            joined = "\n\n".join(current_chunk)
+            if joined.strip():  # never emit an empty chunk
+                chunks.append((joined, break_type))
+            current_chunk = []
+            current_length = 0
+
+        for para in text.split("\n"):
             para = para.strip()
             if not para:
                 continue
             if len(para) > max_chars:
-                # Flush existing chunk
-                if current_chunk:
-                    chunks.append("\n\n".join(current_chunk))
-                    current_chunk = []
-                    current_length = 0
+                # A new paragraph starts: whatever is pending ends at a paragraph boundary.
+                flush(BREAK_PARAGRAPH)
 
-                # Split by punctuation
+                # Split by punctuation; every cut inside this paragraph is a "sentence" break.
                 sentences = re.split(r'(?<=[.!?])\s+', para)
                 for sentence in sentences:
                     if len(sentence) > max_chars:
                         words = sentence.split(" ")
                         for word in words:
                             if current_length + len(word) + 1 > max_chars:
-                                chunks.append("\n\n".join(current_chunk))
+                                flush(BREAK_SENTENCE)
                                 current_chunk = [word]
                                 current_length = len(word)
                             else:
@@ -117,7 +193,7 @@ class BaseTTS(ABC):
                                 current_length += len(word) + 1
                     else:
                         if current_length + len(sentence) + 1 > max_chars:
-                            chunks.append("\n\n".join(current_chunk))
+                            flush(BREAK_SENTENCE)
                             current_chunk = [sentence]
                             current_length = len(sentence)
                         else:
@@ -125,28 +201,126 @@ class BaseTTS(ABC):
                             current_length += len(sentence) + 1
             else:
                 if current_length + len(para) + 2 > max_chars:
-                    chunks.append("\n\n".join(current_chunk))
+                    flush(BREAK_PARAGRAPH)
                     current_chunk = [para]
                     current_length = len(para)
                 else:
                     current_chunk.append(para)
                     current_length += len(para) + 2
 
-        if current_chunk:
-            chunks.append("\n\n".join(current_chunk))
+        flush(BREAK_PARAGRAPH)
 
         return chunks
 
-    def _merge_audio_chunks(self, chunk_paths: list[str], output_path: str) -> None:
+    def _merge_audio_chunks(
+        self, chunk_paths: list[str], output_path: str, gaps_ms: list = None
+    ) -> None:
         """
-        Merges a list of MP3 chunk files into a single MP3 using ffmpeg's concat protocol.
-        This avoids the truncated-tail bug caused by raw byte concatenation, where
-        each MP3 encoder holds back the last few frames in its internal buffer and
-        never flushes them when bytes are appended directly.
+        Merges a list of MP3 chunk files into a single MP3 using ffmpeg.
+
+        gaps_ms: optional list of len(chunk_paths) - 1 silence durations (ms);
+        gaps_ms[i] is inserted between chunk i and chunk i+1.
+
+        - No gaps (None, or all zero): ffmpeg's concat demuxer with stream copy.  This
+          avoids the truncated-tail bug caused by raw byte concatenation, where each MP3
+          encoder holds back the last few frames in its internal buffer and never flushes
+          them when bytes are appended directly.
+        - Any gap > 0: a single ffmpeg pass builds the output with the concat *filter*,
+          interleaving generated silence, and re-encodes once (libmp3lame, 128k, 44.1 kHz).
 
         Uses imageio-ffmpeg's bundled binary so no system-wide ffmpeg install is needed.
         Bypasses pydub entirely to avoid ffprobe compatibility issues on Windows.
         """
+        if gaps_ms is not None and len(gaps_ms) != max(len(chunk_paths) - 1, 0):
+            raise ValueError(
+                f"Expected {max(len(chunk_paths) - 1, 0)} gap value(s) for "
+                f"{len(chunk_paths)} chunk(s), got {len(gaps_ms)}."
+            )
+
+        if gaps_ms and any(gaps_ms):
+            self._merge_with_gaps(chunk_paths, output_path, gaps_ms)
+        else:
+            self._merge_stream_copy(chunk_paths, output_path)
+
+    @staticmethod
+    def _build_gap_filter_graph(gaps_ms: list) -> str:
+        """
+        Builds the ffmpeg filter_complex graph that joins len(gaps_ms) + 1 audio inputs
+        (input index i = chunk i) with silence of gaps_ms[i] between chunk i and i+1.
+
+        Every chunk is normalized to 44.1 kHz / mono / fltp and every silence segment is
+        generated in the same format, so the concat filter always sees matching streams
+        regardless of the engine's native MP3 sample rate (e.g. 24 kHz from Google/OpenAI).
+        """
+        fmt = "aformat=sample_fmts=fltp:channel_layouts=mono"
+        lines = []
+        labels = []
+        n_chunks = len(gaps_ms) + 1
+        for i in range(n_chunks):
+            lines.append(f"[{i}:a]aresample={_MERGE_SAMPLE_RATE},{fmt},asetpts=PTS-STARTPTS[a{i}]")
+            labels.append(f"[a{i}]")
+            if i < len(gaps_ms) and gaps_ms[i] > 0:
+                lines.append(
+                    f"anullsrc=r={_MERGE_SAMPLE_RATE}:cl=mono,"
+                    f"atrim=duration={gaps_ms[i] / 1000:.3f},asetpts=PTS-STARTPTS,{fmt}[s{i}]"
+                )
+                labels.append(f"[s{i}]")
+        lines.append("".join(labels) + f"concat=n={len(labels)}:v=0:a=1[out]")
+        return ";\n".join(lines) + "\n"
+
+    def _merge_with_gaps(self, chunk_paths: list[str], output_path: str, gaps_ms: list) -> None:
+        try:
+            import imageio_ffmpeg
+            import subprocess
+            import tempfile
+        except ImportError:
+            logger.error("imageio-ffmpeg is required. Install with: pip install imageio-ffmpeg")
+            raise
+
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        graph = self._build_gap_filter_graph(gaps_ms)
+
+        # The graph goes in a file (not the command line) so long chunk lists can't hit
+        # the OS command-length limit (notably on Windows).
+        with tempfile.NamedTemporaryFile(
+            mode='w', suffix='.txt', delete=False, encoding='utf-8'
+        ) as f:
+            script_file = f.name
+            f.write(graph)
+
+        cmd = [ffmpeg_exe, '-y', '-nostdin']
+        for path in chunk_paths:
+            cmd += ['-i', os.path.abspath(path)]
+        cmd += [
+            '-filter_complex_script', script_file,
+            '-map', '[out]',
+            '-c:a', 'libmp3lame',
+            '-b:a', _MERGE_BITRATE,
+            '-ar', str(_MERGE_SAMPLE_RATE),
+            '-ac', '1',
+            output_path,
+        ]
+
+        try:
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            subprocess.run(
+                cmd,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            logger.info(
+                f"Merged {len(chunk_paths)} audio chunk(s) with inter-chunk silence "
+                f"({sum(gaps_ms)} ms total) into {output_path}"
+            )
+        except subprocess.CalledProcessError as e:
+            logger.error(f"ffmpeg merge with gaps failed: {e.stderr}")
+            raise
+        finally:
+            os.unlink(script_file)
+
+    def _merge_stream_copy(self, chunk_paths: list[str], output_path: str) -> None:
         try:
             import imageio_ffmpeg
             import subprocess
@@ -210,7 +384,11 @@ class ElevenLabsTTS(BaseTTS):
         stability: float = None,
         similarity_boost: float = None,
         ssl_verify: bool = True,
+        *,
+        chunk_gap_paragraph_ms: int,
+        chunk_gap_sentence_ms: int,
     ):
+        self._set_chunk_gaps(chunk_gap_paragraph_ms, chunk_gap_sentence_ms)
         self.api_key = api_key or os.environ.get("ELEVENLABS_API_KEY")
         if not self.api_key:
             logger.warning(
@@ -277,7 +455,11 @@ class GoogleCloudTTS(BaseTTS):
         language_code: str = "he-IL",
         speaking_rate: float = 1.0,
         pitch: float = 0.0,
+        *,
+        chunk_gap_paragraph_ms: int,
+        chunk_gap_sentence_ms: int,
     ):
+        self._set_chunk_gaps(chunk_gap_paragraph_ms, chunk_gap_sentence_ms)
         if credentials_path:
             os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_path
 
@@ -345,7 +527,11 @@ class OpenAITTS(BaseTTS):
         model: str = "tts-1",
         speed: float = 1.0,
         ssl_verify: bool = True,
+        *,
+        chunk_gap_paragraph_ms: int,
+        chunk_gap_sentence_ms: int,
     ):
+        self._set_chunk_gaps(chunk_gap_paragraph_ms, chunk_gap_sentence_ms)
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         if not self.api_key:
             logger.warning(
@@ -406,7 +592,11 @@ class GeminiTTS(BaseTTS):
         model_id: str,
         voice_name: str,
         api_key: str = None,
+        *,
+        chunk_gap_paragraph_ms: int,
+        chunk_gap_sentence_ms: int,
     ):
+        self._set_chunk_gaps(chunk_gap_paragraph_ms, chunk_gap_sentence_ms)
         self.model_id = model_id
         self.voice_name = voice_name
 
@@ -430,6 +620,22 @@ class GeminiTTS(BaseTTS):
         """Not used — GeminiTTS overrides synthesize() to do PCM accumulation."""
         raise NotImplementedError("GeminiTTS uses a custom synthesize() flow.")
 
+    @staticmethod
+    def _silence_pcm(gap_ms: int) -> bytes:
+        """Zero-filled 24 kHz / 16-bit / mono PCM of (about) gap_ms; always an even byte count."""
+        n_bytes = gap_ms * _GEMINI_PCM_SAMPLE_RATE * _GEMINI_PCM_BYTES_PER_SAMPLE // 1000
+        n_bytes -= n_bytes % _GEMINI_PCM_BYTES_PER_SAMPLE
+        return bytes(n_bytes)
+
+    def _assemble_pcm(self, pcm_chunks: list, gaps_ms: list) -> bytes:
+        """Joins per-chunk PCM, inserting gaps_ms[i] of digital silence after chunk i."""
+        parts = []
+        for i, pcm in enumerate(pcm_chunks):
+            parts.append(pcm)
+            if i < len(gaps_ms) and gaps_ms[i] > 0:
+                parts.append(self._silence_pcm(gaps_ms[i]))
+        return b"".join(parts)
+
     def synthesize(self, text: str, output_path: str) -> None:
         logger.info(
             f"Synthesizing audio via Gemini GCP TTS (Model: {self.model_id}, Voice: {self.voice_name})..."
@@ -448,7 +654,9 @@ class GeminiTTS(BaseTTS):
             self.credentials.refresh(Request())
             token = self.credentials.token
 
-            text_chunks = self._chunk_text(text, max_chars=self._chunk_size)
+            chunks_with_breaks = self._chunk_text_with_breaks(text, max_chars=self._chunk_size)
+            text_chunks = [chunk for chunk, _ in chunks_with_breaks]
+            gaps_ms = self._plan_gaps([break_type for _, break_type in chunks_with_breaks])
             logger.info(
                 f"Text length {len(text)} split into {len(text_chunks)} chunk(s) for Gemini TTS."
             )
@@ -464,7 +672,7 @@ class GeminiTTS(BaseTTS):
 
             # Accumulate all PCM before encoding so lameenc can produce a single
             # gapless MP3 stream rather than spliced per-chunk files.
-            all_pcm_data = b""
+            pcm_chunks = []
             for idx, chunk in enumerate(text_chunks, 1):
                 logger.info(
                     f"Generating audio for chunk {idx}/{len(text_chunks)} ({len(chunk)} chars)..."
@@ -500,7 +708,10 @@ class GeminiTTS(BaseTTS):
                 if not audio_content:
                     raise ValueError("No audioContent returned by GCP API.")
 
-                all_pcm_data += base64.b64decode(audio_content)
+                pcm_chunks.append(base64.b64decode(audio_content))
+
+            # Silence between chunks is inserted as zero samples (per break type).
+            all_pcm_data = self._assemble_pcm(pcm_chunks, gaps_ms)
 
             logger.info("Encoding raw PCM to MP3 using lameenc...")
             encoder = lameenc.Encoder()

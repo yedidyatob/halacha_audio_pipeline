@@ -39,7 +39,9 @@ def main():
     tts_engine = GeminiTTS(
         model_id=config.gemini_tts_model,
         voice_name=config.gemini_tts_voice,
-        api_key=config.gemini_api_key
+        api_key=config.gemini_api_key,
+        chunk_gap_paragraph_ms=config.tts_chunk_gap_paragraph_ms,
+        chunk_gap_sentence_ms=config.tts_chunk_gap_sentence_ms,
     )
 
     output_dir = os.path.join(os.path.dirname(__file__), '..', 'output', 'test_audio')

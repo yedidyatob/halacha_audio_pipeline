@@ -40,6 +40,8 @@ def test_create_generator_engine_invalid():
 def test_create_tts_engine_elevenlabs(mock_elevenlabs):
     config = MagicMock(spec=PipelineConfig)
     config.tts_engine = "elevenlabs"
+    config.tts_chunk_gap_paragraph_ms = 700
+    config.tts_chunk_gap_sentence_ms = 300
     config.elevenlabs_api_key = "fake-key"
     config.elevenlabs_settings = {
         "voice_id": "Adam",
@@ -57,6 +59,8 @@ def test_create_tts_engine_elevenlabs(mock_elevenlabs):
 def test_create_tts_engine_google(mock_google):
     config = MagicMock(spec=PipelineConfig)
     config.tts_engine = "google"
+    config.tts_chunk_gap_paragraph_ms = 700
+    config.tts_chunk_gap_sentence_ms = 300
     config.google_tts_credentials = "fake_creds.json"
     config.google_tts_settings = {
         "voice_name": "he-IL-Neural2-M",
@@ -73,6 +77,8 @@ def test_create_tts_engine_google(mock_google):
 def test_create_tts_engine_openai(mock_openai):
     config = MagicMock(spec=PipelineConfig)
     config.tts_engine = "openai"
+    config.tts_chunk_gap_paragraph_ms = 700
+    config.tts_chunk_gap_sentence_ms = 300
     config.openai_api_key = "fake-key"
     config.openai_tts_settings = {
         "voice": "alloy",
@@ -88,5 +94,7 @@ def test_create_tts_engine_openai(mock_openai):
 def test_create_tts_engine_invalid():
     config = MagicMock(spec=PipelineConfig)
     config.tts_engine = "invalid_tts"
+    config.tts_chunk_gap_paragraph_ms = 700
+    config.tts_chunk_gap_sentence_ms = 300
     with pytest.raises(ValueError, match="Unsupported TTS engine"):
         create_tts_engine(config)

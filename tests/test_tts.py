@@ -114,7 +114,7 @@ def test_elevenlabs_tts_single_chunk(mock_elevenlabs_cls, tmp_path):
     mock_elevenlabs_cls.return_value = mock_client
     mock_client.text_to_speech.convert.return_value = [b"audio_chunk_1", b"audio_chunk_2"]
 
-    tts = ElevenLabsTTS(api_key="fake-key", voice_id="Adam", model_id="eleven_v3", stability=0.5, similarity_boost=0.75)
+    tts = ElevenLabsTTS(api_key="fake-key", voice_id="Adam", model_id="eleven_v3", stability=0.5, similarity_boost=0.75, chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=0)
     output_file = str(tmp_path / "test_output.mp3")
 
     tts.synthesize("טקסט קצר", output_file)
@@ -142,7 +142,7 @@ def test_elevenlabs_tts_multi_chunk_calls_merge(mock_elevenlabs_cls, tmp_path):
     mock_elevenlabs_cls.return_value = mock_client
     mock_client.text_to_speech.convert.return_value = [_make_real_mp3()]
 
-    tts = ElevenLabsTTS(api_key="fake-key", voice_id="Adam", model_id="eleven_v3", stability=0.5, similarity_boost=0.75)
+    tts = ElevenLabsTTS(api_key="fake-key", voice_id="Adam", model_id="eleven_v3", stability=0.5, similarity_boost=0.75, chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=0)
     output_file = str(tmp_path / "multi_chunk.mp3")
 
     # Two paragraphs each just over 1500 chars → forces 2 chunks
@@ -168,7 +168,7 @@ def test_google_cloud_tts_single_chunk(mock_gtts_cls, tmp_path):
     mock_response.audio_content = b"google_tts_bytes"
     mock_client.synthesize_speech.return_value = mock_response
 
-    tts = GoogleCloudTTS(credentials_path="fake_creds.json", voice_name="he-IL-Neural2-F")
+    tts = GoogleCloudTTS(credentials_path="fake_creds.json", voice_name="he-IL-Neural2-F", chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=0)
     output_file = str(tmp_path / "google_output.mp3")
 
     tts.synthesize("שלום עולם", output_file)
@@ -187,7 +187,7 @@ def test_google_cloud_tts_multi_chunk_calls_merge(mock_gtts_cls, tmp_path):
     mock_response.audio_content = _make_real_mp3()
     mock_client.synthesize_speech.return_value = mock_response
 
-    tts = GoogleCloudTTS(credentials_path="fake_creds.json", voice_name="he-IL-Neural2-F")
+    tts = GoogleCloudTTS(credentials_path="fake_creds.json", voice_name="he-IL-Neural2-F", chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=0)
     output_file = str(tmp_path / "google_chunked.mp3")
 
     long_text = ("א" * 1200) + "\n" + ("ב" * 1200)
@@ -211,7 +211,7 @@ def test_openai_tts_single_chunk(mock_openai_cls, tmp_path):
     mock_response.content = b"openai_tts_bytes"
     mock_client.audio.speech.create.return_value = mock_response
 
-    tts = OpenAITTS(api_key="fake-key", voice="alloy", model="tts-1", speed=1.0)
+    tts = OpenAITTS(api_key="fake-key", voice="alloy", model="tts-1", speed=1.0, chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=0)
     output_file = str(tmp_path / "openai_output.mp3")
 
     tts.synthesize("טקסט הלכה", output_file)
@@ -235,7 +235,7 @@ def test_openai_tts_multi_chunk_calls_merge(mock_openai_cls, tmp_path):
     mock_response.content = _make_real_mp3()
     mock_client.audio.speech.create.return_value = mock_response
 
-    tts = OpenAITTS(api_key="fake-key", voice="alloy")
+    tts = OpenAITTS(api_key="fake-key", voice="alloy", chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=0)
     output_file = str(tmp_path / "openai_chunked.mp3")
 
     long_text = ("א" * 2200) + "\n" + ("ב" * 2200)

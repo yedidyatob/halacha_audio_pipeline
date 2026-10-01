@@ -28,7 +28,9 @@ def main():
     # Use GoogleCloudTTS with the requested voice
     tts_engine = GoogleCloudTTS(
         voice_name="he-IL-Wavenet-D",
-        language_code="he-IL"
+        language_code="he-IL",
+        chunk_gap_paragraph_ms=0,  # scratch script: no silence between chunks
+        chunk_gap_sentence_ms=0,
     )
     
     print(f"Synthesizing to {output_audio_path}...")
