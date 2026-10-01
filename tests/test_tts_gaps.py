@@ -145,9 +145,9 @@ def test_validate_gap_ms():
             validate_gap_ms(bad)
 
 
-def test_engine_defaults_and_explicit_gaps():
-    assert ElevenLabsTTS(api_key="k").chunk_gap_paragraph_ms == 700
-    assert ElevenLabsTTS(api_key="k").chunk_gap_sentence_ms == 300
+def test_engine_explicit_gaps():
+    e = ElevenLabsTTS(api_key="k", chunk_gap_paragraph_ms=700, chunk_gap_sentence_ms=300)
+    assert (e.chunk_gap_paragraph_ms, e.chunk_gap_sentence_ms) == (700, 300)
     o = OpenAITTS(api_key="k", chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=50)
     assert (o.chunk_gap_paragraph_ms, o.chunk_gap_sentence_ms) == (0, 50)
     g = GoogleCloudTTS(chunk_gap_paragraph_ms=10, chunk_gap_sentence_ms=20)
@@ -156,7 +156,21 @@ def test_engine_defaults_and_explicit_gaps():
         gem = GeminiTTS("m", "v", chunk_gap_paragraph_ms=11, chunk_gap_sentence_ms=22)
     assert (gem.chunk_gap_paragraph_ms, gem.chunk_gap_sentence_ms) == (11, 22)
     with pytest.raises(ValueError):
-        OpenAITTS(api_key="k", chunk_gap_paragraph_ms=-5)
+        OpenAITTS(api_key="k", chunk_gap_paragraph_ms=-5, chunk_gap_sentence_ms=0)
+
+
+def test_engines_require_gap_arguments():
+    """No numeric fallback in code: omitting the gap values is a TypeError."""
+    with pytest.raises(TypeError):
+        ElevenLabsTTS(api_key="k")
+    with pytest.raises(TypeError):
+        OpenAITTS(api_key="k")
+    with pytest.raises(TypeError):
+        GoogleCloudTTS()
+    with pytest.raises(TypeError):
+        GeminiTTS("m", "v")
+    with pytest.raises(ValueError):
+        OpenAITTS(api_key="k", chunk_gap_paragraph_ms=None, chunk_gap_sentence_ms=0)
 
 
 # ---------------------------------------------------------------------------
@@ -170,10 +184,18 @@ def _load_config(yaml_content: str) -> PipelineConfig:
         return PipelineConfig("config.yaml")
 
 
-def test_config_chunk_gap_defaults_when_missing():
-    config = _load_config('halachic_section: "Yoreh De\'ah"\ngenerator:\n  engine: "gemini"\n')
-    assert config.tts_chunk_gap_paragraph_ms == 700
-    assert config.tts_chunk_gap_sentence_ms == 300
+@pytest.mark.parametrize("missing", ["chunk_gap_paragraph_ms", "chunk_gap_sentence_ms"])
+def test_config_chunk_gap_missing_raises_clear_error(missing):
+    keys = {"chunk_gap_paragraph_ms": 700, "chunk_gap_sentence_ms": 300}
+    del keys[missing]
+    lines = "".join(f"  {k}: {v}\n" for k, v in keys.items())
+    with pytest.raises(ValueError, match=missing):
+        _load_config('halachic_section: "Yoreh De\'ah"\ntts:\n  engine: "openai"\n' + lines)
+
+
+def test_config_chunk_gap_missing_tts_section_raises():
+    with pytest.raises(ValueError, match="chunk_gap_paragraph_ms"):
+        _load_config('halachic_section: "Yoreh De\'ah"\n')
 
 
 def test_config_chunk_gap_explicit_values():
@@ -188,7 +210,7 @@ def test_config_chunk_gap_explicit_values():
 def test_config_chunk_gap_invalid_raises():
     with pytest.raises(ValueError):
         _load_config(
-            'halachic_section: "Yoreh De\'ah"\ntts:\n  chunk_gap_paragraph_ms: -10\n'
+            'halachic_section: "Yoreh De\'ah"\ntts:\n  chunk_gap_paragraph_ms: -10\n  chunk_gap_sentence_ms: 0\n'
         )
 
 
@@ -244,7 +266,7 @@ def test_gemini_silence_pcm_length_and_even():
 
 def test_gemini_assemble_pcm_inserts_gaps():
     with patch("google.auth.default", side_effect=Exception("no creds")):
-        gem = GeminiTTS("m", "v")
+        gem = GeminiTTS("m", "v", chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=0)
     out = gem._assemble_pcm([b"\x01\x01", b"\x02\x02", b"\x03\x03"], [1000, 0])
     assert out == b"\x01\x01" + bytes(48000) + b"\x02\x02" + b"\x03\x03"
     assert gem._assemble_pcm([b"\x01\x01"], []) == b"\x01\x01"
