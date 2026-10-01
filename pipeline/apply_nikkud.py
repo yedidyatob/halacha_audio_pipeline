@@ -2,29 +2,45 @@
 Nikkud / pronunciation fixes for TTS.
 
 - RABBINIC_NIKKUD_DICT: fixed mappings for rabbinic abbreviations and terms.
-- additional_nikkud_corrections: list of (plain, nikkuded) pairs that are expanded
-  with common Hebrew prefixes and surrounding space/punctuation into the mapper.
+  These may carry a Hebrew prefix (הרמב"ם, ברמב"ם, מהרמב"ם ...), which is preserved.
+- NO_PREFIX_NIKKUD_DICT: standalone words (the letter names הא / פא / צדי) that are
+  only replaced as a whole word, never with a prefix.
+- additional_nikkud_corrections: list of (plain, nikkuded) pairs; prefixes allowed.
+
+Matching is done with ONE compiled regex (see ``_build_matcher``) using word-boundary
+lookarounds, so replacements work at the start/end of the text or a line, next to
+punctuation, brackets, quotes and hyphens, but never inside a longer word.
 """
 
 from __future__ import annotations
 
-from typing import Iterable, Sequence
+import re
+from functools import lru_cache
+from typing import Callable, Iterable, Sequence
 
 # ---------------------------------------------------------------------------
 # Boundary + prefix expansion helpers
+#
+# Legacy string-expansion helpers (kept importable). apply_nikkud_to_abbreviations no
+# longer uses them: it matches with a boundary-aware regex instead (see below).
 # ---------------------------------------------------------------------------
 
+# Single source of truth for the Hebrew prefixes that may precede a replaced word.
+# The prefix is kept as-is in the output (prefix + nikkuded replacement).
+# The empty string stands for "no prefix" (used by the legacy expansion helpers below;
+# the regex matcher treats the prefix as optional and skips it).
 DEFAULT_PREFIXES: tuple[str, ...] = (
     "",  # bare word
-    "ב",
-    "מ",
-    "כ",
-    "ו",
-    "ה",
-    "מה",
-    "ל",
-    "וב",
-    "וה"
+    # single letters
+    "ו", "ה", "ב", "כ", "ל", "מ", "ש",
+    # two letters
+    "וב", "וה", "וכ", "ול", "ומ", "וש",
+    "מה", "מש",
+    "שה", "שב", "שכ", "של", "שמ",
+    "לה", "בה", "כה", "כש",
+    # three+ letters
+    "ומה", "ומש", "ושה", "ושב", "ושל", "ושמ",
+    "ולה", "ובה", "וכה", "וכש", "כשה", "ולכ", "ולכש", "וכשה",
 )
 
 DEFAULT_TRAILING_PUNCT: tuple[str, ...] = (
@@ -220,35 +236,141 @@ RABBINIC_NIKKUD_DICT = {
     'ע"פ': 'עַל פִּי',
     'אע"פ': 'אַף עַל פִּי',
     'שו"ת': 'שׁוּ"ת',
+}
 
-    # === Letters ===
-    " הא ": " הֵא ",
-    " פא ": " פֵּא ",
-    " צדי ": " צָדִי ",
+# Standalone words: replaced only as a whole word, never with a prefix
+# (a bare הא / פא / צדי is already risky; ב+הא etc. is meaningless).
+NO_PREFIX_NIKKUD_DICT = {
+    'הא': 'הֵא',
+    'פא': 'פֵּא',
+    'צדי': 'צָדִי',
 }
 
 
+# ---------------------------------------------------------------------------
+# Regex matcher
+# ---------------------------------------------------------------------------
+
+# "Word characters" for boundary purposes: Hebrew letters (U+05D0-05EA) and Hebrew
+# points / nikkud / cantillation marks (U+0591-05C7), EXCEPT the punctuation-like
+# maqaf (U+05BE), paseq (U+05C0) and sof pasuq (U+05C3), which act as separators
+# (so שפתי־כהן behaves like שפתי-כהן).
+_WORD_CHARS = "\u05D0-\u05EA\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4-\u05C7"
+
+# Quote-like characters that occur INSIDE abbreviations (רמב"ם, ג'): ASCII ", Hebrew
+# gershayim ״ (U+05F4), ASCII apostrophe ' and geresh ׳ (U+05F3).
+_QUOTE_CHARS = "\"\u05F4'\u05F3"
+
+# Boundary rule (applied to the whole match, prefix included):
+#   BEFORE: the match must not be preceded by a word char, and must not be preceded
+#           by <word char><quote> (a quote glued to the end of a previous letter is
+#           inside a word, e.g. ה"שפתי or the ר"ן inside הגר"ן).
+#           A quote preceded by a space / bracket / start of text is just a wrapping
+#           quote (e.g. "שפתי" or 'שפתי') and does NOT block the match.
+#   AFTER:  mirrored: not followed by a word char, and not followed by <quote><word char>.
+#           (שפתי" at the end of a quotation matches; שפתי"ם does not.)
+_BEFORE = f"(?<![{_WORD_CHARS}])(?<![{_WORD_CHARS}][{_QUOTE_CHARS}])"
+_AFTER = f"(?![{_WORD_CHARS}])(?![{_QUOTE_CHARS}][{_WORD_CHARS}])"
+
+_CANON_QUOTES = str.maketrans({"\u05F4": '"', "\u05F3": "'"})
+
+
+def _canon(key: str) -> str:
+    """Normalizes gershayim/geresh to ASCII " and ' so both forms hit the same entry."""
+    return key.translate(_CANON_QUOTES)
+
+
+def _key_to_regex(key: str) -> str:
+    """Escapes ``key`` for a regex, letting " match ״ as well and ' match ׳."""
+    out = []
+    for ch in _canon(key):
+        if ch == '"':
+            out.append('["\u05F4]')
+        elif ch == "'":
+            out.append("['\u05F3]")
+        else:
+            out.append(re.escape(ch))
+    return "".join(out)
+
+
+def _alternation(keys: Iterable[str]) -> str:
+    """Longest-first alternation, so a longer key always wins over one of its prefixes."""
+    ordered = sorted(set(keys), key=lambda k: (-len(k), k))
+    return "|".join(_key_to_regex(k) for k in ordered)
+
+
+@lru_cache(maxsize=None)
+def _build_matcher(
+    prefixable: tuple[tuple[str, str], ...],
+    standalone: tuple[tuple[str, str], ...],
+    prefixes: tuple[str, ...],
+) -> Callable[[str], str]:
+    """
+    Compiles ONE combined regex (cached) and returns a ``text -> text`` function.
+
+    At each position the regex first tries a bare key (any entry, longest first), and
+    only then ``prefix + key`` (prefixable entries only, longest prefix first, with
+    backtracking to shorter ones). So מהר"ם (an entry) is never read as מה+ר"ם, and
+    bare ב"ח is never double-prefixed, while הב"ח is ה + ב"ח.
+    """
+    replacements: dict[str, str] = {}
+    for plain, nikkuded in standalone:
+        replacements[_canon(plain)] = nikkuded
+    for plain, nikkuded in prefixable:  # prefixable entries win on a clash
+        replacements[_canon(plain)] = nikkuded
+    if not replacements:
+        return lambda text: text
+
+    prefix_keys = [_canon(p) for p, _ in prefixable]
+    prefix_list = sorted({p for p in prefixes if p}, key=lambda p: (-len(p), p))
+
+    alternatives = [f"(?P<bare>{_alternation(replacements)})"]
+    if prefix_keys and prefix_list:
+        pre = "|".join(re.escape(p) for p in prefix_list)
+        alternatives.append(f"(?P<pre>{pre})(?P<key>{_alternation(prefix_keys)})")
+    pattern = re.compile(_BEFORE + "(?:" + "|".join(alternatives) + ")" + _AFTER)
+
+    def _sub(match: re.Match) -> str:
+        bare = match.group("bare")
+        if bare is not None:
+            return replacements[_canon(bare)]
+        return match.group("pre") + replacements[_canon(match.group("key"))]
+
+    return lambda text: pattern.sub(_sub, text)
+
+
 def build_full_nikkud_map() -> dict[str, str]:
-    """Combine fixed rabbinic dict with expanded additional_nikkud_corrections."""
+    """
+    Combine all entries into one ``plain -> nikkuded`` map: RABBINIC_NIKKUD_DICT,
+    NO_PREFIX_NIKKUD_DICT and additional_nikkud_corrections.
+
+    This is the *unexpanded* map (no prefixes / spacing variants): prefixes and word
+    boundaries are handled by the regex matcher in :func:`apply_nikkud_to_abbreviations`.
+    """
     mapping = dict(RABBINIC_NIKKUD_DICT)
-    mapping.update(build_additional_nikkud_map())
+    mapping.update(NO_PREFIX_NIKKUD_DICT)
+    mapping.update(additional_nikkud_corrections)
     return mapping
 
 
 def apply_nikkud_to_abbreviations(text: str) -> str:
     """
-    Scans the text and replaces Rabbinic acronyms / additional word corrections
-    with their Nikkud counterparts.
+    Replaces Rabbinic acronyms / additional word corrections with their nikkud forms.
 
-    Keys are sorted by length descending to prevent partial word replacements.
+    Each entry matches as a whole word (see the boundary rule above), optionally preceded
+    by one of DEFAULT_PREFIXES, which is preserved. Letter entries (NO_PREFIX_NIKKUD_DICT)
+    match only as standalone words. Already-nikkuded text is not matched again, so the
+    function is idempotent.
     """
-    mapping = build_full_nikkud_map()
-    sorted_keys = sorted(mapping.keys(), key=len, reverse=True)
-
-    for key in sorted_keys:
-        text = text.replace(key, mapping[key])
-
-    return text
+    prefixable = tuple(
+        list(RABBINIC_NIKKUD_DICT.items()) + list(additional_nikkud_corrections)
+    )
+    matcher = _build_matcher(
+        prefixable,
+        tuple(NO_PREFIX_NIKKUD_DICT.items()),
+        tuple(DEFAULT_PREFIXES),
+    )
+    return matcher(text)
 
 
 if __name__ == "__main__":
