@@ -29,19 +29,44 @@ from typing import Callable, Iterable, Sequence
 # The prefix is kept as-is in the output (prefix + nikkuded replacement).
 # The empty string stands for "no prefix" (used by the legacy expansion helpers below;
 # the regex matcher treats the prefix as optional and skips it).
-DEFAULT_PREFIXES: tuple[str, ...] = (
-    "",  # bare word
-    # single letters
-    "ו", "ה", "ב", "כ", "ל", "מ", "ש",
-    # two letters
-    "וב", "וה", "וכ", "ול", "ומ", "וש",
-    "מה", "מש",
-    "שה", "שב", "שכ", "של", "שמ",
-    "לה", "בה", "כה", "כש",
-    # three+ letters
-    "ומה", "ומש", "ושה", "ושב", "ושל", "ושמ",
-    "ולה", "ובה", "וכה", "וכש", "כשה", "ולכ", "ולכש", "וכשה",
-)
+#
+# The set is GENERATED from this rule (see _generate_prefixes):
+#
+#     prefix = [ו] [core] [ה]
+#
+#   core  = ב | כ | ל | מ                      single prepositions
+#         | ש | כש                             "that" / "when"
+#         | ש or כש + a preposition            שב שכ של שמ  כשב כשל כשמ
+#                                              (כש already contains כ, so no כשכ)
+#         | מש                                 מ + ש
+#   ה     = the definite article. It merges into ב / כ / ל (they take its vowel
+#           instead of a written ה), so a written ה NEVER follows a core that ends in
+#           ב, כ or ל. It may follow nothing (ה), ו (וה), or a core ending in מ or ש
+#           (מה שה כשה שמה כשמה משה ומה ושה וכשה ...).
+#   Everything is optional, but a non-empty prefix has at least one piece.
+_PREPOSITIONS = "בכלמ"
+_SHIN_FORMS = ("ש", "כש")
+_NO_HE_AFTER = "בכל"  # prepositions that absorb the article
+
+
+def _generate_prefixes() -> tuple[str, ...]:
+    cores = ["", *_PREPOSITIONS, *_SHIN_FORMS, "מש"]
+    for shin in _SHIN_FORMS:
+        for prep in _PREPOSITIONS:
+            if prep not in shin:  # כש already contains כ
+                cores.append(shin + prep)
+
+    prefixes = set()
+    for vav in ("", "ו"):
+        for core in cores:
+            prefixes.add(vav + core)
+            if not core or core[-1] not in _NO_HE_AFTER:
+                prefixes.add(vav + core + "ה")
+    prefixes.discard("")
+    return ("",) + tuple(sorted(prefixes, key=lambda p: (len(p), p)))
+
+
+DEFAULT_PREFIXES: tuple[str, ...] = _generate_prefixes()
 
 DEFAULT_TRAILING_PUNCT: tuple[str, ...] = (
     "",  # no trailing punctuation
