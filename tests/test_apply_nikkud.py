@@ -3,6 +3,7 @@ import pytest
 
 from pipeline import apply_nikkud as an
 from pipeline.apply_nikkud import (
+    ABBREVIATION_PREFIXES,
     DEFAULT_PREFIXES,
     NO_PREFIX_NIKKUD_DICT,
     RABBINIC_NIKKUD_DICT,
@@ -56,6 +57,30 @@ def test_generated_prefix_set_is_exactly_the_rule():
     assert len(DEFAULT_PREFIXES) == 44
 
 
+# ה written after a core that ends in ב / כ / ל (the extra forms of the PERMISSIVE set)
+HE_AFTER_PREPOSITION = {
+    "בה", "כה", "לה", "שבה", "שכה", "שלה", "כשבה", "כשלה",
+    "ובה", "וכה", "ולה", "ושבה", "ושכה", "ושלה", "וכשבה", "וכשלה",
+}
+
+
+def test_permissive_prefix_set_is_strict_set_plus_he_after_preposition():
+    assert ABBREVIATION_PREFIXES[0] == ""
+    assert len(ABBREVIATION_PREFIXES) == len(set(ABBREVIATION_PREFIXES))
+    assert set(ABBREVIATION_PREFIXES) == set(DEFAULT_PREFIXES) | HE_AFTER_PREPOSITION
+    assert len(ABBREVIATION_PREFIXES) == 60
+    assert HE_AFTER_PREPOSITION.isdisjoint(DEFAULT_PREFIXES)
+    assert an._generate_prefixes() == DEFAULT_PREFIXES
+    assert an._generate_prefixes(he_after_prepositions=True) == ABBREVIATION_PREFIXES
+
+
+@pytest.mark.parametrize("invalid", [
+    "ולכ", "ולכש", "בל", "כב", "בב", "ההה", "הו", "וו", "שש", "כשכ", "כשש", "בהה", "להל", "כהב",
+])
+def test_permissive_set_still_rejects_nonsense(invalid):
+    assert invalid not in ABBREVIATION_PREFIXES
+
+
 def test_he_never_follows_bet_kaf_lamed():
     """The article merges into ב/כ/ל, so a written ה may never follow them directly."""
     for p in DEFAULT_PREFIXES:
@@ -104,12 +129,41 @@ def test_issue_examples_replaced_with_prefix_preserved(word):
 
 
 @pytest.mark.parametrize("word", ['בהרמב"ם', 'להרמב"ם', 'כהרמב"ם', 'ובהרמב"ם', 'ולהרמב"ם',
-                                  'וכהרמב"ם', 'שלהרמב"ם', 'שבהרמב"ם', 'כשלהרמב"ם'])
-def test_he_after_bet_kaf_lamed_is_not_a_valid_prefix(word):
+                                  'וכהרמב"ם', 'שלהרמב"ם', 'שבהרמב"ם', 'כשלהרמב"ם',
+                                  'להרשב"א', 'כהרשב"א', 'בהרא"ש', 'וכהרמב"ם'])
+def test_he_after_bet_kaf_lamed_is_valid_for_abbreviations(word):
+    """Abbreviations/names keep their ה: להרמב"ם, כהרשב"א, בהרא"ש ... (prefix preserved)."""
+    key = word[word.index("ה") + 1:]
+    assert apply(word) == word[: word.index("ה") + 1] + RABBINIC_NIKKUD_DICT[key]
+
+
+@pytest.mark.parametrize("prefix", sorted(ABBREVIATION_PREFIXES))
+def test_every_abbreviation_with_every_permissive_prefix(prefix):
+    for key, value in RABBINIC_NIKKUD_DICT.items():
+        assert apply(f"א {prefix}{key} ב") == f"א {prefix}{value} ב", (prefix, key)
+
+
+@pytest.mark.parametrize("word", ['בהשפתי', 'להשפתי', 'כהשפתי', 'ובהשפתי', 'ולהשפתי', 'וכהשפתי',
+                                  'שלהשפתי', 'כשלהשפתי'])
+def test_he_after_bet_kaf_lamed_stays_invalid_for_plain_words(word):
+    """Ordinary corrected words (שפתי, נבילה) keep the STRICT prefix set."""
     assert apply(word) == word
-    # also for plain correction words
-    plain = word.replace('רמב"ם', "שפתי")
+    plain = word.replace("שפתי", "נבילה")
     assert apply(plain) == plain
+
+
+def test_plain_words_still_accept_strict_prefixes():
+    assert apply("בשפתי") == "ב" + SHAFTEI
+    assert apply("מהשפתי") == "מה" + SHAFTEI
+    assert apply("ולנבילה") == "ול" + NEVILA
+
+
+@pytest.mark.parametrize("word", ['להרמב"ם', 'ארמב"ם', 'זהרמב"ם', 'בהה"רמב"ם', 'בהרמב"ם"ל'])
+def test_permissive_prefix_does_not_loosen_boundaries(word):
+    if word in ('להרמב"ם',):
+        assert apply(word) == "לה" + RAMBAM
+    else:
+        assert apply(word) == word
 
 
 # ---------------------------------------------------------------------------
@@ -277,31 +331,118 @@ def test_entries_starting_with_prefix_letters_are_not_double_prefixed():
 
 
 # ---------------------------------------------------------------------------
-# Letter entries: standalone only, no prefixes
+# Letter entries (הא / פא / צדי): standalone only, no prefixes, letter-name context only
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("text, expected", [
-    ("הא", "הֵא"),
-    ("פא", "פֵּא"),
-    ("צדי", "צָדִי"),
+    # after a context word (סימן, סעיף, ס"ק, דף, פרק, אות, סי')
+    ("סימן הא", "סימן הֵא"),
+    ("סימן פא", "סימן פֵּא"),
+    ("סימן צדי", "סימן צָדִי"),
+    ("סעיף הא", "סעיף הֵא"),
+    ('ס"ק פא', 'ס"ק פֵּא'),
+    ("ס״ק פא", "ס״ק פֵּא"),
+    ("דף הא", "דף הֵא"),
+    ("פרק צדי", "פרק צָדִי"),
     ("האות הא.", "האות הֵא."),
     ("אות פא,", "אות פֵּא,"),
-    ("אות צדי\nוהלאה", "אות צָדִי\nוהלאה"),
-    ("הא\nפא", "הֵא\nפֵּא"),
-    ('"צדי"', '"צָדִי"'),
-    ("(הא)", "(הֵא)"),
-    ("הא-פא", "הֵא-פֵּא"),
+    ("סי' הא", "סי' הֵא"),
+    ("סי׳ הא", "סי׳ הֵא"),
+    # context word with a strict prefix
+    ("בסימן הא", "בסימן הֵא"),
+    ("לסעיף פא", "לסעיף פֵּא"),
+    ("ובאות צדי", "ובאות צָדִי"),
+    ("מהסימן הא", "מהסימן הֵא"),
+    # separators between context word and letter name: blanks, quotes, colon, dash, brackets
+    ("סימן  \t הא", "סימן  \t הֵא"),
+    ('סימן "הא"', 'סימן "הֵא"'),
+    ("סימן 'פא'", "סימן 'פֵּא'"),
+    ("סימן: הא", "סימן: הֵא"),
+    ("סימן - הא", "סימן - הֵא"),
+    ("סימן־הא", "סימן־הֵא"),
+    ("סימן (הא)", "סימן (הֵא)"),
+    ("(סימן צדי)", "(סימן צָדִי)"),
+    # directly adjacent to another letter-name word (chains)
+    ("סימן צדי הא", "סימן צָדִי הֵא"),
+    ("סימן פא זין", "סימן פֵּא זין"),
+    ("צדי הא", "צָדִי הֵא"),
+    ("צדיק הא", "צדיק הֵא"),
+    ("הא ריש", "הֵא ריש"),
+    ("פא זין", "פֵּא זין"),
+    ("קוף הא", "קוף הֵא"),
+    ("הא\tוו", "הֵא\tוו"),
+    ("סימן פא הא", "סימן פֵּא הֵא"),
+    # next to punctuation / start / end / newline, with context
+    ("שורה\nסימן הא", "שורה\nסימן הֵא"),
+    ("אות הא\nוהלאה", "אות הֵא\nוהלאה"),
+    ("סימן צדי\nסימן הא", "סימן צָדִי\nסימן הֵא"),
+    ("סימן הא-פא", "סימן הֵא-פא"),   # hyphen is not blank space: פא has no context
+    ("סימן הא, פא וצדי", "סימן הֵא, פא וצדי"),
 ])
-def test_letter_entries_standalone(text, expected):
+def test_letter_entries_in_letter_name_context(text, expected):
     assert apply(text) == expected
 
 
 @pytest.mark.parametrize("text", [
+    # ordinary words: Aramaic הא, sentence start, no context
+    "הא", "פא", "צדי",
+    "הא דתניא", 'הא קמ"ל', "הא כיצד", "הא למדת", "ואמר הא דתניא",
+    "הא. פא! צדי?",
+    "(הא)", '"צדי"', "הא-פא", "הא\nפא",
+    # context word on a different line, or separated by a sentence stop / another word
+    "סימן\nהא", "סימן. הא", "סימן, הא", "סימן? הא", "סימן; הא", "סימן אחד הא",
+    "ראה סימן צ\"ה הא דתניא",
+    # context word must be a whole word (strict prefix allowed, nothing else)
+    "אסימן הא", "ססימן הא", "סימנים הא", "דפים הא",
+    # letter names never take a prefix
     "בהא", "והא", "להא", "מהא", "שהא", "הפא", "בפא", "וצדי", "בצדי", "מצדי",
-    "האדם", "פאה", "צדיק", "צדיקים", "ופא",
+    "סימן בהא", "סימן והא", "סימן ופא", "סימן הצדי",
+    # inside longer words
+    "האדם", "פאה", "צדיק", "צדיקים", "ופא", "סימן האדם", "סימן צדיקים",
+    # a neighbour must be a whole letter-name word
+    "הא צדיקים", "הא בית-דין", "הא זינוק", "אלפים הא", "בית-דין הא",
 ])
-def test_letter_entries_not_matched_with_prefix_or_inside_words(text):
+def test_letter_entries_not_replaced_without_letter_name_context(text):
     assert apply(text) == text
+
+
+@pytest.mark.parametrize("text", [
+    "סימן הא'", "סימן הא׳", "אות הא' וכו'", "סעיף פא'", "סעיף צדי׳.", "סי' הא'",
+    "הא' פא'", "סימן הא' פא'",
+])
+def test_trailing_geresh_is_not_a_boundary_for_letter_names(text):
+    """הא' is an ordinal ("the first") - never the letter name, even right after סימן."""
+    assert apply(text) == text
+
+
+def test_geresh_wrapped_letter_name_is_still_a_letter_name():
+    assert apply("סימן 'הא'") == "סימן 'הֵא'"
+    assert apply("סימן ׳הא׳") == "סימן ׳הֵא׳"
+
+
+def test_letter_name_context_is_per_match():
+    text = "הא דתניא. בסימן צדי הא נאמר: הא קמ\"ל, ובדף פא."
+    assert apply(text) == (
+        "הא דתניא. בסימן "
+        + NO_PREFIX_NIKKUD_DICT["צדי"] + " " + NO_PREFIX_NIKKUD_DICT["הא"]
+        + " נאמר: הא קמ\"ל, ובדף " + NO_PREFIX_NIKKUD_DICT["פא"] + "."
+    )
+
+
+def test_siman_numbers_spoken_as_letter_names():
+    """The pipeline writes simanim as letter names: 94 -> צדי דלת, 95 -> צדי הא, 85 -> פא הא."""
+    assert apply("סימן צדי דלת") == f"סימן {NO_PREFIX_NIKKUD_DICT['צדי']} דלת"
+    assert apply("סימן צדי הא") == f"סימן {NO_PREFIX_NIKKUD_DICT['צדי']} {NO_PREFIX_NIKKUD_DICT['הא']}"
+    assert apply("סימן פא הא") == f"סימן {NO_PREFIX_NIKKUD_DICT['פא']} {NO_PREFIX_NIKKUD_DICT['הא']}"
+    assert apply("סימן פא זין") == f"סימן {NO_PREFIX_NIKKUD_DICT['פא']} זין"
+
+
+def test_letter_name_context_is_linear_on_long_lines():
+    import time
+    text = "הא דתניא " * 40000          # one 360K-char line, no context anywhere
+    start = time.perf_counter()
+    assert apply(text) == text
+    assert time.perf_counter() - start < 5
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +459,7 @@ def test_idempotent_on_every_entry():
         list(RABBINIC_NIKKUD_DICT) + list(NO_PREFIX_NIKKUD_DICT)
         + [p for p, _ in additional_nikkud_corrections]
     )
-    text = "\n".join(f"הנה {key} כאן, ו{key}." for key in entries)
+    text = "\n".join(f"הנה סימן {key} כאן, ו{key}." for key in entries)
     once = apply(text)
     assert once != text
     assert apply(once) == once
@@ -336,8 +477,9 @@ def test_every_dict_key_replaced_standalone_and_with_each_prefix_sample():
         assert apply(f"א {key} ב") == f"א {value} ב", key
         assert apply(f"א ה{key} ב").endswith(" ב"), key
     for key, value in NO_PREFIX_NIKKUD_DICT.items():
-        assert apply(f"א {key} ב") == f"א {value} ב", key
-        assert apply(f"א ב{key} ב") == f"א ב{key} ב", key
+        assert apply(f"סימן {key} ב") == f"סימן {value} ב", key
+        assert apply(f"סימן ב{key} ב") == f"סימן ב{key} ב", key
+        assert apply(f"א {key} ב") == f"א {key} ב", key  # no letter-name context
 
 
 def test_matcher_is_cached():
