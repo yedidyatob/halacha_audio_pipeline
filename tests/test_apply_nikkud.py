@@ -3,7 +3,6 @@ import pytest
 
 from pipeline import apply_nikkud as an
 from pipeline.apply_nikkud import (
-    ABBREVIATION_PREFIXES,
     DEFAULT_PREFIXES,
     NO_PREFIX_NIKKUD_DICT,
     RABBINIC_NIKKUD_DICT,
@@ -41,57 +40,40 @@ def test_prefix_list_is_clean():
 
 
 def test_generated_prefix_set_is_exactly_the_rule():
-    expected = {
-        # single letters
-        "ו", "ה", "ב", "כ", "ל", "מ", "ש", "כש",
-        # ו + one piece
-        "וב", "וה", "וכ", "ול", "ומ", "וש", "וכש",
-        # preposition combos with ש / כש / מ
-        "שב", "שכ", "של", "שמ", "כשב", "כשל", "כשמ", "מש",
-        "וש" + "ב", "וש" + "כ", "וש" + "ל", "וש" + "מ", "וכשב", "וכשל", "וכשמ", "ומש",
-        # ה after nothing / ו / מ / ש / כש
-        "מה", "שה", "כשה", "שמה", "כשמה", "משה",
-        "ומה", "ושה", "וכשה", "ושמה", "וכשמה", "ומשה",
+    # prefix = [ו] [core] [ה]; every piece optional, a non-empty prefix has at least one
+    cores = {
+        "", "ב", "כ", "ל", "מ", "ש", "כש",            # single prepositions, "that", "when"
+        "שב", "שכ", "של", "שמ", "כשב", "כשל", "כשמ",   # ש / כש + preposition (כש contains כ: no כשכ)
+        "מש",
     }
+    expected = {vav + core + he for vav in ("", "ו") for core in cores for he in ("", "ה")} - {""}
     assert set(DEFAULT_PREFIXES) == expected | {""}
-    assert len(DEFAULT_PREFIXES) == 44
+    assert DEFAULT_PREFIXES[0] == ""
+    assert len(DEFAULT_PREFIXES) == len(set(DEFAULT_PREFIXES)) == 60   # "" + 59 non-empty
 
 
-# ה written after a core that ends in ב / כ / ל (the extra forms of the PERMISSIVE set)
-HE_AFTER_PREPOSITION = {
-    "בה", "כה", "לה", "שבה", "שכה", "שלה", "כשבה", "כשלה",
-    "ובה", "וכה", "ולה", "ושבה", "ושכה", "ושלה", "וכשבה", "וכשלה",
-}
+def test_prefix_set_is_listed_explicitly():
+    assert sorted(DEFAULT_PREFIXES[1:]) == sorted([
+        # no ו
+        "ב", "כ", "ל", "מ", "ש", "ה", "כש", "שב", "שכ", "של", "שמ", "כשב", "כשל", "כשמ", "מש",
+        "בה", "כה", "לה", "מה", "שה", "כשה", "שבה", "שכה", "שלה", "שמה", "כשבה", "כשלה", "כשמה", "משה",
+        # with ו
+        "ו", "וב", "וכ", "ול", "ומ", "וש", "וה", "וכש", "ושב", "ושכ", "ושל", "ושמ", "וכשב", "וכשל", "וכשמ", "ומש",
+        "ובה", "וכה", "ולה", "ומה", "ושה", "וכשה", "ושבה", "ושכה", "ושלה", "ושמה", "וכשבה", "וכשלה", "וכשמה", "ומשה",
+    ])
 
 
-def test_permissive_prefix_set_is_strict_set_plus_he_after_preposition():
-    assert ABBREVIATION_PREFIXES[0] == ""
-    assert len(ABBREVIATION_PREFIXES) == len(set(ABBREVIATION_PREFIXES))
-    assert set(ABBREVIATION_PREFIXES) == set(DEFAULT_PREFIXES) | HE_AFTER_PREPOSITION
-    assert len(ABBREVIATION_PREFIXES) == 60
-    assert HE_AFTER_PREPOSITION.isdisjoint(DEFAULT_PREFIXES)
+def test_generator_has_no_special_cases_left():
+    """One rule, one set, one exported name: no flag, no second set."""
+    import inspect
+    assert not hasattr(an, "ABBREVIATION_PREFIXES")
+    assert not inspect.signature(an._generate_prefixes).parameters
     assert an._generate_prefixes() == DEFAULT_PREFIXES
-    assert an._generate_prefixes(he_after_prepositions=True) == ABBREVIATION_PREFIXES
 
 
 @pytest.mark.parametrize("invalid", [
     "ולכ", "ולכש", "בל", "כב", "בב", "ההה", "הו", "וו", "שש", "כשכ", "כשש", "בהה", "להל", "כהב",
-])
-def test_permissive_set_still_rejects_nonsense(invalid):
-    assert invalid not in ABBREVIATION_PREFIXES
-
-
-def test_he_never_follows_bet_kaf_lamed():
-    """The article merges into ב/כ/ל, so a written ה may never follow them directly."""
-    for p in DEFAULT_PREFIXES:
-        for bad in ("בה", "כה", "לה"):
-            assert bad not in p, (p, bad)
-
-
-@pytest.mark.parametrize("invalid", [
-    "בה", "כה", "לה", "ובה", "וכה", "ולה",      # ה after ב/כ/ל
-    "שלה", "ושלה", "שבה", "שכה", "כשלה", "כשבה",  # ש/כש + ל/ב/כ then ה
-    "ולכ", "ולכש", "בל", "כב", "בב", "ההה", "הו", "וו", "שש", "כשכ", "כשש",
+    "בהב", "ובו", "הב", "המ", "הכ", "שוב", "מכ",
 ])
 def test_invalid_prefixes_not_generated(invalid):
     assert invalid not in DEFAULT_PREFIXES
@@ -99,71 +81,60 @@ def test_invalid_prefixes_not_generated(invalid):
 
 @pytest.mark.parametrize("valid", [
     "מה", "שה", "כשה", "וכשה", "שמה", "כשמה", "ומה", "משה", "ושמה", "וה", "וכש", "כשל", "כשב", "כשמ",
+    "בה", "כה", "לה", "ובה", "וכה", "ולה", "שלה", "שבה", "שכה", "כשלה", "כשבה", "ושלה", "וכשלה",
 ])
 def test_valid_prefixes_generated(valid):
     assert valid in DEFAULT_PREFIXES
 
 
-def test_generated_set_contains_every_old_prefix_valid_under_the_rule():
-    old_valid = ("ו", "ה", "ב", "כ", "ל", "מ", "ש", "וב", "וה", "וכ", "ול", "ומ", "וש", "מה", "מש",
-                 "שה", "שב", "שכ", "של", "שמ", "כש", "ומה", "ומש", "ושה", "ושב", "ושל", "ושמ",
-                 "וכש", "כשה", "וכשה")
+def test_generated_set_contains_every_old_prefix():
+    old = ("ב", "מ", "כ", "ו", "ה", "מה", "ל", "וב", "וה")  # old master DEFAULT_PREFIXES
+    old_valid = old + ("וכ", "ול", "ומ", "וש", "מש", "שה", "שב", "שכ", "של", "שמ", "כש", "ש",
+                       "ומה", "ומש", "ושה", "ושב", "ושל", "ושמ", "וכש", "כשה", "וכשה")
     for p in old_valid:
         assert p in DEFAULT_PREFIXES, p
 
 
 # ---------------------------------------------------------------------------
-# Prefix + abbreviation (rule-based prefixes)
+# Prefix + abbreviation / word (one prefix set for everything)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("prefix", ["מה", "שה", "כשה", "וכשה", "שמה", "ול", "וב", "כשב", "ו", "ב", "ל", "כ", "מ", "ש", "ה"])
-def test_valid_prefix_before_abbreviation(prefix):
-    assert apply(f'{prefix}רמב"ם') == prefix + RAMBAM
+@pytest.mark.parametrize("prefix", sorted(DEFAULT_PREFIXES))
+def test_every_entry_with_every_prefix(prefix):
+    """Every prefixable entry (abbreviations AND correction words) takes every prefix."""
+    prefixable = {**RABBINIC_NIKKUD_DICT, **dict(additional_nikkud_corrections)}
+    for key, value in prefixable.items():
+        assert apply(f"א {prefix}{key} ב") == f"א {prefix}{value} ב", (prefix, key)
+    for key in NO_PREFIX_NIKKUD_DICT:  # letter names never take a prefix
+        if prefix:
+            assert apply(f"סימן {prefix}{key} ב") == f"סימן {prefix}{key} ב", (prefix, key)
 
 
 @pytest.mark.parametrize("word", ['מהרמב"ם', 'שהרמב"ם', 'כשהרמב"ם', 'וכשהרמב"ם', 'שמהרמב"ם',
-                                  'ולרמב"ם', 'וברמב"ם', 'כשברמב"ם'])
-def test_issue_examples_replaced_with_prefix_preserved(word):
-    expected = word[: -len('רמב"ם')] + RAMBAM
+                                  'ולרמב"ם', 'וברמב"ם', 'כשברמב"ם',
+                                  'בהרמב"ם', 'להרמב"ם', 'כהרמב"ם', 'ובהרמב"ם', 'ולהרמב"ם',
+                                  'וכהרמב"ם', 'שלהרמב"ם', 'שבהרמב"ם', 'כשלהרמב"ם',
+                                  'להרשב"א', 'כהרשב"א', 'בהרא"ש'])
+def test_prefix_examples_replaced_with_prefix_preserved(word):
+    expected = word[: -len('רמב"ם')] + RAMBAM if word.endswith('רמב"ם') else None
+    if expected is None:
+        key = word[word.index("ה") + 1:]
+        expected = word[: word.index("ה") + 1] + RABBINIC_NIKKUD_DICT[key]
     assert apply(word) == expected
 
 
-@pytest.mark.parametrize("word", ['בהרמב"ם', 'להרמב"ם', 'כהרמב"ם', 'ובהרמב"ם', 'ולהרמב"ם',
-                                  'וכהרמב"ם', 'שלהרמב"ם', 'שבהרמב"ם', 'כשלהרמב"ם',
-                                  'להרשב"א', 'כהרשב"א', 'בהרא"ש', 'וכהרמב"ם'])
-def test_he_after_bet_kaf_lamed_is_valid_for_abbreviations(word):
-    """Abbreviations/names keep their ה: להרמב"ם, כהרשב"א, בהרא"ש ... (prefix preserved)."""
-    key = word[word.index("ה") + 1:]
-    assert apply(word) == word[: word.index("ה") + 1] + RABBINIC_NIKKUD_DICT[key]
+@pytest.mark.parametrize("word, key, value", [
+    ("בהשפתי", "שפתי", SHAFTEI), ("להשפתי", "שפתי", SHAFTEI), ("כהשפתי", "שפתי", SHAFTEI),
+    ("ובהשפתי", "שפתי", SHAFTEI), ("שלהנבילה", "נבילה", NEVILA), ("כשלהנבילה", "נבילה", NEVILA),
+    ("בשפתי", "שפתי", SHAFTEI), ("מהשפתי", "שפתי", SHAFTEI), ("ולנבילה", "נבילה", NEVILA),
+])
+def test_correction_words_use_the_same_prefix_set(word, key, value):
+    assert apply(word) == word[: -len(key)] + value
 
 
-@pytest.mark.parametrize("prefix", sorted(ABBREVIATION_PREFIXES))
-def test_every_abbreviation_with_every_permissive_prefix(prefix):
-    for key, value in RABBINIC_NIKKUD_DICT.items():
-        assert apply(f"א {prefix}{key} ב") == f"א {prefix}{value} ב", (prefix, key)
-
-
-@pytest.mark.parametrize("word", ['בהשפתי', 'להשפתי', 'כהשפתי', 'ובהשפתי', 'ולהשפתי', 'וכהשפתי',
-                                  'שלהשפתי', 'כשלהשפתי'])
-def test_he_after_bet_kaf_lamed_stays_invalid_for_plain_words(word):
-    """Ordinary corrected words (שפתי, נבילה) keep the STRICT prefix set."""
+@pytest.mark.parametrize("word", ['ארמב"ם', 'זהרמב"ם', 'בהה"רמב"ם', 'בהרמב"ם"ל', 'בהבשפתי', 'הבשפתי', 'לכהרמב"ם'])
+def test_boundaries_and_invalid_combinations_still_not_matched(word):
     assert apply(word) == word
-    plain = word.replace("שפתי", "נבילה")
-    assert apply(plain) == plain
-
-
-def test_plain_words_still_accept_strict_prefixes():
-    assert apply("בשפתי") == "ב" + SHAFTEI
-    assert apply("מהשפתי") == "מה" + SHAFTEI
-    assert apply("ולנבילה") == "ול" + NEVILA
-
-
-@pytest.mark.parametrize("word", ['להרמב"ם', 'ארמב"ם', 'זהרמב"ם', 'בהה"רמב"ם', 'בהרמב"ם"ל'])
-def test_permissive_prefix_does_not_loosen_boundaries(word):
-    if word in ('להרמב"ם',):
-        assert apply(word) == "לה" + RAMBAM
-    else:
-        assert apply(word) == word
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +319,7 @@ def test_entries_starting_with_prefix_letters_are_not_double_prefixed():
     ("אות פא,", "אות פֵּא,"),
     ("סי' הא", "סי' הֵא"),
     ("סי׳ הא", "סי׳ הֵא"),
-    # context word with a strict prefix
+    # context word with a prefix
     ("בסימן הא", "בסימן הֵא"),
     ("לסעיף פא", "לסעיף פֵּא"),
     ("ובאות צדי", "ובאות צָדִי"),
@@ -392,7 +363,7 @@ def test_letter_entries_in_letter_name_context(text, expected):
     # context word on a different line, or separated by a sentence stop / another word
     "סימן\nהא", "סימן. הא", "סימן, הא", "סימן? הא", "סימן; הא", "סימן אחד הא",
     "ראה סימן צ\"ה הא דתניא",
-    # context word must be a whole word (strict prefix allowed, nothing else)
+    # context word must be a whole word (a valid prefix is allowed, nothing else)
     "אסימן הא", "ססימן הא", "סימנים הא", "דפים הא",
     # letter names never take a prefix
     "בהא", "והא", "להא", "מהא", "שהא", "הפא", "בפא", "וצדי", "בצדי", "מצדי",
