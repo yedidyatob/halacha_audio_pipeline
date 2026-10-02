@@ -57,3 +57,59 @@ def test_gematria_to_int():
     assert gematria_to_int('') is None
     assert gematria_to_int('0') is None
     assert gematria_to_int('invalid') is None
+
+
+# --- spoken (TTS) letter names ------------------------------------------------
+
+import re as _re
+from pipeline.gematria import LETTER_NAMES, int_to_spoken_gematria
+
+_POINTS = _re.compile("[\u0591-\u05C7]")
+
+
+def test_letter_names_cover_every_letter_int_to_gematria_can_emit():
+    letters = set()
+    for n in range(1, 1000):
+        letters |= set(ch for ch in int_to_gematria(n) if ch not in "\"'")
+    assert letters <= set(LETTER_NAMES)
+
+
+def test_spoken_gematria_matches_written_letters():
+    for n in range(1, 1000):
+        written = [ch for ch in int_to_gematria(n) if ch in LETTER_NAMES]
+        spoken = int_to_spoken_gematria(n).split(" ")
+        assert len(spoken) == len(written) > 0
+        assert spoken == [LETTER_NAMES[ch] for ch in written]
+
+
+def test_spoken_gematria_siman_prompt_convention():
+    # The prompt spells simanim as "צדי דלת" (not "צדיק"): vowel points are only an aid.
+    plain = lambda n: _POINTS.sub("", int_to_spoken_gematria(n))
+    assert plain(94) == "צדי דלת"
+    assert plain(95) == "צדי הא"
+    assert plain(96) == "צדי וו"
+    assert plain(97) == "צדי זין"
+    assert plain(15) == "טית וו" and plain(16) == "טית זין"   # ט"ו / ט"ז, never יה / יו
+
+
+def test_spoken_gematria_only_adds_vowel_points_to_ambiguous_letters():
+    for letter, name in LETTER_NAMES.items():
+        if _POINTS.search(name):
+            assert letter in "הופצ"
+
+
+def test_spoken_gematria_rejects_out_of_range():
+    for bad in (0, 1000, -3):
+        with pytest.raises(ValueError):
+            int_to_spoken_gematria(bad)
+
+
+def test_spoken_letter_names_match_apply_nikkud_letter_entries_when_available():
+    """הא / פא / צדי voweled forms must equal apply_nikkud's NO_PREFIX letter entries (PR #8)."""
+    from pipeline import apply_nikkud
+    entries = getattr(apply_nikkud, "NO_PREFIX_NIKKUD_DICT", None)
+    if entries is None:
+        pytest.skip("apply_nikkud has no NO_PREFIX_NIKKUD_DICT yet")
+    assert LETTER_NAMES["ה"] == entries["הא"]
+    assert LETTER_NAMES["פ"] == entries["פא"]
+    assert LETTER_NAMES["צ"] == entries["צדי"]
