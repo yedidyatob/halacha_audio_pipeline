@@ -2,14 +2,12 @@
 Nikkud / pronunciation fixes for TTS.
 
 - RABBINIC_NIKKUD_DICT: fixed mappings for rabbinic abbreviations and terms.
-  These may carry a Hebrew prefix (הרמב"ם, ברמב"ם, מהרמב"ם ...), which is preserved.
-  Abbreviations use the PERMISSIVE prefix set (ABBREVIATION_PREFIXES): a written ה is also
-  accepted after ב / כ / ל (להרמב"ם, כהרשב"א, בהרא"ש, ולהרמב"ם ...), because names and
-  abbreviations conventionally keep the ה of "הרמב"ם" after a preposition.
+  These may carry a Hebrew prefix (הרמב"ם, ברמב"ם, להרמב"ם, מהרמב"ם ...), which is preserved.
 - NO_PREFIX_NIKKUD_DICT: the letter names הא / פא / צדי. Replaced only as a whole word,
   never with a prefix, and only in a letter-name context (see LETTER-NAME CONTEXT below).
-- additional_nikkud_corrections: list of (plain, nikkuded) pairs. Ordinary words, so they use
-  the STRICT prefix set (DEFAULT_PREFIXES): בשפתי, ולנבילה ... but never בהשפתי.
+- additional_nikkud_corrections: list of (plain, nikkuded) pairs; the same prefixes are allowed.
+
+All prefixed entries share ONE prefix set, DEFAULT_PREFIXES (generated from a single rule).
 
 Matching is done with ONE compiled regex (see ``_build_matcher``) using word-boundary
 lookarounds, so replacements work at the start/end of the text or a line, next to
@@ -34,7 +32,7 @@ from typing import Callable, Iterable, Sequence
 # The empty string stands for "no prefix" (used by the legacy expansion helpers below;
 # the regex matcher treats the prefix as optional and skips it).
 #
-# Two sets are GENERATED from ONE rule (see _generate_prefixes):
+# The set is GENERATED from this rule (see _generate_prefixes):
 #
 #     prefix = [ו] [core] [ה]
 #
@@ -43,28 +41,17 @@ from typing import Callable, Iterable, Sequence
 #         | ש or כש + a preposition            שב שכ של שמ  כשב כשל כשמ
 #                                              (כש already contains כ, so no כשכ)
 #         | מש                                 מ + ש
-#   ה     = the definite article.
-#
-#   STRICT (DEFAULT_PREFIXES, ordinary words): the article merges into ב / כ / ל (they take
-#         its vowel instead of a written ה), so a written ה NEVER follows a core that ends
-#         in ב, כ or ל. It may follow nothing (ה), ו (וה), or a core ending in מ or ש
-#         (מה שה כשה שמה כשמה משה ומה ושה וכשה ...).
-#   PERMISSIVE (ABBREVIATION_PREFIXES, rabbinic abbreviations / names): the same, but a
-#         written ה is ALSO accepted after ב / כ / ל, because a name like הרמב"ם keeps its ה:
-#         להרמב"ם, כהרשב"א, בהרא"ש, ולהרמב"ם, וכהרמב"ם, שלהרמב"ם, כשלהרמב"ם ...
+#   ה     = the definite article, written out. It is accepted after nothing (ה), after ו
+#           (וה), and after any core, including ב / כ / ל (בה כה לה שלה ובה ולה וכה ...):
+#           names and abbreviations keep their ה (להרמב"ם, כהרשב"א, בהרא"ש).
 #   Everything is optional, but a non-empty prefix has at least one piece.
+#   Result: 60 entries (the empty prefix plus 59 non-empty ones).
 _PREPOSITIONS = "בכלמ"
 _SHIN_FORMS = ("ש", "כש")
-_NO_HE_AFTER = "בכל"  # prepositions that absorb the article in ordinary words
 
 
-def _generate_prefixes(he_after_prepositions: bool = False) -> tuple[str, ...]:
-    """
-    Generate the prefix set from the rule above.
-
-    ``he_after_prepositions=False`` -> strict set (no ה after a core ending in ב/כ/ל).
-    ``he_after_prepositions=True``  -> permissive set (adds those ...ב/כ/ל + ה forms).
-    """
+def _generate_prefixes() -> tuple[str, ...]:
+    """Generate the prefix set from the rule above (sorted by length, then alphabetically)."""
     cores = ["", *_PREPOSITIONS, *_SHIN_FORMS, "מש"]
     for shin in _SHIN_FORMS:
         for prep in _PREPOSITIONS:
@@ -75,14 +62,12 @@ def _generate_prefixes(he_after_prepositions: bool = False) -> tuple[str, ...]:
     for vav in ("", "ו"):
         for core in cores:
             prefixes.add(vav + core)
-            if he_after_prepositions or not core or core[-1] not in _NO_HE_AFTER:
-                prefixes.add(vav + core + "ה")
+            prefixes.add(vav + core + "ה")
     prefixes.discard("")
     return ("",) + tuple(sorted(prefixes, key=lambda p: (len(p), p)))
 
 
 DEFAULT_PREFIXES: tuple[str, ...] = _generate_prefixes()
-ABBREVIATION_PREFIXES: tuple[str, ...] = _generate_prefixes(he_after_prepositions=True)
 
 DEFAULT_TRAILING_PUNCT: tuple[str, ...] = (
     "",  # no trailing punctuation
@@ -346,7 +331,7 @@ def _alternation(keys: Iterable[str]) -> str:
 # These are ordinary Hebrew/Aramaic words too (הא דתניא, הא קמ"ל), so they are replaced
 # only when the text clearly means a letter name used as a number (סימן צדי הא, אות פא):
 #   1. preceded, on the SAME line, by a context word (LETTER_NAME_CONTEXT_WORDS) - optionally
-#      carrying a strict prefix (בסימן, לסעיף, ובאות ...) - with only whitespace, quotes, a
+#      carrying a prefix (בסימן, לסעיף, ובאות ...) - with only whitespace, quotes, a
 #      colon, a dash or a bracket between them (not . , ; ? ! - those end the phrase), or
 #   2. directly adjacent (separated only by blank space) to another letter-name word
 #      (LETTER_NAMES), before or after: "צדי הא", "פא זין", "הא ריש".
@@ -405,40 +390,34 @@ def _has_letter_name_context(text: str, start: int, end: int, prefixes: tuple[st
 
 @lru_cache(maxsize=None)
 def _build_matcher(
-    abbreviations: tuple[tuple[str, str], ...],
-    words: tuple[tuple[str, str], ...],
+    prefixable: tuple[tuple[str, str], ...],
     standalone: tuple[tuple[str, str], ...],
-    abbreviation_prefixes: tuple[str, ...],
-    word_prefixes: tuple[str, ...],
+    prefixes: tuple[str, ...],
 ) -> Callable[[str], str]:
     """
     Compiles ONE combined regex (cached) and returns a ``text -> text`` function.
 
-    At each position the regex first tries a bare key (any entry, longest first), then
-    ``prefix + key`` for abbreviations (permissive prefixes) and for ordinary words (strict
-    prefixes), longest prefix first with backtracking to shorter ones. So מהר"ם (an entry) is
-    never read as מה+ר"ם, and bare ב"ח is never double-prefixed, while הב"ח is ה + ב"ח.
+    At each position the regex first tries a bare key (any entry, longest first), and
+    only then ``prefix + key`` (prefixable entries only, longest prefix first, with
+    backtracking to shorter ones). So מהר"ם (an entry) is never read as מה+ר"ם, and
+    bare ב"ח is never double-prefixed, while הב"ח is ה + ב"ח.
     ``standalone`` entries (letter names) match only bare and only in a letter-name context.
     """
     replacements: dict[str, str] = {}
     for plain, nikkuded in standalone:
         replacements[_canon(plain)] = nikkuded
-    for plain, nikkuded in (*abbreviations, *words):  # prefixable entries win on a clash
+    for plain, nikkuded in prefixable:  # prefixable entries win on a clash
         replacements[_canon(plain)] = nikkuded
     if not replacements:
         return lambda text: text
-    context_only = {_canon(p) for p, _ in standalone} - {_canon(p) for p, _ in (*abbreviations, *words)}
+    prefix_keys = [_canon(p) for p, _ in prefixable]
+    context_only = {_canon(p) for p, _ in standalone} - set(prefix_keys)
 
+    prefix_list = sorted({p for p in prefixes if p}, key=lambda p: (-len(p), p))
     alternatives = [f"(?P<bare>{_alternation(replacements)})"]
-    group_prefixes = {}
-    for group, entries, prefixes in (("abbr", abbreviations, abbreviation_prefixes),
-                                     ("word", words, word_prefixes)):
-        keys = [_canon(p) for p, _ in entries]
-        prefix_list = sorted({p for p in prefixes if p}, key=lambda p: (-len(p), p))
-        if keys and prefix_list:
-            pre = "|".join(re.escape(p) for p in prefix_list)
-            alternatives.append(f"(?P<{group}_pre>{pre})(?P<{group}_key>{_alternation(keys)})")
-            group_prefixes[group] = True
+    if prefix_keys and prefix_list:
+        pre = "|".join(re.escape(p) for p in prefix_list)
+        alternatives.append(f"(?P<pre>{pre})(?P<key>{_alternation(prefix_keys)})")
     pattern = re.compile(_BEFORE + "(?:" + "|".join(alternatives) + ")" + _AFTER)
 
     def _sub(match: re.Match) -> str:
@@ -446,15 +425,11 @@ def _build_matcher(
         if bare is not None:
             key = _canon(bare)
             if key in context_only and not _has_letter_name_context(
-                match.string, match.start(), match.end(), word_prefixes
+                match.string, match.start(), match.end(), prefixes
             ):
                 return match.group(0)
             return replacements[key]
-        for group in group_prefixes:
-            key = match.group(f"{group}_key")
-            if key is not None:
-                return match.group(f"{group}_pre") + replacements[_canon(key)]
-        return match.group(0)  # unreachable
+        return match.group("pre") + replacements[_canon(match.group("key"))]
 
     return lambda text: pattern.sub(_sub, text)
 
@@ -478,17 +453,16 @@ def apply_nikkud_to_abbreviations(text: str) -> str:
     Replaces Rabbinic acronyms / additional word corrections with their nikkud forms.
 
     Each entry matches as a whole word (see the boundary rule above), optionally preceded
-    by a Hebrew prefix, which is preserved:
-      - RABBINIC_NIKKUD_DICT: ABBREVIATION_PREFIXES (ה also allowed after ב/כ/ל)
-      - additional_nikkud_corrections: DEFAULT_PREFIXES (strict)
-      - NO_PREFIX_NIKKUD_DICT (letter names): no prefix, and only in a letter-name context.
-    Already-nikkuded text is not matched again, so the function is idempotent.
+    by one of DEFAULT_PREFIXES, which is preserved. Letter entries (NO_PREFIX_NIKKUD_DICT)
+    match only as standalone words and only in a letter-name context. Already-nikkuded text
+    is not matched again, so the function is idempotent.
     """
+    prefixable = tuple(
+        list(RABBINIC_NIKKUD_DICT.items()) + list(additional_nikkud_corrections)
+    )
     matcher = _build_matcher(
-        tuple(RABBINIC_NIKKUD_DICT.items()),
-        tuple(additional_nikkud_corrections),
+        prefixable,
         tuple(NO_PREFIX_NIKKUD_DICT.items()),
-        tuple(ABBREVIATION_PREFIXES),
         tuple(DEFAULT_PREFIXES),
     )
     return matcher(text)
