@@ -465,3 +465,170 @@ def test_custom_corrections_list_is_picked_up(monkeypatch):
     monkeypatch.setattr(an, "additional_nikkud_corrections", [("שולחן", "שֻׁלְחָן")])
     assert an.apply_nikkud_to_abbreviations("בשולחן") == "בשֻׁלְחָן"
     assert an.apply_nikkud_to_abbreviations("שפתי") == "שפתי"
+
+
+# ---------------------------------------------------------------------------
+# Multi-word keys: a space in a key matches a run of spaces / tabs / NBSP, never a line break
+# ---------------------------------------------------------------------------
+
+BEIT_YOSEF_NIKKUD = "בֵּית יוֹסֵף"  # written with ONE ASCII space, as in the dict
+EVEN_HAEZER = RABBINIC_NIKKUD_DICT["אבן העזר"]
+
+
+@pytest.fixture
+def beit_yosef(monkeypatch):
+    """Adds the multi-word entry ("בית יוסף", ...) to additional_nikkud_corrections for one test."""
+    an._build_matcher.cache_clear()
+    monkeypatch.setattr(
+        an,
+        "additional_nikkud_corrections",
+        list(additional_nikkud_corrections) + [("בית יוסף", BEIT_YOSEF_NIKKUD)],
+    )
+    yield apply
+    an._build_matcher.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "gap",
+    [" ", "  ", "     ", "\t", "\u00A0", "\u00A0\u00A0", " \t\u00A0 "],
+    ids=["space", "2spaces", "5spaces", "tab", "nbsp", "2nbsp", "mixed"],
+)
+def test_multiword_key_matches_any_run_of_blanks(beit_yosef, gap):
+    assert beit_yosef(f"בית{gap}יוסף") == BEIT_YOSEF_NIKKUD
+    assert beit_yosef(f"א בית{gap}יוסף ב") == f"א {BEIT_YOSEF_NIKKUD} ב"
+
+
+@pytest.mark.parametrize("prefix", ["ה", "ב", "וב", "ל", "מה", "ושה", "כשב"])
+@pytest.mark.parametrize("gap", [" ", "  ", "\t", "\u00A0"], ids=["space", "2spaces", "tab", "nbsp"])
+def test_multiword_key_with_prefixes(beit_yosef, prefix, gap):
+    assert beit_yosef(f"{prefix}בית{gap}יוסף") == prefix + BEIT_YOSEF_NIKKUD
+    assert beit_yosef(f"ראה {prefix}בית{gap}יוסף כאן") == f"ראה {prefix}{BEIT_YOSEF_NIKKUD} כאן"
+
+
+@pytest.mark.parametrize("punct", [".", ",", "!", "?", ":", ";", ")", '"', "-"])
+def test_multiword_key_with_trailing_punctuation(beit_yosef, punct):
+    assert beit_yosef(f"בית  יוסף{punct}") == BEIT_YOSEF_NIKKUD + punct
+    assert beit_yosef(f"וב(בית\u00A0יוסף{punct} אחר") == f"וב({BEIT_YOSEF_NIKKUD}{punct} אחר"
+
+
+def test_multiword_key_at_text_and_line_edges(beit_yosef):
+    assert beit_yosef("בית  יוסף") == BEIT_YOSEF_NIKKUD
+    assert beit_yosef("שורה\nבית  יוסף\nשורה") == f"שורה\n{BEIT_YOSEF_NIKKUD}\nשורה"
+    assert beit_yosef("(בית\tיוסף)") == f"({BEIT_YOSEF_NIKKUD})"
+
+
+def test_multiword_key_output_is_the_value_as_written(beit_yosef):
+    out = beit_yosef("בית \t\u00A0 יוסף")
+    assert out == BEIT_YOSEF_NIKKUD
+    assert out.count(" ") == 1 and "\t" not in out and "\u00A0" not in out
+
+
+@pytest.mark.parametrize("brk", ["\n", "\r", "\r\n", "\n\n", " \n ", "\u2028", "\u2029"])
+def test_multiword_key_does_not_match_across_a_line_break(beit_yosef, brk):
+    text = f"בית{brk}יוסף"
+    assert beit_yosef(text) == text
+    text = f"הבית{brk}יוסף וגם ובבית{brk}יוסף"
+    assert beit_yosef(text) == text
+
+
+@pytest.mark.parametrize("text", ["בית-יוסף", "בית\u05BEיוסף", "ביתיוסף", "בית.יוסף", "בית,יוסף", "בית־יוסף", "בית_יוסף"])
+def test_multiword_key_does_not_match_hyphen_glued_or_punctuation(beit_yosef, text):
+    assert beit_yosef(text) == text
+
+
+@pytest.mark.parametrize("text", ["אבית יוסף", "בית יוספי", "בית יוסףא", "בית יוסף'ם"])
+def test_multiword_key_still_needs_word_boundaries(beit_yosef, text):
+    assert beit_yosef(text) == text
+
+
+def test_multiword_key_matches_inside_a_sentence_and_repeats(beit_yosef):
+    text = "כתב בית  יוסף וגם ב\tבית יוסף, וה\u00A0בית יוסף."
+    # "ב\tבית יוסף" -> ב is a separate word, "ה\u00A0בית יוסף" -> ה is a separate word
+    assert beit_yosef(text) == (
+        f"כתב {BEIT_YOSEF_NIKKUD} וגם ב\t{BEIT_YOSEF_NIKKUD}, וה\u00A0{BEIT_YOSEF_NIKKUD}."
+    )
+
+
+def test_single_word_entries_still_work_next_to_multiword_entry(beit_yosef):
+    assert beit_yosef("שפתי") == SHAFTEI
+    assert beit_yosef("בשפתי נבילה") == "ב" + SHAFTEI + " " + NEVILA
+    assert beit_yosef('הרמב"ם') == "ה" + RAMBAM
+    assert beit_yosef('ב"י') == RABBINIC_NIKKUD_DICT['ב"י']
+    assert beit_yosef("בית") == "בית"  # first word of the key alone is not an entry
+    assert beit_yosef("יוסף") == "יוסף"
+    # the multi-word entry and the single-word ones in one text, mixed gaps
+    assert beit_yosef("שפתי  כהן ובית\tיוסף נבילה") == f"{SHAFTEI}  כהן ו{BEIT_YOSEF_NIKKUD} {NEVILA}"
+
+
+def test_multiword_entry_is_idempotent(beit_yosef):
+    once = beit_yosef("הבית  יוסף, בית\tיוסף ובבית\u00A0יוסף.")
+    assert once != "הבית  יוסף, בית\tיוסף ובבית\u00A0יוסף."
+    assert beit_yosef(once) == once
+
+
+def test_multiword_entry_in_rabbinic_dict_is_used_too(monkeypatch):
+    an._build_matcher.cache_clear()
+    monkeypatch.setitem(RABBINIC_NIKKUD_DICT, "בית יוסף", BEIT_YOSEF_NIKKUD)
+    try:
+        assert apply("בית  יוסף") == BEIT_YOSEF_NIKKUD
+        assert apply("בית\u00A0יוסף\tנבילה") == f"{BEIT_YOSEF_NIKKUD}\t{NEVILA}"
+        assert apply("בית\nיוסף") == "בית\nיוסף"
+    finally:
+        an._build_matcher.cache_clear()
+
+
+def test_multiword_key_with_quote_variants_and_spaces(monkeypatch):
+    """Quote canonicalization and blank collapsing work together in one key."""
+    an._build_matcher.cache_clear()
+    monkeypatch.setattr(an, "additional_nikkud_corrections", [('מהר"ם שיף', "מַהֲרַם שִׁיף")])
+    try:
+        assert apply('מהר"ם  שיף') == "מַהֲרַם שִׁיף"
+        assert apply("מהר\u05F4ם\u00A0שיף") == "מַהֲרַם שִׁיף"
+        assert apply('למהר"ם\tשיף') == "ל" + "מַהֲרַם שִׁיף"
+        assert apply('מהר"ם\nשיף') == apply('מהר"ם') + "\nשיף"
+    finally:
+        an._build_matcher.cache_clear()
+
+
+def test_key_with_extra_blanks_in_the_dict_is_normalized(monkeypatch):
+    an._build_matcher.cache_clear()
+    monkeypatch.setattr(an, "additional_nikkud_corrections", [("בית \u00A0 יוסף", BEIT_YOSEF_NIKKUD)])
+    try:
+        assert apply("בית יוסף") == BEIT_YOSEF_NIKKUD
+        assert apply("בית\t\tיוסף") == BEIT_YOSEF_NIKKUD
+    finally:
+        an._build_matcher.cache_clear()
+
+
+# --- the real multi-word entry in RABBINIC_NIKKUD_DICT -----------------------
+
+def test_even_haezer_is_a_real_multiword_entry():
+    assert "אבן העזר" in RABBINIC_NIKKUD_DICT
+    assert apply("אבן העזר") == EVEN_HAEZER
+
+
+@pytest.mark.parametrize("gap", ["  ", "   ", "\t", "\u00A0", " \u00A0"], ids=["2sp", "3sp", "tab", "nbsp", "mixed"])
+def test_even_haezer_with_extra_blanks(gap):
+    assert apply(f"אבן{gap}העזר") == EVEN_HAEZER
+    assert apply(f"באבן{gap}העזר.") == "ב" + EVEN_HAEZER + "."
+    assert apply(f"ראה ובאבן{gap}העזר, סימן") == f"ראה ו" + "ב" + EVEN_HAEZER + ", סימן"
+
+
+@pytest.mark.parametrize("text", ["אבן\nהעזר", "אבן\r\nהעזר", "אבן-העזר", "אבןהעזר"])
+def test_even_haezer_not_matched_across_break_hyphen_or_glued(text):
+    assert apply(text) == text
+
+
+def test_context_regexes_and_letter_names_unaffected_by_blank_rule():
+    # none of the context words / letter names contains a space, so nothing changes for them
+    assert all(" " not in w for w in an.LETTER_NAME_CONTEXT_WORDS)
+    assert all(" " not in w for w in an.LETTER_NAMES)
+    assert all(" " not in k for k in NO_PREFIX_NIKKUD_DICT)
+    an._letter_context_regexes.cache_clear()
+    an._letter_context_regexes(tuple(DEFAULT_PREFIXES))  # compiles
+    assert apply("סימן צדי הא") == f"סימן {NO_PREFIX_NIKKUD_DICT['צדי']} {NO_PREFIX_NIKKUD_DICT['הא']}"
+    assert apply("סימן  \t צדי") == f"סימן  \t {NO_PREFIX_NIKKUD_DICT['צדי']}"
+    assert apply("סימן\nצדי") == "סימן\nצדי"
+    assert an._key_to_regex("סי'") == "סי['\u05F3]"
+    assert an._key_to_regex("a b") == f"a{an._BLANK}+b"
+    assert an._norm("אבן \t\u00A0 העזר\u05F4") == 'אבן העזר"'
