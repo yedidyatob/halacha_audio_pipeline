@@ -12,6 +12,9 @@ All prefixed entries share ONE prefix set, DEFAULT_PREFIXES (generated from a si
 Matching is done with ONE compiled regex (see ``_build_matcher``) using word-boundary
 lookarounds, so replacements work at the start/end of the text or a line, next to
 punctuation, brackets, quotes and hyphens, but never inside a longer word.
+
+Multi-word keys (e.g. "אבן העזר"): a space inside a key matches any run of spaces, tabs and
+NBSP (``_BLANK``+), never a line break (\\n, \\r); the output is the dict value as written.
 """
 
 from __future__ import annotations
@@ -287,6 +290,10 @@ _WORD_CHARS = "\u05D0-\u05EA\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4-\u05C7"
 # gershayim ״ (U+05F4), ASCII apostrophe ' and geresh ׳ (U+05F3).
 _QUOTE_CHARS = "\"\u05F4'\u05F3"
 
+# Spaces inside a key are not part of the boundary rule below: they match a run of
+# blanks (space / tab / NBSP, see _BLANK), never a line break. Matched text is normalized
+# with _norm (quotes canonicalized, blank runs collapsed to one space) before dict lookup.
+#
 # Boundary rule (applied to the whole match, prefix included):
 #   BEFORE: the match must not be preceded by a word char, and must not be preceded
 #           by <word char><quote> (a quote glued to the end of a previous letter is
@@ -300,20 +307,37 @@ _AFTER = f"(?![{_WORD_CHARS}])(?![{_QUOTE_CHARS}][{_WORD_CHARS}])"
 
 _CANON_QUOTES = str.maketrans({"\u05F4": '"', "\u05F3": "'"})
 
+# Blank space that does NOT cross a line: space, tab, NBSP. Never \n or \r.
+# A space inside a dict key (אבן העזר, בית יוסף) matches a run of one or more of these.
+_BLANK = "[ \t\u00A0]"
+_BLANK_RUN = re.compile(f"{_BLANK}+")
+
 
 def _canon(key: str) -> str:
     """Normalizes gershayim/geresh to ASCII " and ' so both forms hit the same entry."""
     return key.translate(_CANON_QUOTES)
 
 
+def _norm(text: str) -> str:
+    """Canonical form used for dict lookups: canon quotes + each run of blanks -> one ASCII space."""
+    return _BLANK_RUN.sub(" ", _canon(text))
+
+
 def _key_to_regex(key: str) -> str:
-    """Escapes ``key`` for a regex, letting " match ״ as well and ' match ׳."""
+    """
+    Escapes ``key`` for a regex, letting " match ״ as well and ' match ׳.
+
+    A space in the key matches a run of one or more blanks (space / tab / NBSP), never a
+    line break, so "אבן העזר" also matches "אבן  העזר" and "אבן\u00A0העזר" but not "אבן\nהעזר".
+    """
     out = []
-    for ch in _canon(key):
+    for ch in _norm(key):
         if ch == '"':
             out.append('["\u05F4]')
         elif ch == "'":
             out.append("['\u05F3]")
+        elif ch == " ":
+            out.append(_BLANK + "+")
         else:
             out.append(re.escape(ch))
     return "".join(out)
@@ -348,7 +372,6 @@ LETTER_NAMES: tuple[str, ...] = (
     "למד", "מם", "נון", "סמך", "עין", "פא", "קוף", "ריש", "שין", "תו", "הא",
 )
 
-_BLANK = "[ \t\u00A0]"  # blank space that does not cross a line
 # allowed between a context word and the letter name (no sentence punctuation)
 _CONTEXT_GAP = (
     "[ \t\u00A0\"\u05F4'\u05F3:\\-\u05BE\u2013\u2014()\\[\\]]{0,4}"
@@ -405,13 +428,13 @@ def _build_matcher(
     """
     replacements: dict[str, str] = {}
     for plain, nikkuded in standalone:
-        replacements[_canon(plain)] = nikkuded
+        replacements[_norm(plain)] = nikkuded
     for plain, nikkuded in prefixable:  # prefixable entries win on a clash
-        replacements[_canon(plain)] = nikkuded
+        replacements[_norm(plain)] = nikkuded
     if not replacements:
         return lambda text: text
-    prefix_keys = [_canon(p) for p, _ in prefixable]
-    context_only = {_canon(p) for p, _ in standalone} - set(prefix_keys)
+    prefix_keys = [_norm(p) for p, _ in prefixable]
+    context_only = {_norm(p) for p, _ in standalone} - set(prefix_keys)
 
     prefix_list = sorted({p for p in prefixes if p}, key=lambda p: (-len(p), p))
     alternatives = [f"(?P<bare>{_alternation(replacements)})"]
@@ -423,13 +446,13 @@ def _build_matcher(
     def _sub(match: re.Match) -> str:
         bare = match.group("bare")
         if bare is not None:
-            key = _canon(bare)
+            key = _norm(bare)
             if key in context_only and not _has_letter_name_context(
                 match.string, match.start(), match.end(), prefixes
             ):
                 return match.group(0)
             return replacements[key]
-        return match.group("pre") + replacements[_canon(match.group("key"))]
+        return match.group("pre") + replacements[_norm(match.group("key"))]
 
     return lambda text: pattern.sub(_sub, text)
 
