@@ -1,4 +1,5 @@
-"""Fixed lesson intro/outro: structure- and placeholder-based tests (no frozen Hebrew wording)."""
+"""Fixed lesson intro/outro: structure- and placeholder-based tests, plus one exact-wording test
+for the user-approved text (siman 94)."""
 import os
 import re
 from unittest.mock import mock_open, patch
@@ -127,7 +128,7 @@ def test_repo_intro_and_outro_are_short_and_use_the_siman():
     assert "{spoken_siman}" in framing["intro"] and "{hebrew_section}" in framing["intro"]
     assert "{spoken_siman}" in framing["outro"]
     assert len(framing["intro"].strip().splitlines()) <= 5
-    assert len(framing["outro"].strip().splitlines()) <= 2
+    assert len(framing["outro"].strip().splitlines()) <= 5
 
 
 def test_repo_framing_renders_for_every_siman_without_gaps():
@@ -153,3 +154,40 @@ def test_polishing_instruction_forbids_llm_greeting_and_closing():
     instruction = data["polishing_instruction"]
     assert "בקוד" in instruction  # tells the model the frame is added in code
     assert "פתח וסיים בברכות" not in instruction  # the old "open and close with blessings" rule is gone
+
+
+# The user-approved wording (kept verbatim, only the siman is a placeholder).
+EXPECTED_INTRO_94 = (
+    "שלום לכולם, נפתח את סימן צָדִי דלת ביורה דעה.\n"
+    "זה שיעור הכנה למבחני הרבנות. נתחיל מהטור והבית יוסף, נמשיך לשולחן ערוך והרמ\"א, ונסיים בנושאי הכלים.\n"
+    "אחרי כל חלק, סיכום קצר של עיקרי הדברים.\n"
+    "נתחיל."
+)
+EXPECTED_OUTRO_94 = (
+    "עד כאן סימן צָדִי דלת.\n"
+    "מומלץ לעצור כאן, לחזור על הדברים בעל פה, ורק אז להמשיך.\n"
+    "תודה שהקשבתם, והצלחה רבה בהכנה למבחנים.\n"
+    "נתראה בשיעור הבא, בעזרת השם."
+)
+
+
+def test_repo_framing_renders_the_approved_wording_for_siman_94():
+    framing = _repo_framing()
+    assert render_lesson_frame(framing["intro"], 94, "יורה דעה") == EXPECTED_INTRO_94
+    assert render_lesson_frame(framing["outro"], 94, "יורה דעה") == EXPECTED_OUTRO_94
+
+
+def test_repo_framing_uses_hebrew_section_without_a_doubled_prefix():
+    # {hebrew_section} yields the bare name (e.g. "יורה דעה"); the template supplies the ב prefix.
+    intro = _repo_framing()["intro"]
+    assert "ב{hebrew_section}" in intro
+    assert "באורח חיים" in render_lesson_frame(intro, 94, "אורח חיים")
+
+
+def test_repo_framing_has_no_mojibake_and_nikkud_only_in_the_spoken_siman():
+    framing = _repo_framing()
+    for key in ("intro", "outro"):
+        text = render_lesson_frame(framing[key], 94, "יורה דעה")
+        text = text.replace(int_to_spoken_gematria(94), "")  # צָדִי is voweled on purpose (TTS)
+        assert "\ufffd" not in text and "\u00d7" not in text and "\u00c3" not in text
+        assert not POINTS.search(text)  # the rest of the fixed text is plain, unvoweled Hebrew
