@@ -177,7 +177,12 @@ def test_engines_require_gap_arguments():
 # Config loading
 # ---------------------------------------------------------------------------
 
+_FRAMING_YAML = 'lesson_framing:\n  intro: "x"\n  outro: "y"\n'
+
+
 def _load_config(yaml_content: str) -> PipelineConfig:
+    if "lesson_framing" not in yaml_content:
+        yaml_content += "\n" + _FRAMING_YAML  # required key, irrelevant to the gap tests
     with patch("builtins.open", mock_open(read_data=yaml_content)), \
          patch("os.path.exists", return_value=True), \
          patch("os.makedirs"):

@@ -3,6 +3,7 @@ import yaml
 from typing import Dict, Any
 from pipeline.logger import get_logger
 from pipeline.domain import SECTIONS_METADATA
+from pipeline.lesson_framing import validate_lesson_template
 from pipeline.tts import validate_gap_ms
 
 logger = get_logger(__name__)
@@ -141,6 +142,18 @@ class PipelineConfig:
                     f"Supported prebuilt voices are: Puck, Charon, Kore, Fenrir, Aoede, Achird."
                 )
                 
+        # Fixed lesson intro/outro, glued around the polished script in code (not LLM-written).
+        # Required: config.yaml is the single source of truth. Use "" to disable one of them.
+        framing = self.config_data.get("lesson_framing") or {}
+        for key, attr in (("intro", "lesson_intro_template"), ("outro", "lesson_outro_template")):
+            template = framing.get(key)
+            if template is None:
+                raise ValueError(f"Missing required configuration parameter '{key}' under 'lesson_framing' in config.yaml.")
+            if not isinstance(template, str):
+                raise ValueError(f"'lesson_framing.{key}' in config.yaml must be a string, got {type(template).__name__}.")
+            validate_lesson_template(key, template)
+            setattr(self, attr, template.strip())
+
         # Directory setup
         dirs = self.config_data.get("directories", {})
         self.output_dir = dirs.get("output_dir", "./output")

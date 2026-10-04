@@ -60,3 +60,43 @@ def gematria_to_int(text: str) -> Optional[int]:
         else:
             return None
     return val if val > 0 else None
+
+
+# Spoken (TTS) names of the Hebrew letters, used to read a siman number aloud
+# (94 -> "צדי דלת"). The letters that a TTS engine tends to misread are voweled:
+# ה / פ / צ / ו use the same forms as the letter-name entries of apply_nikkud
+# (הֵא, פֵּא, צָדִי); the vav is "וָו". The siman prompt convention is צדי (not צדיק).
+LETTER_NAMES = {
+    "א": "אלף",
+    "ב": "בית",
+    "ג": "גימל",
+    "ד": "דלת",
+    "ה": "הֵא",
+    "ו": "וָו",
+    "ז": "זין",
+    "ח": "חית",
+    "ט": "טית",
+    "י": "יוד",
+    "כ": "כף",
+    "ל": "למד",
+    "מ": "מם",
+    "נ": "נון",
+    "ס": "סמך",
+    "ע": "עין",
+    "פ": "פֵּא",
+    "צ": "צָדִי",
+    "ק": "קוף",
+    "ר": "ריש",
+    "ש": "שין",
+    "ת": "תו",
+}
+
+
+def int_to_spoken_gematria(num: int) -> str:
+    """
+    Phonetic letter-name form of a number for TTS: 94 -> 'צדי דלת', 15 -> 'טית וָו' (voweled
+    where LETTER_NAMES says so). Uses the same letters as :func:`int_to_gematria`, without
+    the quote marks; valid for 1..999.
+    """
+    written = int_to_gematria(num)
+    return " ".join(LETTER_NAMES[ch] for ch in written if ch in LETTER_NAMES)
