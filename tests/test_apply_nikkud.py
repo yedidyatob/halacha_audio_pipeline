@@ -8,7 +8,6 @@ from pipeline.apply_nikkud import (
     RABBINIC_NIKKUD_DICT,
     additional_nikkud_corrections,
     apply_nikkud_to_abbreviations as apply,
-    build_full_nikkud_map,
 )
 
 # Expected values come from the module's own tables (avoids Unicode mark-order typos).
@@ -22,12 +21,22 @@ RAMBAM = RABBINIC_NIKKUD_DICT['רמב"ם']
 # ---------------------------------------------------------------------------
 
 def test_public_api_importable():
-    assert callable(an.expand_correction_pair)
-    assert callable(an.build_additional_nikkud_map)
-    assert an.expand_correction_pair("שפתי", SHAFTEI)[" שפתי "] == f" {SHAFTEI} "
-    full = build_full_nikkud_map()
-    assert full['רמב"ם'] == RAMBAM and full["הא"] == NO_PREFIX_NIKKUD_DICT["הא"] and full["שפתי"] == SHAFTEI
+    """Live public surface: dicts + prefixes + apply; no legacy expanders."""
+    assert callable(apply)
     assert additional_nikkud_corrections and RABBINIC_NIKKUD_DICT and NO_PREFIX_NIKKUD_DICT
+    assert DEFAULT_PREFIXES and DEFAULT_PREFIXES[0] == ""
+    assert apply('רמב"ם') == RAMBAM
+    assert apply("שפתי כהן") == f"{SHAFTEI} כהן"
+    assert apply("סימן הא") == f"סימן {NO_PREFIX_NIKKUD_DICT['הא']}"
+    for name in (
+        "boundary_variants",
+        "prefixed_variants",
+        "expand_correction_pair",
+        "build_additional_nikkud_map",
+        "build_full_nikkud_map",
+        "DEFAULT_TRAILING_PUNCT",
+    ):
+        assert not hasattr(an, name), name
 
 
 def test_prefix_list_is_clean():
