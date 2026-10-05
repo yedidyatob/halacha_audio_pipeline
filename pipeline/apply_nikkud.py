@@ -21,19 +21,16 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Iterable
 
 # ---------------------------------------------------------------------------
-# Boundary + prefix expansion helpers
-#
-# Legacy string-expansion helpers (kept importable). apply_nikkud_to_abbreviations no
-# longer uses them: it matches with a boundary-aware regex instead (see below).
+# Hebrew prefixes (shared by every prefixable entry)
 # ---------------------------------------------------------------------------
 
 # Single source of truth for the Hebrew prefixes that may precede a replaced word.
 # The prefix is kept as-is in the output (prefix + nikkuded replacement).
-# The empty string stands for "no prefix" (used by the legacy expansion helpers below;
-# the regex matcher treats the prefix as optional and skips it).
+# The empty string stands for "no prefix"; the regex matcher treats the prefix as
+# optional and filters "" out when building the alternation.
 #
 # The set is GENERATED from this rule (see _generate_prefixes):
 #
@@ -72,132 +69,18 @@ def _generate_prefixes() -> tuple[str, ...]:
 
 DEFAULT_PREFIXES: tuple[str, ...] = _generate_prefixes()
 
-DEFAULT_TRAILING_PUNCT: tuple[str, ...] = (
-    "",  # no trailing punctuation
-    ".",
-    ",",
-    "!",
-    "?",
-    ":",
-    ";",
-)
-
-
-def boundary_variants(
-    word: str,
-    trailing_punct: Sequence[str] | None = None,
-) -> list[str]:
-    """
-    Expand a token into common in-text forms.
-
-    For each trailing punctuation mark, produce a form with a leading space and
-    that mark after the word. When there is no trailing punctuation, produce
-    a form with a space on both sides.
-
-    Examples for word="שולחן":
-      " שולחן ", " שולחן.", " שולחן,", " שולחן!", " שולחן?", ...
-    """
-    if trailing_punct is None:
-        trailing_punct = DEFAULT_TRAILING_PUNCT
-
-    variants: list[str] = []
-    seen: set[str] = set()
-
-    def _add(form: str) -> None:
-        if form not in seen:
-            seen.add(form)
-            variants.append(form)
-
-    for punct in trailing_punct:
-        if punct == "":
-            _add(f" {word} ")
-        else:
-            _add(f" {word}{punct}")
-
-    return variants
-
-
-def prefixed_variants(
-    word: str,
-    prefixes: Sequence[str] | None = None,
-    trailing_punct: Sequence[str] | None = None,
-) -> list[str]:
-    """
-    For each prefix (e.g. ב, מ, כ, ו, ה, מה, ל, וב), expand ``prefix + word`` with
-    all boundary variants from :func:`boundary_variants`.
-
-    The empty prefix is included by default so the bare word is covered as well.
-    """
-    if prefixes is None:
-        prefixes = DEFAULT_PREFIXES
-
-    variants: list[str] = []
-    seen: set[str] = set()
-    for prefix in prefixes:
-        for form in boundary_variants(prefix + word, trailing_punct=trailing_punct):
-            if form not in seen:
-                seen.add(form)
-                variants.append(form)
-    return variants
-
-
-def expand_correction_pair(
-    plain: str,
-    nikkuded: str,
-    prefixes: Sequence[str] | None = None,
-    trailing_punct: Sequence[str] | None = None,
-) -> dict[str, str]:
-    """
-    Expand a single (plain, nikkuded) pair into aligned boundary + prefix forms.
-
-    Example::
-
-        " בשולחן." → " בשׁוּלְחָן."
-    """
-    plain_forms = prefixed_variants(plain, prefixes=prefixes, trailing_punct=trailing_punct)
-    nikkuded_forms = prefixed_variants(nikkuded, prefixes=prefixes, trailing_punct=trailing_punct)
-    if len(plain_forms) != len(nikkuded_forms):
-        raise ValueError(
-            f"Variant count mismatch for pair ({plain!r}, {nikkuded!r}): "
-            f"{len(plain_forms)} vs {len(nikkuded_forms)}"
-        )
-    return dict(zip(plain_forms, nikkuded_forms))
-
-
 # ---------------------------------------------------------------------------
-# Additional word-level corrections (expanded with prefixes + punctuation)
+# Additional word-level corrections (same prefix set + regex boundaries as abbreviations)
 # ---------------------------------------------------------------------------
 
 # Add (plain_or_wrong_form, correctly_nikkuded_form) pairs here.
-# Each pair is expanded with prefixes + boundary punctuation into the mapper.
+# Each pair is matched by the regex matcher like RABBINIC_NIKKUD_DICT entries.
 # Example:
 #   ("שולחן", "שׁוּלְחָן"),
 additional_nikkud_corrections: list[tuple[str, str]] = [
     ("שפתי", "שִׂפְתֵי"),
     ("נבילה", "נְבֵילָה"),
-] 
-
-
-def build_additional_nikkud_map(
-    corrections: Iterable[tuple[str, str]] | None = None,
-    prefixes: Sequence[str] | None = None,
-    trailing_punct: Sequence[str] | None = None,
-) -> dict[str, str]:
-    """Build the expanded map from ``additional_nikkud_corrections`` (or a custom list)."""
-    if corrections is None:
-        corrections = additional_nikkud_corrections
-
-    mapping: dict[str, str] = {}
-    for plain, nikkuded in corrections:
-        mapping.update(
-            expand_correction_pair(
-                plain,
-                nikkuded,
-                prefixes=prefixes,
-                trailing_punct=trailing_punct,
-            )
-        )
-    return mapping
+]
 
 
 # ---------------------------------------------------------------------------
@@ -455,20 +338,6 @@ def _build_matcher(
         return match.group("pre") + replacements[_norm(match.group("key"))]
 
     return lambda text: pattern.sub(_sub, text)
-
-
-def build_full_nikkud_map() -> dict[str, str]:
-    """
-    Combine all entries into one ``plain -> nikkuded`` map: RABBINIC_NIKKUD_DICT,
-    NO_PREFIX_NIKKUD_DICT and additional_nikkud_corrections.
-
-    This is the *unexpanded* map (no prefixes / spacing variants): prefixes and word
-    boundaries are handled by the regex matcher in :func:`apply_nikkud_to_abbreviations`.
-    """
-    mapping = dict(RABBINIC_NIKKUD_DICT)
-    mapping.update(NO_PREFIX_NIKKUD_DICT)
-    mapping.update(additional_nikkud_corrections)
-    return mapping
 
 
 def apply_nikkud_to_abbreviations(text: str) -> str:
