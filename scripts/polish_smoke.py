@@ -12,8 +12,8 @@ def main():
     sys.path.insert(0, str(repo_root))
     os.chdir(repo_root)  # config.yaml / output/ paths are repo-relative
 
-    # Load .env from the repo root
-    dotenv_path = repo_root / ".env"
+    # Load .env from the folder above the repo (same as enhance_transcript.py)
+    dotenv_path = repo_root.parent / ".env"
 
     # Load the file
     load_dotenv(dotenv_path=dotenv_path)
