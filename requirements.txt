@@ -9,3 +9,4 @@ python-dotenv>=1.0.0
 lameenc>=1.7.0
 imageio-ffmpeg>=0.4.9
 
+mutagen
