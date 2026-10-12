@@ -11,7 +11,7 @@ from pipeline.apply_nikkud import (
 )
 
 # Expected values come from the module's own tables (avoids Unicode mark-order typos).
-SHAFTEI = dict(additional_nikkud_corrections)["שפתי"]
+SHAFTEI = dict(additional_nikkud_corrections)["שפתי כהן"]  # multi-word entry
 NEVILA = dict(additional_nikkud_corrections)["נבילה"]
 RAMBAM = RABBINIC_NIKKUD_DICT['רמב"ם']
 
@@ -26,7 +26,7 @@ def test_public_api_importable():
     assert additional_nikkud_corrections and RABBINIC_NIKKUD_DICT and NO_PREFIX_NIKKUD_DICT
     assert DEFAULT_PREFIXES and DEFAULT_PREFIXES[0] == ""
     assert apply('רמב"ם') == RAMBAM
-    assert apply("שפתי כהן") == f"{SHAFTEI} כהן"
+    assert apply("שפתי כהן") == SHAFTEI
     assert apply("סימן הא") == f"סימן {NO_PREFIX_NIKKUD_DICT['הא']}"
     for name in (
         "boundary_variants",
@@ -133,45 +133,48 @@ def test_prefix_examples_replaced_with_prefix_preserved(word):
 
 
 @pytest.mark.parametrize("word, key, value", [
-    ("בהשפתי", "שפתי", SHAFTEI), ("להשפתי", "שפתי", SHAFTEI), ("כהשפתי", "שפתי", SHAFTEI),
-    ("ובהשפתי", "שפתי", SHAFTEI), ("שלהנבילה", "נבילה", NEVILA), ("כשלהנבילה", "נבילה", NEVILA),
-    ("בשפתי", "שפתי", SHAFTEI), ("מהשפתי", "שפתי", SHAFTEI), ("ולנבילה", "נבילה", NEVILA),
+    ("בהשפתי כהן", "שפתי כהן", SHAFTEI), ("להשפתי כהן", "שפתי כהן", SHAFTEI), ("כהשפתי כהן", "שפתי כהן", SHAFTEI),
+    ("ובהשפתי כהן", "שפתי כהן", SHAFTEI), ("שלהנבילה", "נבילה", NEVILA), ("כשלהנבילה", "נבילה", NEVILA),
+    ("בשפתי כהן", "שפתי כהן", SHAFTEI), ("מהשפתי כהן", "שפתי כהן", SHAFTEI), ("ולנבילה", "נבילה", NEVILA),
 ])
 def test_correction_words_use_the_same_prefix_set(word, key, value):
     assert apply(word) == word[: -len(key)] + value
 
 
-@pytest.mark.parametrize("word", ['ארמב"ם', 'זהרמב"ם', 'בהה"רמב"ם', 'בהרמב"ם"ל', 'בהבשפתי', 'הבשפתי', 'לכהרמב"ם'])
+@pytest.mark.parametrize("word", ['ארמב"ם', 'זהרמב"ם', 'בהה"רמב"ם', 'בהרמב"ם"ל', 'בהבשפתי כהן', 'הבשפתי כהן', 'לכהרמב"ם'])
 def test_boundaries_and_invalid_combinations_still_not_matched(word):
     assert apply(word) == word
 
 
 # ---------------------------------------------------------------------------
-# Boundaries for an additional correction word (שפתי)
+# Boundaries for a multi-word additional correction entry (שפתי כהן)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("text, expected", [
-    ("זה שפתי כהן", f"זה {SHAFTEI} כהן"),                 # mid-sentence
-    ("שפתי כהן אומר", f"{SHAFTEI} כהן אומר"),             # start of text
-    ("שורה ראשונה\nשפתי כהן", f"שורה ראשונה\n{SHAFTEI} כהן"),  # start of line
-    ("אמר שפתי\nוהלאה", f"אמר {SHAFTEI}\nוהלאה"),         # end of line
-    ("כך אמר שפתי", f"כך אמר {SHAFTEI}"),                 # end of text
-    ("שפתי.", f"{SHAFTEI}."),
-    ("שפתי,", f"{SHAFTEI},"),
-    ("שפתי;", f"{SHAFTEI};"),
-    ("שפתי:", f"{SHAFTEI}:"),
-    ("שפתי!", f"{SHAFTEI}!"),
-    ("שפתי?", f"{SHAFTEI}?"),
-    ("(שפתי)", f"({SHAFTEI})"),
-    ("[שפתי]", f"[{SHAFTEI}]"),
-    ('"שפתי"', f'"{SHAFTEI}"'),
-    ("'שפתי'", f"'{SHAFTEI}'"),
-    ('אמר "שפתי כהן" שם', f'אמר "{SHAFTEI} כהן" שם'),
-    ("שפתי-כהן", f"{SHAFTEI}-כהן"),
-    ("כהן-שפתי", f"כהן-{SHAFTEI}"),
-    ("שפתי־כהן", f"{SHAFTEI}־כהן"),                       # maqaf is a separator
-    ("שפתי שפתי", f"{SHAFTEI} {SHAFTEI}"),
-    ("שפתי\tשפתי\r\nשפתי", f"{SHAFTEI}\t{SHAFTEI}\r\n{SHAFTEI}"),
+    ("זה שפתי כהן", f"זה {SHAFTEI}"),                     # end of text
+    ("זה שפתי כהן אומר", f"זה {SHAFTEI} אומר"),           # mid-sentence
+    ("שפתי כהן אומר", f"{SHAFTEI} אומר"),                 # start of text
+    ("שורה ראשונה\nשפתי כהן", f"שורה ראשונה\n{SHAFTEI}"),  # start of line
+    ("אמר שפתי כהן\nוהלאה", f"אמר {SHAFTEI}\nוהלאה"),     # end of line
+    ("שפתי כהן.", f"{SHAFTEI}."),
+    ("שפתי כהן,", f"{SHAFTEI},"),
+    ("שפתי כהן;", f"{SHAFTEI};"),
+    ("שפתי כהן:", f"{SHAFTEI}:"),
+    ("שפתי כהן!", f"{SHAFTEI}!"),
+    ("שפתי כהן?", f"{SHAFTEI}?"),
+    ("(שפתי כהן)", f"({SHAFTEI})"),
+    ("[שפתי כהן]", f"[{SHAFTEI}]"),
+    ('"שפתי כהן"', f'"{SHAFTEI}"'),
+    ("'שפתי כהן'", f"'{SHAFTEI}'"),
+    ('אמר "שפתי כהן" שם', f'אמר "{SHAFTEI}" שם'),
+    ("שפתי כהן-שם", f"{SHAFTEI}-שם"),
+    ("שם-שפתי כהן", f"שם-{SHAFTEI}"),
+    ("שפתי כהן שפתי כהן", f"{SHAFTEI} {SHAFTEI}"),
+    ("שפתי כהן\nשפתי כהן", f"{SHAFTEI}\n{SHAFTEI}"),
+    # the space inside the key matches a run of spaces / tabs / NBSP
+    ("שפתי  כהן", SHAFTEI),
+    ("שפתי\tכהן", SHAFTEI),
+    ("שפתי\u00A0כהן", SHAFTEI),
 ])
 def test_boundaries(text, expected):
     assert apply(text) == expected
@@ -179,27 +182,28 @@ def test_boundaries(text, expected):
 
 @pytest.mark.parametrize("prefix", ["ב", "ו", "ל", "מ", "ה", "כ", "ש", "וב", "וה", "ול", "מה", "שה", "וכש", "כש", "כשה", "וכשה", "שמ", "שמה", "כשב", "ומה"])
 def test_prefixes_are_preserved(prefix):
-    assert apply(f"אמר {prefix}שפתי כהן") == f"אמר {prefix}{SHAFTEI} כהן"
-    assert apply(f"{prefix}שפתי") == f"{prefix}{SHAFTEI}"
+    assert apply(f"אמר {prefix}שפתי כהן") == f"אמר {prefix}{SHAFTEI}"
+    assert apply(f"{prefix}שפתי כהן") == f"{prefix}{SHAFTEI}"
     assert apply(f"{prefix}נבילה.") == f"{prefix}{NEVILA}."
 
 
 def test_specific_prefix_examples():
-    assert apply("בשפתי") == "ב" + SHAFTEI
-    assert apply("ושפתי") == "ו" + SHAFTEI
-    assert apply("ולשפתי") == "ול" + SHAFTEI
-    assert apply("ששפתי") == "ש" + SHAFTEI
-    assert apply("מהשפתי") == "מה" + SHAFTEI
+    assert apply("בשפתי כהן") == "ב" + SHAFTEI
+    assert apply("ושפתי כהן") == "ו" + SHAFTEI
+    assert apply("ולשפתי כהן") == "ול" + SHAFTEI
+    assert apply("ששפתי כהן") == "ש" + SHAFTEI
+    assert apply("מהשפתי כהן") == "מה" + SHAFTEI
 
 
 @pytest.mark.parametrize("text", [
-    "הבשפתי",       # not a valid prefix combination
-    "שפתיים",       # longer word
-    "שפתיו",
-    "ישפתי",
-    "גשפתי",
-    "שפתי\"ם",      # quote glued to the following letter = inside a word
-    "ה\"שפתי",      # quote glued to the preceding letter
+    "הבשפתי כהן",   # not a valid prefix combination
+    "שפתי כהנים",   # longer word
+    "ישפתי כהן",
+    "גשפתי כהן",
+    "שפתי כהן\"ם",  # quote glued to the following letter = inside a word
+    "ה\"שפתי כהן",  # quote glued to the preceding letter
+    "שפתי",         # the bare first word is no longer an entry
+    "שפתי\nכהן",    # a key space never matches a line break
     "נבילות",
     "קנבילה",
 ])
@@ -209,7 +213,7 @@ def test_not_replaced_inside_longer_word(text):
 
 def test_already_nikkuded_words_are_not_touched():
     assert apply(SHAFTEI) == SHAFTEI
-    assert apply("בשִׂפְתֵי") == "בשִׂפְתֵי"
+    assert apply("בשִׂפְתֵי כהן") == "בשִׂפְתֵי כהן"
 
 
 # ---------------------------------------------------------------------------
@@ -559,14 +563,14 @@ def test_multiword_key_matches_inside_a_sentence_and_repeats(beit_yosef):
 
 
 def test_single_word_entries_still_work_next_to_multiword_entry(beit_yosef):
-    assert beit_yosef("שפתי") == SHAFTEI
-    assert beit_yosef("בשפתי נבילה") == "ב" + SHAFTEI + " " + NEVILA
+    assert beit_yosef("נבילה") == NEVILA
+    assert beit_yosef("בנבילה נבילה") == "ב" + NEVILA + " " + NEVILA
     assert beit_yosef('הרמב"ם') == "ה" + RAMBAM
     assert beit_yosef('ב"י') == RABBINIC_NIKKUD_DICT['ב"י']
     assert beit_yosef("בית") == "בית"  # first word of the key alone is not an entry
     assert beit_yosef("יוסף") == "יוסף"
     # the multi-word entry and the single-word ones in one text, mixed gaps
-    assert beit_yosef("שפתי  כהן ובית\tיוסף נבילה") == f"{SHAFTEI}  כהן ו{BEIT_YOSEF_NIKKUD} {NEVILA}"
+    assert beit_yosef("שפתי  כהן ובית\tיוסף נבילה") == f"{SHAFTEI} ו{BEIT_YOSEF_NIKKUD} {NEVILA}"
 
 
 def test_multiword_entry_is_idempotent(beit_yosef):
@@ -578,6 +582,10 @@ def test_multiword_entry_is_idempotent(beit_yosef):
 def test_multiword_entry_in_rabbinic_dict_is_used_too(monkeypatch):
     an._build_matcher.cache_clear()
     monkeypatch.setitem(RABBINIC_NIKKUD_DICT, "בית יוסף", BEIT_YOSEF_NIKKUD)
+    # the real additional_nikkud_corrections now has its own "בית יוסף"; drop it so the
+    # rabbinic-dict entry is the one under test
+    monkeypatch.setattr(an, "additional_nikkud_corrections",
+                        [(k, v) for k, v in additional_nikkud_corrections if k != "בית יוסף"])
     try:
         assert apply("בית  יוסף") == BEIT_YOSEF_NIKKUD
         assert apply("בית\u00A0יוסף\tנבילה") == f"{BEIT_YOSEF_NIKKUD}\t{NEVILA}"
