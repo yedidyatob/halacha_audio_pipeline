@@ -197,9 +197,30 @@ class PipelineConfig:
             raise ValueError(f"'pronunciation.temperature' must be a number, got {value!r}.")
         return float(value)
 
+    def _pronunciation_word_list(self, key: str) -> list:
+        value = self._pronunciation_value(key)
+        if not isinstance(value, list) or not all(isinstance(w, str) and w.strip() for w in value):
+            raise ValueError(f"'pronunciation.{key}' must be a list of non-empty strings, got {value!r}.")
+        return [w.strip() for w in value]
+
+    @property
+    def pronunciation_always_tag(self) -> list:
+        return self._pronunciation_word_list("always_tag")
+
+    @property
+    def pronunciation_never_tag(self) -> list:
+        return self._pronunciation_word_list("never_tag")
+
+    @staticmethod
+    def _render_word_list(words: list) -> str:
+        return ", ".join(words) if words else "אין"
+
     @property
     def pronunciation_instruction(self) -> str:
+        """The prompt with {always_tag} / {never_tag} filled in (targeted replace; other braces untouched)."""
         value = self.config_data.get("pronunciation_instruction")
         if not value or not str(value).strip():
             raise ValueError("Missing required configuration parameter 'pronunciation_instruction' in config.yaml.")
-        return value
+        return (str(value)
+                .replace("{always_tag}", self._render_word_list(self.pronunciation_always_tag))
+                .replace("{never_tag}", self._render_word_list(self.pronunciation_never_tag)))
