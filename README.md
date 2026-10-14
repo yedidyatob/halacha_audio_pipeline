@@ -79,6 +79,8 @@ The pipeline runs in three stages:
 ### Pronunciation tags (Stage 3.4)
 
 Configured in `config.yaml` (`pronunciation:` section + `pronunciation_instruction`; no code defaults).
+`pronunciation.always_tag` / `pronunciation.never_tag` are word lists filled into the `{always_tag}` /
+`{never_tag}` placeholders of the instruction (joined with ", "; an empty list renders as "אין").
 The output is validated: with the tags stripped it must equal the input exactly (only trailing
 whitespace / line endings may differ) and every tag must be well formed. There is no untagged fallback: if the LLM call fails or the output
 is invalid, that siman fails (no transcript, no TTS) and the run continues with the next siman. Tags are passed unchanged to every TTS engine

@@ -140,6 +140,10 @@ pronunciation:
   engine: "gemini"  # "gemini" or "openai" (openai reuses generator.openai.service_tier)
   model_name: "gemini-3.1-pro-preview"
   temperature: 0.2
+  # Filled into {always_tag} / {never_tag} in pronunciation_instruction (joined with ", ";
+  # an empty list renders as "אין").
+  always_tag: ["עובר בהמה", "כותח"]
+  never_tag: ["דאורייתא", "דרבנן"]
 
 pronunciation_instruction: |
     אתה עורך הגייה לשיעור שמע בעברית שיוקרא במנוע TTS.
@@ -147,14 +151,21 @@ pronunciation_instruction: |
     השינוי היחיד המותר: לעטוף מילים או צירופים שהמנוע עלול לקרוא לא נכון בתגית:
     <phoneme alphabet="ipa" ph="...">המילה המקורית</phoneme>
 
-    עטוף רק:
-    - מילים דו-משמעיות שההגייה שלהן תלויה בהקשר (פת, סופר, ספר).
+    עטוף מילה רק אם קורא עברית בלי ניקוד עלול לקרוא אותה בשתי דרכים שונות, ובהקשר הזה נכונה דווקא אחת מהן:
+    - אותן אותיות, משמעות והגייה אחרת: עובר (עֻבָּר / עוֹבֵר), פת, ספר, סופר.
+    - מילה שנוטים לקרוא בטעות: כותח.
     - שמות אותיות (טית, הא, פא, צדי) כשהם משמשים כאות.
-    - מונחים ארמיים או תורניים שמנוע רגיל לא מכיר.
-    אל תעטוף מילים ברורות. אם אינך בטוח, אל תעטוף.
+    אל תעטוף מילה רק בגלל שהיא ארמית או תורנית, אם יש לה קריאה מקובלת אחת (דאורייתא, דרבנן, מותר, אסור, בדיעבד).
+    אם אינך בטוח, אל תעטוף.
+
+    תמיד לעטוף: {always_tag}
+    לעולם לא לעטוף: {never_tag}
+
     בתוך התגית השאר את המילה המקורית כפי שהיא, וכתוב ב-ph את ההגייה ב-IPA במבטא ישראלי.
 
-    דוגמאות:
+    דוגמאות לעטיפה:
+    <phoneme alphabet="ipa" ph="uˈbar beheˈma">עובר בהמה</phoneme>
+    <phoneme alphabet="ipa" ph="koˈtaχ">כותח</phoneme>
     <phoneme alphabet="ipa" ph="tet">טית</phoneme>
     <phoneme alphabet="ipa" ph="pat">פת</phoneme>
     <phoneme alphabet="ipa" ph="taˈut soˈfer">טעות סופר</phoneme>
