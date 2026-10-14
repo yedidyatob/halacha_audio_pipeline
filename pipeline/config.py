@@ -155,3 +155,51 @@ class PipelineConfig:
         os.makedirs(self.relations_dir, exist_ok=True)
         
         logger.info("Configuration validated and directories established.")
+
+    # ------------------------------------------------------------------
+    # Pronunciation tagging stage (IPA phoneme tags). No defaults: every value
+    # must come from config.yaml; a missing key raises a clear ValueError.
+    # ------------------------------------------------------------------
+    def _pronunciation_section(self) -> Dict[str, Any]:
+        section = self.config_data.get("pronunciation")
+        if not isinstance(section, dict):
+            raise ValueError("Missing required configuration section 'pronunciation' in config.yaml.")
+        return section
+
+    def _pronunciation_value(self, key: str):
+        section = self._pronunciation_section()
+        if section.get(key) is None:
+            raise ValueError(f"Missing required configuration parameter '{key}' under 'pronunciation' in config.yaml.")
+        return section[key]
+
+    @property
+    def pronunciation_enabled(self) -> bool:
+        value = self._pronunciation_value("enabled")
+        if not isinstance(value, bool):
+            raise ValueError(f"'pronunciation.enabled' must be true or false, got {value!r}.")
+        return value
+
+    @property
+    def pronunciation_engine(self) -> str:
+        engine = str(self._pronunciation_value("engine")).lower()
+        if engine not in ("gemini", "openai"):
+            raise ValueError(f"Invalid pronunciation engine: '{engine}'. Must be 'gemini' or 'openai'.")
+        return engine
+
+    @property
+    def pronunciation_model_name(self) -> str:
+        return self._pronunciation_value("model_name")
+
+    @property
+    def pronunciation_temperature(self) -> float:
+        value = self._pronunciation_value("temperature")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"'pronunciation.temperature' must be a number, got {value!r}.")
+        return float(value)
+
+    @property
+    def pronunciation_instruction(self) -> str:
+        value = self.config_data.get("pronunciation_instruction")
+        if not value or not str(value).strip():
+            raise ValueError("Missing required configuration parameter 'pronunciation_instruction' in config.yaml.")
+        return value

@@ -47,6 +47,28 @@ def plan_gaps(break_types: list, paragraph_ms: int, sentence_ms: int) -> list:
     return gaps
 
 
+_PHONEME_SPAN_RE = re.compile(r"<phoneme\b[^>]*>.*?</phoneme>", re.IGNORECASE | re.DOTALL)
+
+
+def _split_outside_phoneme(text: str, pattern: str) -> list:
+    """
+    re.split(pattern, text) that never cuts inside a <phoneme ...>...</phoneme> span
+    (SSML phoneme tags are passed through to the TTS engine and must stay intact).
+    Separator matches are discarded, like re.split without groups.
+    """
+    spans = [m.span() for m in _PHONEME_SPAN_RE.finditer(text)]
+    if not spans:
+        return re.split(pattern, text)
+    parts, pos = [], 0
+    for m in re.finditer(pattern, text):
+        if any(start < m.end() and m.start() < end for start, end in spans):
+            continue  # separator overlaps a tag span: do not split here
+        parts.append(text[pos:m.start()])
+        pos = m.end()
+    parts.append(text[pos:])
+    return parts
+
+
 class BaseTTS(ABC):
     """
     Abstract Base Class for Text-to-Speech synthesis engines.  Subclasses that produce MP3 per chunk must implement:
@@ -170,7 +192,7 @@ class BaseTTS(ABC):
             current_chunk = []
             current_length = 0
 
-        for para in text.split("\n"):
+        for para in _split_outside_phoneme(text, r"\n"):
             para = para.strip()
             if not para:
                 continue
@@ -179,10 +201,10 @@ class BaseTTS(ABC):
                 flush(BREAK_PARAGRAPH)
 
                 # Split by punctuation; every cut inside this paragraph is a "sentence" break.
-                sentences = re.split(r'(?<=[.!?])\s+', para)
+                sentences = _split_outside_phoneme(para, r'(?<=[.!?])\s+')
                 for sentence in sentences:
                     if len(sentence) > max_chars:
-                        words = sentence.split(" ")
+                        words = _split_outside_phoneme(sentence, " ")
                         for word in words:
                             if current_length + len(word) + 1 > max_chars:
                                 flush(BREAK_SENTENCE)
