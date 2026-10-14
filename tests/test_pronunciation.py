@@ -161,6 +161,8 @@ pronunciation:
   engine: "Gemini"
   model_name: "m"
   temperature: 0.2
+  always_tag: []
+  never_tag: []
 """)
     assert cfg.pronunciation_enabled is True
     assert cfg.pronunciation_engine == "gemini"
@@ -172,7 +174,8 @@ pronunciation:
 def test_config_missing_section_errors():
     cfg = _config()
     for prop in ("pronunciation_enabled", "pronunciation_engine", "pronunciation_model_name",
-                 "pronunciation_temperature", "pronunciation_instruction"):
+                 "pronunciation_temperature", "pronunciation_instruction",
+                 "pronunciation_always_tag", "pronunciation_never_tag"):
         with pytest.raises(ValueError, match="pronunciation"):
             getattr(cfg, prop)
 
@@ -201,12 +204,64 @@ pronunciation:
         cfg.pronunciation_engine
 
 
+PLACEHOLDER_PROMPT = 'תמיד: {always_tag} | לעולם: {never_tag} | <phoneme alphabet="ipa" ph="{x}">{y}</phoneme>'
+
+
+def _placeholder_config(always, never):
+    return _config(f"""
+pronunciation_instruction: '{PLACEHOLDER_PROMPT}'
+pronunciation:
+  enabled: true
+  engine: "gemini"
+  model_name: "m"
+  temperature: 0.2
+  always_tag: {always}
+  never_tag: {never}
+""")
+
+
+def test_instruction_placeholders_filled():
+    cfg = _placeholder_config('["עובר בהמה", "כותח"]', '["דאורייתא", "דרבנן"]')
+    assert cfg.pronunciation_always_tag == ["עובר בהמה", "כותח"]
+    assert cfg.pronunciation_never_tag == ["דאורייתא", "דרבנן"]
+    assert cfg.pronunciation_instruction == (
+        'תמיד: עובר בהמה, כותח | לעולם: דאורייתא, דרבנן | '
+        '<phoneme alphabet="ipa" ph="{x}">{y}</phoneme>'  # other braces left untouched
+    )
+
+
+def test_instruction_empty_lists_render_none_word():
+    cfg = _placeholder_config("[]", "[]")
+    assert cfg.pronunciation_instruction.startswith("תמיד: אין | לעולם: אין | ")
+
+
+def test_instruction_missing_lists_error():
+    cfg = _config("""
+pronunciation_instruction: "x {always_tag}"
+pronunciation:
+  enabled: true
+""")
+    with pytest.raises(ValueError, match="always_tag"):
+        cfg.pronunciation_instruction
+
+
+@pytest.mark.parametrize("bad", ['"כותח"', '[1, 2]', '[""]'])
+def test_instruction_invalid_list_errors(bad):
+    cfg = _placeholder_config(bad, "[]")
+    with pytest.raises(ValueError, match="always_tag"):
+        cfg.pronunciation_always_tag
+
+
 def test_real_config_yaml_has_pronunciation():
     from pipeline.config import PipelineConfig
     with patch("os.makedirs"):
         cfg = PipelineConfig("config.yaml")
     assert isinstance(cfg.pronunciation_enabled, bool)
     assert "phoneme" in cfg.pronunciation_instruction
+    assert "{always_tag}" not in cfg.pronunciation_instruction
+    assert "{never_tag}" not in cfg.pronunciation_instruction
+    assert "תמיד לעטוף: עובר בהמה, כותח" in cfg.pronunciation_instruction
+    assert "לעולם לא לעטוף: דאורייתא, דרבנן" in cfg.pronunciation_instruction
 
 
 # --- stage wiring ------------------------------------------------------------
