@@ -9,6 +9,8 @@ Writes:
   <output>              the tagged script (default: <input stem>_tagged.txt next to the input)
   <output stem>_tags.txt  one 'word<TAB>ipa' line per tagged word
 Runs regardless of pronunciation.enabled (calling the script is the explicit request).
+If tagging fails (LLM error, text changed outside tags, malformed tags) nothing is written
+and the script exits with code 1.
 """
 import argparse
 import os
@@ -52,7 +54,7 @@ def main(argv=None):
 
     from pipeline.config import PipelineConfig
     from pipeline.factory import create_pronunciation_generator
-    from pipeline.pronunciation import tag_pronunciation, format_pairs
+    from pipeline.pronunciation import tag_pronunciation, format_pairs, PronunciationTaggingError
     from pipeline.apply_nikkud import apply_nikkud_to_abbreviations
 
     if not os.path.exists(args.input):
@@ -66,7 +68,12 @@ def main(argv=None):
     instruction = config.pronunciation_instruction
     print(f"Tagging {args.input} ({len(text)} chars) via {config.pronunciation_engine} / {generator.model_name}...")
 
-    tagged, pairs = tag_pronunciation(text, lambda t: generator.generate_text(instruction, t))
+    try:
+        tagged, pairs = tag_pronunciation(text, lambda t: generator.generate_text(instruction, t))
+    except PronunciationTaggingError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        print("Nothing was written.", file=sys.stderr)
+        sys.exit(1)
     if args.apply_nikkud:
         tagged = apply_nikkud_to_abbreviations(tagged)
 
@@ -79,7 +86,7 @@ def main(argv=None):
 
     print(f"Tagged script saved to: {args.output}")
     print(f"Tag list saved to:      {tags_path}")
-    print(f"Words tagged: {len(pairs)}" + ("" if pairs else " (none, or the LLM output was rejected - see warnings)"))
+    print(f"Words tagged: {len(pairs)}")
 
 
 if __name__ == "__main__":

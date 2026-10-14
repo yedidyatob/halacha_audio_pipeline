@@ -80,8 +80,8 @@ The pipeline runs in three stages:
 
 Configured in `config.yaml` (`pronunciation:` section + `pronunciation_instruction`; no code defaults).
 The output is validated: with the tags stripped it must equal the input exactly (only trailing
-whitespace / line endings may differ) and every tag must be well formed; otherwise a warning is
-logged and the untagged script is used. Tags are passed unchanged to every TTS engine
+whitespace / line endings may differ) and every tag must be well formed. There is no untagged fallback: if the LLM call fails or the output
+is invalid, that siman fails (no transcript, no TTS) and the run continues with the next siman. Tags are passed unchanged to every TTS engine
 (ElevenLabs v3/v4 honors them; Google TTS ignores them silently), and TTS chunking never splits a tag.
 
 Standalone (Windows PowerShell, from the repo root):
@@ -92,6 +92,24 @@ Standalone (Windows PowerShell, from the repo root):
 # Synthesize any text file with the TTS engine configured in config.yaml
 .venv\Scripts\python scripts\tts_from_file.py output\<file>_transcript_tagged.txt
 ```
+
+`scripts/tag_pronunciation.py` likewise writes nothing and exits with code 1 if tagging fails.
+
+### Run summary and exit code
+
+A failure in Stage 3 for one siman (polishing, pronunciation tagging, nikkud/transcript save, TTS)
+fails only that siman; the remaining simanim still run. At the end, `main.py` logs a summary and
+exits with code 1 if any siman failed (0 otherwise):
+
+```
+===== Run summary =====
+Succeeded (2/3): 94, 96
+Failed (1/3): 95
+  - Siman 95 | stage: Stage 3.4 (Pronunciation tagging) | reason: pronunciation tagging output rejected: text changed outside tags: ...
+```
+
+Setup errors and Stage 1 / Stage 2 failures still abort the whole run immediately (exit 1),
+since the relations map needs every context draft.
 
 Output files are saved to `./output/` with timestamps preserved.
 

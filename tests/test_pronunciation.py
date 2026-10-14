@@ -6,6 +6,7 @@ import pytest
 from pipeline.pronunciation import (
     strip_phoneme_tags, extract_phoneme_pairs, find_malformed_tags, validate_tagged_output,
     tag_pronunciation, format_pairs, run_pronunciation_stage, split_phoneme_segments,
+    PronunciationTaggingError,
 )
 from pipeline.apply_nikkud import apply_nikkud_to_abbreviations
 from pipeline.tts import BaseTTS, _split_outside_phoneme
@@ -29,7 +30,7 @@ def test_extract_pairs():
     assert format_pairs(extract_phoneme_pairs(TAGGED)).splitlines()[0] == "טית\ttet"
 
 
-# --- validation / fallback ---------------------------------------------------
+# --- validation (failures raise) ---------------------------------------------------
 
 def test_valid_tagging_accepted():
     text, pairs = tag_pronunciation(ORIG, lambda t: TAGGED)
@@ -41,26 +42,28 @@ def test_trivial_whitespace_differences_tolerated():
     assert validate_tagged_output(ORIG, llm) is None
 
 
-def test_changed_text_falls_back_to_original(caplog):
+def test_changed_text_raises():
     changed = TAGGED.replace("עוסק", "דן")
-    text, pairs = tag_pronunciation(ORIG, lambda t: changed)
-    assert text == ORIG and pairs == []
-    assert "text changed outside tags" in caplog.text
+    with pytest.raises(PronunciationTaggingError, match="text changed outside tags"):
+        tag_pronunciation(ORIG, lambda t: changed)
 
 
-def test_inner_word_changed_falls_back():
+def test_inner_word_changed_raises():
     bad = TAGGED.replace(">טית<", ">טֵית<")
-    assert tag_pronunciation(ORIG, lambda t: bad) == (ORIG, [])
+    with pytest.raises(PronunciationTaggingError, match="text changed outside tags"):
+        tag_pronunciation(ORIG, lambda t: bad)
 
 
-def test_llm_exception_falls_back():
+def test_llm_exception_raises():
     def boom(_):
         raise RuntimeError("network")
-    assert tag_pronunciation(ORIG, boom) == (ORIG, [])
+    with pytest.raises(PronunciationTaggingError, match="LLM call failed: network"):
+        tag_pronunciation(ORIG, boom)
 
 
-def test_empty_output_falls_back():
-    assert tag_pronunciation(ORIG, lambda t: "  ") == (ORIG, [])
+def test_empty_output_raises():
+    with pytest.raises(PronunciationTaggingError, match="empty output"):
+        tag_pronunciation(ORIG, lambda t: "  ")
 
 
 @pytest.mark.parametrize("bad_tag", [
@@ -74,7 +77,8 @@ def test_empty_output_falls_back():
 def test_malformed_tags_rejected(bad_tag):
     llm = f"סימן {bad_tag} עוסק בדין פת.\nזו טעות סופר בדברי הש\"ך.\n"
     assert find_malformed_tags(llm)
-    assert tag_pronunciation(ORIG, lambda t: llm) == (ORIG, [])
+    with pytest.raises(PronunciationTaggingError, match="malformed phoneme tag"):
+        tag_pronunciation(ORIG, lambda t: llm)
 
 
 # --- nikkud skips tag spans --------------------------------------------------
@@ -250,6 +254,111 @@ def test_main_finalize_enabled_saves_outputs(tmp_path):
     assert TET in out
     assert (tmp_path / "YD_Siman_94_m_pronunciation_tags.txt").read_text(encoding="utf-8") == "טית\ttet\n"
     assert (tmp_path / "YD_Siman_94_m_pronunciation.txt").read_text(encoding="utf-8") == TAGGED
+
+
+def test_main_finalize_tagging_failure_writes_nothing(tmp_path):
+    import main as main_mod
+    cfg = MagicMock(output_dir=str(tmp_path), section_slug="YD")
+    err = PronunciationTaggingError("pronunciation tagging output rejected: bad")
+    with patch.object(main_mod, "run_pronunciation_stage", side_effect=err):
+        with pytest.raises(main_mod.SimanStageError) as exc:
+            main_mod.finalize_and_save_transcript(94, ORIG, cfg, "m")
+    assert exc.value.stage == main_mod.STAGE_PRONUNCIATION
+    assert "rejected: bad" in exc.value.reason
+    assert os.listdir(tmp_path) == []
+
+
+def test_main_tagging_failure_skips_tts(tmp_path):
+    import main as main_mod
+    cfg = MagicMock(output_dir=str(tmp_path), section_slug="YD")
+    args = MagicMock(skip_tts=False)
+    with patch.object(main_mod, "run_pronunciation_stage", side_effect=PronunciationTaggingError("x")), \
+         patch.object(main_mod, "create_tts_engine") as tts:
+        with pytest.raises(main_mod.SimanStageError):
+            main_mod.finalize_and_synthesize(94, ORIG, cfg, args, "m")
+    tts.assert_not_called()
+
+
+def test_main_tts_failure_is_stage_error(tmp_path):
+    import main as main_mod
+    cfg = MagicMock(pronunciation_enabled=False, output_dir=str(tmp_path), section_slug="YD")
+    args = MagicMock(skip_tts=False)
+    with patch.object(main_mod, "create_tts_engine", side_effect=RuntimeError("quota")):
+        with pytest.raises(main_mod.SimanStageError) as exc:
+            main_mod.finalize_and_synthesize(94, ORIG, cfg, args, "m")
+    assert exc.value.stage == main_mod.STAGE_TTS and exc.value.reason == "quota"
+
+
+def test_run_summary_format():
+    import main as main_mod
+    summary = main_mod.RunSummary()
+    summary.success(94)
+    summary.failure(95, main_mod.STAGE_PRONUNCIATION, "boom")
+    summary.success(96)
+    assert summary.has_failures
+    assert summary.format() == (
+        "===== Run summary =====\n"
+        "Succeeded (2/3): 94, 96\n"
+        "Failed (1/3): 95\n"
+        "  - Siman 95 | stage: Stage 3.4 (Pronunciation tagging) | reason: boom"
+    )
+    empty = main_mod.RunSummary()
+    empty.success(1)
+    assert not empty.has_failures
+    assert "Failed (0/1): none" in empty.format()
+
+
+def _run_main_sync(tmp_path, monkeypatch, polish):
+    """Runs main.main() in sync mode for simanim 94,95 with cached drafts and relations."""
+    import main as main_mod
+    cfg = MagicMock(section_slug="YD", drafts_dir=str(tmp_path), relations_dir=str(tmp_path),
+                    output_dir=str(tmp_path), pronunciation_enabled=False)
+    for s in (94, 95):
+        (tmp_path / f"YD_Siman_{s}_m_draft.txt").write_text(f"draft {s}", encoding="utf-8")
+    (tmp_path / "YD_Relations_94_95_m.txt").write_text("rel", encoding="utf-8")
+    gen = MagicMock(model_name="m")
+    gen.polish_siman_script.side_effect = polish
+    monkeypatch.setattr("sys.argv", ["main.py", "94,95", "--skip-tts"])
+    with patch.object(main_mod, "PipelineConfig", return_value=cfg), \
+         patch.object(main_mod, "create_generator_engine", return_value=gen), \
+         patch.object(main_mod, "SefariaExtractor"), \
+         patch("pipeline.evaluator.evaluate_draft", return_value=MagicMock()):
+        main_mod.main()
+
+
+def test_main_continues_after_siman_failure_and_exits_nonzero(tmp_path, monkeypatch, caplog):
+    def polish(draft, rel, instr):
+        if draft == "draft 94":
+            raise RuntimeError("LLM down")
+        return "polished"
+    with pytest.raises(SystemExit) as exc:
+        _run_main_sync(tmp_path, monkeypatch, polish)
+    assert exc.value.code == 1
+    assert (tmp_path / "YD_Siman_95_m_transcript.txt").exists()
+    assert not (tmp_path / "YD_Siman_94_m_transcript.txt").exists()
+    assert "Succeeded (1/2): 95" in caplog.text
+    assert "Siman 94 | stage: Stage 3 (Polishing) | reason: LLM down" in caplog.text
+
+
+def test_main_all_succeed_exits_zero(tmp_path, monkeypatch, caplog):
+    _run_main_sync(tmp_path, monkeypatch, lambda d, r, i: "polished")
+    assert "Succeeded (2/2): 94, 95" in caplog.text
+
+
+def test_tag_script_errors_without_writing(tmp_path, monkeypatch, capsys):
+    import scripts.tag_pronunciation as script
+    monkeypatch.chdir(tmp_path)  # script chdirs to the repo root; restore cwd afterwards
+    src = tmp_path / "x_transcript.txt"
+    src.write_text(ORIG, encoding="utf-8")
+    gen = MagicMock(model_name="m")
+    gen.generate_text.return_value = TAGGED.replace("עוסק", "דן")
+    monkeypatch.setattr("pipeline.config.PipelineConfig", MagicMock())
+    monkeypatch.setattr("pipeline.factory.create_pronunciation_generator", lambda c: gen)
+    with pytest.raises(SystemExit) as exc:
+        script.main([str(src)])
+    assert exc.value.code == 1
+    assert "text changed outside tags" in capsys.readouterr().err
+    assert sorted(os.listdir(tmp_path)) == ["x_transcript.txt"]
 
 
 # --- scripts ----------------------------------------------------------------

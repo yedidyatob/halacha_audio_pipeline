@@ -8,8 +8,9 @@ The tags are passed unchanged to every TTS engine (ElevenLabs v3/v4 honors them;
 Google TTS neither applies nor reads them aloud), so there is no per-engine logic here.
 
 Safety: the LLM must return the script word for word. The output is validated by
-stripping the tags and comparing with the input; on any difference, or on a malformed
-tag, the ORIGINAL untagged script is returned and a warning is logged.
+stripping the tags and comparing with the input; on any difference, a malformed tag, or
+an LLM call failure, PronunciationTaggingError is raised. There is no untagged fallback:
+the caller decides what to do (the pipeline fails that siman).
 """
 
 from __future__ import annotations
@@ -33,6 +34,10 @@ _ANY_PHONEME_MARKUP_RE = re.compile(r"</?\s*phoneme\b[^>]*>?", re.IGNORECASE)
 
 # Lenient span pattern used by consumers (nikkud, TTS chunking) to protect tag spans.
 PHONEME_SPAN_RE = re.compile(r"<phoneme\b[^>]*>.*?</phoneme>", re.IGNORECASE | re.DOTALL)
+
+
+class PronunciationTaggingError(RuntimeError):
+    """Raised when pronunciation tagging fails (LLM error or invalid tagged output)."""
 
 
 def find_phoneme_spans(text: str) -> list[tuple[int, int]]:
@@ -110,19 +115,17 @@ def tag_pronunciation(script_text: str, generate: Callable[[str], str]) -> tuple
     """
     Sends the script to the LLM via `generate(script_text) -> tagged_text` and validates.
 
-    Returns (text, pairs). On any validation failure (or LLM error) logs a warning and
-    returns (script_text, []) - the ORIGINAL untagged script.
+    Returns (tagged_text, pairs). Raises PronunciationTaggingError if the LLM call fails
+    or the output is invalid (text changed outside tags, malformed tags, empty output).
     """
     try:
         tagged = generate(script_text)
     except Exception as e:
-        logger.warning(f"Pronunciation tagging LLM call failed: {e}. Using the untagged script.")
-        return script_text, []
+        raise PronunciationTaggingError(f"pronunciation tagging LLM call failed: {e}") from e
 
     reason = validate_tagged_output(script_text, tagged)
     if reason:
-        logger.warning(f"Pronunciation tagging rejected ({reason}). Using the untagged script.")
-        return script_text, []
+        raise PronunciationTaggingError(f"pronunciation tagging output rejected: {reason}")
 
     tagged = tagged.replace("\r\n", "\n")
     pairs = extract_phoneme_pairs(tagged)
@@ -139,6 +142,7 @@ def run_pronunciation_stage(script_text: str, config, generator_factory=None):
     """
     Pipeline entry point. Returns (text, pairs) or None when pronunciation.enabled is false
     (the stage is skipped entirely and no LLM client is created).
+    Raises PronunciationTaggingError on any tagging failure.
     """
     if not config.pronunciation_enabled:
         logger.info("Pronunciation tagging disabled (pronunciation.enabled: false); skipping.")

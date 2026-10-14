@@ -134,7 +134,7 @@ relations_instruction: |
 # Pronunciation tagging stage (runs after polish, before nikkud).
 # Wraps likely-mispronounced words in <phoneme alphabet="ipa" ph="...">word</phoneme> tags.
 # Tags are passed unchanged to every TTS engine (ElevenLabs v3/v4 honors them; Google ignores them).
-# On any validation failure the untagged script is used.
+# On any tagging failure (LLM error / invalid output) that siman fails: no transcript, no TTS.
 pronunciation:
   enabled: true
   engine: "gemini"  # "gemini" or "openai" (openai reuses generator.openai.service_tier)
