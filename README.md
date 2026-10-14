@@ -73,6 +73,25 @@ The pipeline runs in three stages:
 | **Stage 1** | Extract Halachic content from Sefaria API |
 | **Stage 2** | Analyze cross-simanim relations for context |
 | **Stage 3** | Generate polished TTS-ready script & synthesize audio |
+| **Stage 3.4** | Pronunciation tagging (optional, `pronunciation.enabled`): an LLM wraps likely-mispronounced words in `<phoneme alphabet="ipa" ph="...">word</phoneme>` tags |
+| **Stage 3.5** | Nikkud for rabbinic abbreviations (never touches text inside phoneme tags) |
+
+### Pronunciation tags (Stage 3.4)
+
+Configured in `config.yaml` (`pronunciation:` section + `pronunciation_instruction`; no code defaults).
+The output is validated: with the tags stripped it must equal the input exactly (only trailing
+whitespace / line endings may differ) and every tag must be well formed; otherwise a warning is
+logged and the untagged script is used. Tags are passed unchanged to every TTS engine
+(ElevenLabs v3/v4 honors them; Google TTS ignores them silently), and TTS chunking never splits a tag.
+
+Standalone (Windows PowerShell, from the repo root):
+
+```powershell
+# Tag an existing transcript (writes <input>_tagged.txt and <input>_tagged_tags.txt)
+.venv\Scripts\python scripts\tag_pronunciation.py output\<file>_transcript.txt --apply-nikkud
+# Synthesize any text file with the TTS engine configured in config.yaml
+.venv\Scripts\python scripts\tts_from_file.py output\<file>_transcript_tagged.txt
+```
 
 Output files are saved to `./output/` with timestamps preserved.
 
@@ -177,6 +196,8 @@ tts:
 output/
 ├── {section}_Siman_{N}_{model}_transcript.txt      # Latest transcript
 ├── {section}_Siman_{N}_{model}_transcript_YYYYMMDD_HHMMSS.txt  # Timestamped history
+├── {section}_Siman_{N}_{model}_pronunciation.txt       # Tagged script (before nikkud), if enabled
+├── {section}_Siman_{N}_{model}_pronunciation_tags.txt  # word<TAB>ipa per tagged word, if enabled
 ├── {section}_Siman_{N}_{model}.mp3               # Audio file
 ├── drafts/                                         # Stage 1 cached drafts
 │   └── {section}_Siman_{N}_{model}_draft.txt

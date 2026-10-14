@@ -24,8 +24,50 @@ from pipeline.utils import save_output_file
 from pipeline.factory import create_generator_engine, create_tts_engine
 from pipeline.gematria import int_to_gematria
 from pipeline.apply_nikkud import apply_nikkud_to_abbreviations
+from pipeline.pronunciation import run_pronunciation_stage, format_pairs
 
 logger = get_logger("halacha_pipeline_cli")
+
+def finalize_and_save_transcript(siman: int, polished_text: str, config, model_suffix: str) -> str:
+    """
+    Post-polish text stages shared by sync and batch modes:
+      Stage 3.4: pronunciation tagging (IPA phoneme tags) if pronunciation.enabled
+      Stage 3.5: nikkud abbreviation replacements (never touches phoneme tag spans)
+    Saves the pronunciation outputs (if the stage ran) and the final transcript.
+    Returns the final text that is sent to TTS.
+    """
+    base_name = f"{config.section_slug}_Siman_{siman}_{model_suffix}"
+
+    result = run_pronunciation_stage(polished_text, config)
+    if result is not None:
+        polished_text, pairs = result
+        save_output_file(
+            directory=config.output_dir,
+            base_name=f"{base_name}_pronunciation",
+            extension="txt",
+            content=polished_text,
+            logger=logger
+        )
+        save_output_file(
+            directory=config.output_dir,
+            base_name=f"{base_name}_pronunciation_tags",
+            extension="txt",
+            content=format_pairs(pairs),
+            logger=logger
+        )
+
+    logger.info(f"Applying nikkud abbreviation replacements for Siman {siman}...")
+    polished_text = apply_nikkud_to_abbreviations(polished_text)
+
+    save_output_file(
+        directory=config.output_dir,
+        base_name=f"{base_name}_transcript",
+        extension="txt",
+        content=polished_text,
+        logger=logger
+    )
+    return polished_text
+
 
 def process_and_save_outputs(siman: int, script_text: str, relations_text: str, generator, config, args, model_suffix: str):
     """
@@ -40,18 +82,8 @@ def process_and_save_outputs(siman: int, script_text: str, relations_text: str, 
         logger.error(f"Failed to polish script for Siman {siman}: {e}")
         raise
 
-    # Stage 3.5: Replace Rabbinic abbreviations with nikkud/expanded forms for TTS
-    logger.info(f"Applying nikkud abbreviation replacements for Siman {siman}...")
-    polished_text = apply_nikkud_to_abbreviations(polished_text)
-
-    # Save script transcript file
-    save_output_file(
-        directory=config.output_dir,
-        base_name=f"{config.section_slug}_Siman_{siman}_{model_suffix}_transcript",
-        extension="txt",
-        content=polished_text,
-        logger=logger
-    )
+    # Stages 3.4 (pronunciation tags) and 3.5 (nikkud), then save the transcript
+    polished_text = finalize_and_save_transcript(siman, polished_text, config, model_suffix)
     
     # Proceed to TTS if not skipped
     if args.skip_tts:
@@ -473,18 +505,8 @@ def main():
             for siman, job_id in stage3_jobs.items():
                 polished_text = generator.get_batch_result(job_id)
 
-                # Stage 3.5: Replace Rabbinic abbreviations with nikkud/expanded forms for TTS
-                logger.info(f"Applying nikkud abbreviation replacements for Siman {siman}...")
-                polished_text = apply_nikkud_to_abbreviations(polished_text)
-
-                # Save polished transcript
-                save_output_file(
-                    directory=config.output_dir,
-                    base_name=f"{config.section_slug}_Siman_{siman}_{model_suffix}_transcript",
-                    extension="txt",
-                    content=polished_text,
-                    logger=logger
-                )
+                # Stages 3.4 (pronunciation tags) and 3.5 (nikkud), then save the transcript
+                polished_text = finalize_and_save_transcript(siman, polished_text, config, model_suffix)
 
                 # Proceed to TTS if not skipped
                 if not args.skip_tts:

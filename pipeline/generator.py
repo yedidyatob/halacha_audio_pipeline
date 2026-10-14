@@ -89,6 +89,14 @@ class BaseScriptGenerator(ABC):
         """
         pass
 
+    def generate_text(self, system_instruction: str, user_prompt: str) -> str:
+        """
+        Generic single-shot completion (system instruction + user prompt) at this
+        generator's configured temperature. Used by auxiliary stages such as
+        pronunciation tagging.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement generate_text().")
+
 
 class BatchCapableGenerator(ABC):
     """
@@ -244,6 +252,23 @@ class GeminiScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
         except Exception as e:
             logger.error(f"Error during Gemini script polish call: {e}")
             raise
+
+    def generate_text(self, system_instruction: str, user_prompt: str) -> str:
+        logger.info(f"Running Gemini text call via model {self.model_name} (temperature {self.temperature})...")
+        config = types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            temperature=self.temperature
+        )
+        response = self.client.models.generate_content(
+            model=self.model_name,
+            contents=user_prompt,
+            config=config
+        )
+        log_gemini_usage(logger, response, self.model_name)
+        text = response.text
+        if not text:
+            raise ValueError("Gemini API returned an empty text response.")
+        return text
 
     def submit_batch(
         self,
@@ -436,6 +461,24 @@ class OpenAIScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
         except Exception as e:
             logger.error(f"Error during OpenAI script polish call: {e}")
             raise
+
+    def generate_text(self, system_instruction: str, user_prompt: str) -> str:
+        logger.info(f"Running OpenAI text call via model {self.model_name}...")
+        is_reasoning_model = self.model_name.startswith("o1") or self.model_name.startswith("o3")
+        messages = [
+            {"role": "developer" if is_reasoning_model else "system", "content": system_instruction},
+            {"role": "user", "content": user_prompt},
+        ]
+        kwargs = {"model": self.model_name, "messages": messages}
+        if not is_reasoning_model:
+            kwargs["temperature"] = self.temperature
+        if self.service_tier:
+            kwargs["service_tier"] = self.service_tier
+        response = self.client.chat.completions.create(**kwargs)
+        text = response.choices[0].message.content
+        if not text:
+            raise ValueError("OpenAI API returned an empty text response.")
+        return text
 
     def submit_batch(
         self,

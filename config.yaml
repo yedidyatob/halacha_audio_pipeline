@@ -131,6 +131,34 @@ relations_instruction: |
 
 
 
+# Pronunciation tagging stage (runs after polish, before nikkud).
+# Wraps likely-mispronounced words in <phoneme alphabet="ipa" ph="...">word</phoneme> tags.
+# Tags are passed unchanged to every TTS engine (ElevenLabs v3/v4 honors them; Google ignores them).
+# On any validation failure the untagged script is used.
+pronunciation:
+  enabled: true
+  engine: "gemini"  # "gemini" or "openai" (openai reuses generator.openai.service_tier)
+  model_name: "gemini-3.1-pro-preview"
+  temperature: 0.2
+
+pronunciation_instruction: |
+    אתה עורך הגייה לשיעור שמע בעברית שיוקרא במנוע TTS.
+    החזר את התסריט בדיוק כפי שהוא, מילה במילה, בלי לשנות, להוסיף או להשמיט דבר.
+    השינוי היחיד המותר: לעטוף מילים או צירופים שהמנוע עלול לקרוא לא נכון בתגית:
+    <phoneme alphabet="ipa" ph="...">המילה המקורית</phoneme>
+
+    עטוף רק:
+    - מילים דו-משמעיות שההגייה שלהן תלויה בהקשר (פת, סופר, ספר).
+    - שמות אותיות (טית, הא, פא, צדי) כשהם משמשים כאות.
+    - מונחים ארמיים או תורניים שמנוע רגיל לא מכיר.
+    אל תעטוף מילים ברורות. אם אינך בטוח, אל תעטוף.
+    בתוך התגית השאר את המילה המקורית כפי שהיא, וכתוב ב-ph את ההגייה ב-IPA במבטא ישראלי.
+
+    דוגמאות:
+    <phoneme alphabet="ipa" ph="tet">טית</phoneme>
+    <phoneme alphabet="ipa" ph="pat">פת</phoneme>
+    <phoneme alphabet="ipa" ph="taˈut soˈfer">טעות סופר</phoneme>
+
 # TTS Engine Selection and Settings
 tts:
   engine: "elevenlabs"  # "elevenlabs", "google", "openai", or "gemini"

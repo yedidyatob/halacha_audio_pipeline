@@ -360,6 +360,10 @@ def apply_nikkud_to_abbreviations(text: str) -> str:
     by one of DEFAULT_PREFIXES, which is preserved. Letter entries (NO_PREFIX_NIKKUD_DICT)
     match only as standalone words and only in a letter-name context. Already-nikkuded text
     is not matched again, so the function is idempotent.
+
+    Text inside <phoneme ...>...</phoneme> spans (the inner word and the attributes) is
+    never modified: the text is split into tag / non-tag segments and the matcher runs on
+    the non-tag segments only.
     """
     prefixable = tuple(
         list(RABBINIC_NIKKUD_DICT.items()) + list(additional_nikkud_corrections)
@@ -369,7 +373,13 @@ def apply_nikkud_to_abbreviations(text: str) -> str:
         tuple(NO_PREFIX_NIKKUD_DICT.items()),
         tuple(DEFAULT_PREFIXES),
     )
-    return matcher(text)
+    if "<phoneme" not in text.lower():
+        return matcher(text)
+    from pipeline.pronunciation import split_phoneme_segments
+    return "".join(
+        segment if is_tag else matcher(segment)
+        for segment, is_tag in split_phoneme_segments(text)
+    )
 
 
 if __name__ == "__main__":
