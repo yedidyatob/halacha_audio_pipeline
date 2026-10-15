@@ -143,6 +143,9 @@ generator:
 tts:
   chunk_gap_paragraph_ms: 700
   chunk_gap_sentence_ms: 300
+  elevenlabs:
+    chunk_size: 8000
+    context_chars: 500
 """
 
 

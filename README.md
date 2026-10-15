@@ -186,16 +186,31 @@ tts:
   
   gemini:
     voice_name: "Achird"  # Achird, Puck, Charon, Kore, Fenrir, Aoede
+    chunk_size: 2000
     
   elevenlabs:
     voice_id: "lJylpTXX0sNdqq5EUv4M"
+    chunk_size: 8000      # eleven_v4 allows 10,000 chars/request; headroom for <phoneme> markup
+    context_chars: 500    # previous_text / next_text length for request stitching
     
   google:
     voice_name: "he-IL-Chirp3-HD-Achird"
+    chunk_size: 2000      # Google's limit is 5000 BYTES; Hebrew = 2 bytes/char, so max 2500
     
   openai:
     voice: "alloy"  # alloy, echo, fable, onyx, nova, shimmer
+    chunk_size: 4000      # OpenAI hard limit is 4096
 ```
+
+`tts.<engine>.chunk_size` (max characters per TTS request) is required for the selected engine and
+must be a positive integer; there are no defaults in code. Chunks are split at paragraph / sentence
+boundaries and never inside a `<phoneme>` tag.
+
+**ElevenLabs request stitching:** every chunk is sent with `previous_text` (the last
+`context_chars` characters of the preceding chunk) and `next_text` (the first `context_chars`
+characters of the following chunk), with phoneme tags stripped and cut at a word boundary, so
+prosody stays continuous across chunk boundaries. The first chunk has no `previous_text`, the last
+has no `next_text`, and a single-chunk text sends neither.
 
 ---
 

@@ -67,6 +67,8 @@ def create_tts_engine(config: PipelineConfig) -> BaseTTS:
             stability=el["stability"],
             similarity_boost=el["similarity_boost"],
             ssl_verify=config.ssl_verify,
+            chunk_size=config.tts_chunk_size,
+            context_chars=config.elevenlabs_context_chars,
             **gaps
         )
     elif config.tts_engine == "google":
@@ -77,6 +79,7 @@ def create_tts_engine(config: PipelineConfig) -> BaseTTS:
             language_code=g["language_code"],
             speaking_rate=g.get("speaking_rate", 1.0),
             pitch=g.get("pitch", 0.0),
+            chunk_size=config.tts_chunk_size,
             **gaps
         )
     elif config.tts_engine == "openai":
@@ -87,6 +90,7 @@ def create_tts_engine(config: PipelineConfig) -> BaseTTS:
             model=o["model"],
             speed=o.get("speed", 1.0),
             ssl_verify=config.ssl_verify,
+            chunk_size=config.tts_chunk_size,
             **gaps
         )
     elif config.tts_engine == "gemini":
@@ -94,6 +98,7 @@ def create_tts_engine(config: PipelineConfig) -> BaseTTS:
             model_id=config.gemini_tts_model,
             voice_name=config.gemini_tts_voice,
             api_key=config.gemini_api_key,
+            chunk_size=config.tts_chunk_size,
             **gaps
         )
     else:

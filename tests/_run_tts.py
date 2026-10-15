@@ -56,6 +56,8 @@ def main():
 
     config = PipelineConfig("config.yaml")
     config.tts_engine = "elevenlabs"
+    config.tts_chunk_size = config.elevenlabs_settings["chunk_size"]
+    config.elevenlabs_context_chars = config.elevenlabs_settings["context_chars"]
 
     tts = create_tts_engine(config)
 
