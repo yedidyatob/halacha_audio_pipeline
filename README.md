@@ -82,6 +82,8 @@ The pipeline runs in three stages:
 ### Pronunciation tags (Stage 3.4)
 
 Configured in `config.yaml` (`pronunciation:` section + `pronunciation_instruction`; no code defaults).
+`pronunciation.thinking_level` (`low`/`medium`/`high`) sets the Gemini thinking level for the tagging call
+only; it is required when `pronunciation.engine` is `gemini` and ignored for `openai`.
 `pronunciation.always_tag` / `pronunciation.never_tag` are word lists filled into the `{always_tag}` /
 `{never_tag}` placeholders of the instruction (joined with ", "; an empty list renders as "אין").
 The output is validated: with the tags stripped it must equal the input exactly (only trailing
@@ -158,6 +160,13 @@ python main.py 94 --context-range 87-111 --batch
 # Retrieve results when complete
 python main.py 94 --retrieve-batch <batch_id>
 ```
+
+With `--batch`, every LLM stage runs as batch jobs with polling, including pronunciation tagging
+(Stage 3.4): one tagging job per siman that polished successfully, using the `pronunciation:` engine,
+model, temperature and `thinking_level` (which may differ from the generator engine). Each result
+goes through the same validation as sync mode; a failed job, empty result or rejected output fails
+only that siman (stage "Stage 3.4 (Pronunciation tagging)" in the run summary). The run stops at
+startup if `pronunciation.engine` does not support batch.
 
 ---
 

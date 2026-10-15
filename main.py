@@ -24,7 +24,7 @@ from pipeline.utils import save_output_file
 from pipeline.factory import create_generator_engine, create_tts_engine
 from pipeline.gematria import int_to_gematria
 from pipeline.apply_nikkud import apply_nikkud_to_abbreviations
-from pipeline.pronunciation import run_pronunciation_stage, format_pairs
+from pipeline.pronunciation import create_pronunciation_tagger, format_pairs
 
 logger = get_logger("halacha_pipeline_cli")
 
@@ -91,94 +91,169 @@ class RunSummary:
             log_fn(line)
 
 
-def finalize_and_save_transcript(siman: int, polished_text: str, config, model_suffix: str) -> str:
+def run_per_siman(summary: RunSummary, items: dict, stage: str, fn) -> dict:
     """
-    Post-polish text stages shared by sync and batch modes:
-      Stage 3.4: pronunciation tagging (IPA phoneme tags) if pronunciation.enabled
-      Stage 3.5: nikkud abbreviation replacements (never touches phoneme tag spans)
-    Saves the pronunciation outputs (if the stage ran) and the final transcript.
-    Returns the final text that is sent to TTS.
-    Raises SimanStageError on failure; a tagging failure writes no output for the siman.
+    Applies fn(siman, value) to every {siman: value}. Returns {siman: result} for the
+    simanim that succeeded; each failure is recorded in the summary under its stage.
+    """
+    results = {}
+    for siman, value in items.items():
+        try:
+            results[siman] = run_siman_stage(siman, stage, lambda: fn(siman, value))
+        except SimanStageError as e:
+            summary.failure(siman, e.stage, e.reason)
+    return results
+
+
+def run_batch_stage(batch_generator, summary: RunSummary, items: dict, stage: str, submit, fetch, args) -> dict:
+    """
+    Batch counterpart of run_per_siman: submit(siman, value) -> job_id for every item,
+    poll all jobs, then fetch(siman, value, job_id) -> result for each completed job.
+    Submit errors, failed jobs and fetch errors fail only their siman.
+    """
+    jobs = run_per_siman(summary, items, stage, submit)
+    if not jobs:
+        return {}
+    statuses = poll_batch_jobs(batch_generator, jobs, args.batch_poll_interval, args.batch_timeout,
+                               stage, raise_on_failure=False)
+    completed = {}
+    for siman, job_id in jobs.items():
+        if statuses[siman] == "failed":
+            summary.failure(siman, stage, f"batch job failed (job_id: {job_id})")
+        else:
+            completed[siman] = (items[siman], job_id)
+    return run_per_siman(summary, completed, stage, lambda siman, item: fetch(siman, *item))
+
+
+def polish_simanim(drafts: dict, relations_text: str, generator, config, args, summary: RunSummary) -> dict:
+    """Stage 3: {siman: draft} -> {siman: polished_text}."""
+    if args.batch:
+        return run_batch_stage(
+            generator, summary, drafts, STAGE_POLISH,
+            submit=lambda siman, draft: generator.submit_batch(
+                system_instruction=config.polishing_instruction,
+                user_prompt=generator._get_polishing_user_prompt(draft, relations_text),
+                temperature=0.1,
+                custom_id=f"stage3_siman_{siman}",
+                cache_dir=config.cache_dir
+            ),
+            fetch=lambda siman, draft, job_id: generator.get_batch_result(job_id),
+            args=args,
+        )
+    return run_per_siman(
+        summary, drafts, STAGE_POLISH,
+        lambda siman, draft: generator.polish_siman_script(draft, relations_text, config.polishing_instruction)
+    )
+
+
+def tag_simanim(polished: dict, tagger, config, args, summary: RunSummary) -> dict:
+    """
+    Stage 3.4: {siman: polished_text} -> {siman: (text, pairs)}. pairs is None when
+    pronunciation tagging is disabled (tagger is None) and the text passes through.
+    """
+    if tagger is None:
+        return {siman: (text, None) for siman, text in polished.items()}
+    if args.batch:
+        return run_batch_stage(
+            tagger.generator, summary, polished, STAGE_PRONUNCIATION,
+            submit=lambda siman, text: tagger.submit_batch(
+                text, custom_id=f"stage3_4_siman_{siman}", cache_dir=config.cache_dir
+            ),
+            fetch=lambda siman, text, job_id: tagger.batch_result(text, job_id),
+            args=args,
+        )
+    return run_per_siman(summary, polished, STAGE_PRONUNCIATION, lambda siman, text: tagger.tag(text))
+
+
+def save_transcript(siman: int, text: str, pairs, config, model_suffix: str) -> str:
+    """
+    Stage 3.5: saves the pronunciation outputs (if tagging ran), applies nikkud
+    (never touches phoneme tag spans) and saves the transcript. Returns the TTS text.
     """
     base_name = f"{config.section_slug}_Siman_{siman}_{model_suffix}"
-
-    result = run_siman_stage(siman, STAGE_PRONUNCIATION, lambda: run_pronunciation_stage(polished_text, config))
-
-    def nikkud_and_save() -> str:
-        text = polished_text
-        if result is not None:
-            text, pairs = result
-            save_output_file(
-                directory=config.output_dir,
-                base_name=f"{base_name}_pronunciation",
-                extension="txt",
-                content=text,
-                logger=logger
-            )
-            save_output_file(
-                directory=config.output_dir,
-                base_name=f"{base_name}_pronunciation_tags",
-                extension="txt",
-                content=format_pairs(pairs),
-                logger=logger
-            )
-
-        logger.info(f"Applying nikkud abbreviation replacements for Siman {siman}...")
-        text = apply_nikkud_to_abbreviations(text)
-
+    if pairs is not None:
         save_output_file(
             directory=config.output_dir,
-            base_name=f"{base_name}_transcript",
+            base_name=f"{base_name}_pronunciation",
             extension="txt",
             content=text,
             logger=logger
         )
-        return text
+        save_output_file(
+            directory=config.output_dir,
+            base_name=f"{base_name}_pronunciation_tags",
+            extension="txt",
+            content=format_pairs(pairs),
+            logger=logger
+        )
 
-    return run_siman_stage(siman, STAGE_TRANSCRIPT, nikkud_and_save)
+    logger.info(f"Applying nikkud abbreviation replacements for Siman {siman}...")
+    text = apply_nikkud_to_abbreviations(text)
+
+    save_output_file(
+        directory=config.output_dir,
+        base_name=f"{base_name}_transcript",
+        extension="txt",
+        content=text,
+        logger=logger
+    )
+    return text
 
 
 def synthesize_siman_audio(siman: int, text: str, config, model_suffix: str) -> None:
-    """TTS for one siman. Raises SimanStageError on failure."""
-    def synthesize() -> None:
-        tts_engine = create_tts_engine(config)
+    """TTS for one siman."""
+    tts_engine = create_tts_engine(config)
 
-        # Synthesize directly to the audio files using a write_callback
-        def tts_callback(path: str) -> None:
-            logger.info(f"Synthesizing script for Siman {siman} to: {path}...")
-            tts_engine.synthesize(text=text, output_path=path)
+    # Synthesize directly to the audio files using a write_callback
+    def tts_callback(path: str) -> None:
+        logger.info(f"Synthesizing script for Siman {siman} to: {path}...")
+        tts_engine.synthesize(text=text, output_path=path)
 
-        save_output_file(
-            directory=config.output_dir,
-            base_name=f"{config.section_slug}_Siman_{siman}_{model_suffix}",
-            extension=getattr(tts_engine, "file_extension", "mp3"),
-            content=None,
-            logger=logger,
-            write_callback=tts_callback
-        )
-
-    run_siman_stage(siman, STAGE_TTS, synthesize)
+    save_output_file(
+        directory=config.output_dir,
+        base_name=f"{config.section_slug}_Siman_{siman}_{model_suffix}",
+        extension=getattr(tts_engine, "file_extension", "mp3"),
+        content=None,
+        logger=logger,
+        write_callback=tts_callback
+    )
 
 
-def finalize_and_synthesize(siman: int, polished_text: str, config, args, model_suffix: str) -> None:
-    """Stages 3.4/3.5 then TTS (unless --skip-tts). Raises SimanStageError on failure."""
-    final_text = finalize_and_save_transcript(siman, polished_text, config, model_suffix)
+def finish_siman(siman: int, text: str, pairs, config, args, model_suffix: str) -> None:
+    """Stage 3.5 (transcript) then TTS unless --skip-tts. Raises SimanStageError on failure."""
+    final_text = run_siman_stage(siman, STAGE_TRANSCRIPT, lambda: save_transcript(siman, text, pairs, config, model_suffix))
     if args.skip_tts:
         logger.info("Skipping TTS synthesis as requested by --skip-tts.")
         return
-    synthesize_siman_audio(siman, final_text, config, model_suffix)
+    run_siman_stage(siman, STAGE_TTS, lambda: synthesize_siman_audio(siman, final_text, config, model_suffix))
 
 
-def process_and_save_outputs(siman: int, script_text: str, relations_text: str, generator, config, args, model_suffix: str):
+def run_lesson_stages(target_simanim: list, drafts: dict, relations_text: str, generator, tagger,
+                      config, args, model_suffix: str) -> RunSummary:
     """
-    Synchronous Stage 3 for one siman: polish the draft using the relations map, then
-    tagging / nikkud / transcript save and TTS. Raises SimanStageError on failure.
+    Stage 3 onwards for every target siman, one stage at a time (sync or batch):
+    polish -> pronunciation tagging -> nikkud + transcript -> TTS.
+    A failure removes only that siman from the later stages.
     """
-    polished_text = run_siman_stage(
-        siman, STAGE_POLISH,
-        lambda: generator.polish_siman_script(script_text, relations_text, config.polishing_instruction)
+    summary = RunSummary()
+    available = {}
+    for siman in target_simanim:
+        if siman in drafts:
+            available[siman] = drafts[siman]
+        else:
+            logger.error(f"Cannot polish Siman {siman}: Stage 1 draft is missing.")
+            summary.failure(siman, STAGE_POLISH, "Stage 1 draft is missing")
+
+    polished = polish_simanim(available, relations_text, generator, config, args, summary)
+    tagged = tag_simanim(polished, tagger, config, args, summary)
+    finished = run_per_siman(
+        summary, tagged, STAGE_TRANSCRIPT,
+        lambda siman, item: finish_siman(siman, *item, config, args, model_suffix)
     )
-    finalize_and_synthesize(siman, polished_text, config, args, model_suffix)
+    for siman in finished:
+        summary.success(siman)
+    return summary
+
 
 def poll_batch_jobs(generator, jobs: dict, poll_interval: int, timeout: int, stage_name: str, logger_ref=None,
                     raise_on_failure: bool = True):
@@ -342,6 +417,23 @@ def main():
         if not isinstance(generator, BatchCapableGenerator):
             logger.error("Batch mode requires a generator engine that supports batch operations (Gemini or OpenAI).")
             sys.exit(1)
+
+    # 4. Pronunciation tagger (Stage 3.4) with its own engine/model from config.yaml
+    try:
+        tagger = create_pronunciation_tagger(config) if config.pronunciation_enabled else None
+    except Exception as e:
+        logger.error(f"Pronunciation tagger setup failed: {e}")
+        sys.exit(1)
+    if tagger is not None:
+        if args.batch and not tagger.supports_batch:
+            logger.error(
+                f"Batch mode requires a pronunciation engine that supports batch operations; "
+                f"'{config.pronunciation_engine}' does not (pronunciation.engine in config.yaml)."
+            )
+            sys.exit(1)
+    else:
+        logger.info("Pronunciation tagging disabled (pronunciation.enabled: false); skipping Stage 3.4.")
+    if args.batch:
         logger.info("Batch mode enabled. All stages will use the Batch API with polling.")
         
     # 5. Stage 2: Cross-Siman Relations Analysis - Resolve Relations Map First
@@ -556,70 +648,9 @@ def main():
             logger=logger
         )
 
-    # 9. Stage 3: Lesson Monologue styling & TTS (per-siman failures do not stop the run)
-    summary = RunSummary()
-    if args.batch:
-        # Batch mode: Submit all polishing jobs, poll, then save and run TTS
-        stage3_jobs = {}
-        for siman in target_generation_simanim:
-            if siman not in drafts:
-                logger.error(f"Cannot polish Siman {siman}: Stage 1 draft is missing.")
-                summary.failure(siman, STAGE_POLISH, "Stage 1 draft is missing")
-                continue
-            try:
-                user_prompt = generator._get_polishing_user_prompt(drafts[siman], relations_text)
-                job_id = generator.submit_batch(
-                    system_instruction=config.polishing_instruction,
-                    user_prompt=user_prompt,
-                    temperature=0.1,
-                    custom_id=f"stage3_siman_{siman}",
-                    cache_dir=config.cache_dir
-                )
-            except Exception as e:
-                logger.error(f"Failed to submit Stage 3 batch job for Siman {siman}: {e}")
-                summary.failure(siman, STAGE_POLISH, f"batch submit failed: {e}")
-                continue
-            stage3_jobs[siman] = job_id
-            logger.info(f"Submitted Stage 3 batch job for Siman {siman}. Job ID: {job_id}")
-
-        if stage3_jobs:
-            statuses = poll_batch_jobs(generator, stage3_jobs, args.batch_poll_interval, args.batch_timeout,
-                                       "Stage 3 (Polishing)", raise_on_failure=False)
-
-            for siman, job_id in stage3_jobs.items():
-                if statuses[siman] == "failed":
-                    summary.failure(siman, STAGE_POLISH, f"batch job failed (job_id: {job_id})")
-                    continue
-                try:
-                    polished_text = run_siman_stage(siman, STAGE_POLISH, lambda: generator.get_batch_result(job_id))
-                    finalize_and_synthesize(siman, polished_text, config, args, model_suffix)
-                except SimanStageError as e:
-                    summary.failure(siman, e.stage, e.reason)
-                    continue
-                summary.success(siman)
-    else:
-        # Synchronous mode
-        for siman in target_generation_simanim:
-            if siman not in drafts:
-                logger.error(f"Cannot polish Siman {siman}: Stage 1 draft is missing from drafts database.")
-                summary.failure(siman, STAGE_POLISH, "Stage 1 draft is missing")
-                continue
-
-            logger.info(f"\n--- Starting Stage 3 Monologue Generation for Siman {siman} ---")
-            try:
-                process_and_save_outputs(
-                    siman=siman,
-                    script_text=drafts[siman],
-                    relations_text=relations_text,
-                    generator=generator,
-                    config=config,
-                    args=args,
-                    model_suffix=model_suffix
-                )
-            except SimanStageError as e:
-                summary.failure(siman, e.stage, e.reason)
-                continue
-            summary.success(siman)
+    # 9. Stage 3+: polish, pronunciation tagging, transcript, TTS (per-siman failures do not stop the run)
+    summary = run_lesson_stages(target_generation_simanim, drafts, relations_text, generator, tagger,
+                                config, args, model_suffix)
 
     summary.log()
     if summary.has_failures:

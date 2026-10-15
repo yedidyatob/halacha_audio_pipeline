@@ -5,7 +5,8 @@ import pytest
 
 from pipeline.pronunciation import (
     strip_phoneme_tags, extract_phoneme_pairs, find_malformed_tags, validate_tagged_output,
-    tag_pronunciation, format_pairs, run_pronunciation_stage, split_phoneme_segments,
+    tag_pronunciation, format_pairs, split_phoneme_segments, parse_tagged_response,
+    PronunciationTagger, create_pronunciation_tagger,
     PronunciationTaggingError,
 )
 from pipeline.apply_nikkud import apply_nikkud_to_abbreviations
@@ -269,81 +270,185 @@ def test_real_config_yaml_has_pronunciation():
 
 # --- stage wiring ------------------------------------------------------------
 
-def test_stage_skipped_when_disabled():
-    cfg = MagicMock(pronunciation_enabled=False)
-    factory = MagicMock()
-    assert run_pronunciation_stage(ORIG, cfg, generator_factory=factory) is None
-    factory.assert_not_called()
+def _tagger(level="low", temperature=0.2):
+    cfg = MagicMock(pronunciation_instruction="INSTR", pronunciation_thinking_level=level, pronunciation_engine="gemini")
+    gen = MagicMock(model_name="m", temperature=temperature)
+    return create_pronunciation_tagger(cfg, generator_factory=lambda c: gen), gen
 
 
-def test_stage_runs_when_enabled():
-    cfg = MagicMock(pronunciation_enabled=True, pronunciation_instruction="INSTR", pronunciation_engine="gemini")
-    gen = MagicMock(model_name="m")
+def test_tagger_sync_uses_instruction_and_thinking_level():
+    tagger, gen = _tagger("low")
     gen.generate_text.return_value = TAGGED
-    text, pairs = run_pronunciation_stage(ORIG, cfg, generator_factory=lambda c: gen)
+    text, pairs = tagger.tag(ORIG)
     assert text == TAGGED and len(pairs) == 3
-    gen.generate_text.assert_called_once_with("INSTR", ORIG)
+    gen.generate_text.assert_called_once_with("INSTR", ORIG, thinking_level="low")
+
+
+def test_tagger_batch_request_uses_own_model_settings():
+    tagger, gen = _tagger("medium", temperature=0.35)
+    gen.submit_batch.return_value = "job-1"
+    assert tagger.submit_batch(ORIG, custom_id="c", cache_dir="cache") == "job-1"
+    gen.submit_batch.assert_called_once_with(
+        system_instruction="INSTR", user_prompt=ORIG, temperature=0.35,
+        custom_id="c", cache_dir="cache", thinking_level="medium",
+    )
+
+
+def test_tagger_batch_result_validated_like_sync():
+    tagger, gen = _tagger()
+    gen.get_batch_result.return_value = TAGGED
+    assert tagger.batch_result(ORIG, "job") == (TAGGED, extract_phoneme_pairs(TAGGED))
+    gen.get_batch_result.return_value = TAGGED.replace("עוסק", "דן")
+    with pytest.raises(PronunciationTaggingError, match="text changed outside tags"):
+        tagger.batch_result(ORIG, "job")
+    gen.get_batch_result.side_effect = ValueError("Gemini batch returned empty text response.")
+    with pytest.raises(PronunciationTaggingError, match="batch result unavailable: Gemini batch returned empty"):
+        tagger.batch_result(ORIG, "job")
+
+
+def test_parse_tagged_response_shared_validation():
+    assert parse_tagged_response(ORIG, TAGGED.replace("\n", "\r\n"))[0] == TAGGED
+    with pytest.raises(PronunciationTaggingError, match="empty output"):
+        parse_tagged_response(ORIG, "")
+
+
+def test_tagger_supports_batch():
+    from pipeline.generator import BatchCapableGenerator
+    assert PronunciationTagger(MagicMock(spec=BatchCapableGenerator), "i", None).supports_batch
+    assert not PronunciationTagger(object(), "i", None).supports_batch
 
 
 def test_factory_creates_pronunciation_generator():
     from pipeline.factory import create_pronunciation_generator
     cfg = MagicMock(pronunciation_engine="gemini", pronunciation_model_name="pm",
-                    pronunciation_temperature=0.2, gemini_api_key="k", ssl_verify=True)
+                    pronunciation_temperature=0.2, gemini_api_key="k", ssl_verify=True,
+                    pronunciation_thinking_level="low")
     with patch("pipeline.factory.GeminiScriptGenerator") as gem:
         create_pronunciation_generator(cfg)
     gem.assert_called_once_with(api_key="k", model_name="pm", temperature=0.2, ssl_verify=True)
 
 
-def test_main_finalize_disabled_skips_pronunciation_files(tmp_path):
+def test_factory_openai_pronunciation_ignores_thinking_level():
+    from pipeline.factory import create_pronunciation_generator
+    cfg = MagicMock(pronunciation_engine="openai", pronunciation_model_name="gpt", pronunciation_temperature=0.2,
+                    openai_api_key="k", openai_service_tier="auto", ssl_verify=True)
+    with patch("pipeline.factory.OpenAIScriptGenerator") as oa:
+        create_pronunciation_generator(cfg)
+    assert "text_thinking_level" not in oa.call_args.kwargs and "thinking_level" not in oa.call_args.kwargs
+
+
+def _thinking_cfg(engine, level_line):
+    return _config(f"""
+pronunciation:
+  enabled: true
+  engine: "{engine}"
+  model_name: "m"
+  temperature: 0.2
+{level_line}""")
+
+
+@pytest.mark.parametrize("level", ["low", "medium", "high"])
+def test_config_thinking_level_valid(level):
+    assert _thinking_cfg("gemini", f'  thinking_level: "{level}"\n').pronunciation_thinking_level == level
+
+
+def test_config_thinking_level_required_for_gemini():
+    with pytest.raises(ValueError, match="thinking_level"):
+        _thinking_cfg("gemini", "").pronunciation_thinking_level
+
+
+@pytest.mark.parametrize("bad", ['"HIGH"', '"minimal"', "1", "true"])
+def test_config_thinking_level_invalid(bad):
+    with pytest.raises(ValueError, match="low, medium, high"):
+        _thinking_cfg("gemini", f"  thinking_level: {bad}\n").pronunciation_thinking_level
+
+
+def test_config_thinking_level_ignored_for_openai():
+    assert _thinking_cfg("openai", "").pronunciation_thinking_level is None
+    assert _thinking_cfg("openai", '  thinking_level: "bogus"\n').pronunciation_thinking_level is None
+
+
+def test_real_config_thinking_level_high():
+    from pipeline.config import PipelineConfig
+    with patch("os.makedirs"):
+        cfg = PipelineConfig("config.yaml")
+    assert cfg.pronunciation_thinking_level == "high"
+
+
+def _gemini_gen():
+    from pipeline.generator import GeminiScriptGenerator
+    with patch("pipeline.generator.genai.Client") as client_cls:
+        gen = GeminiScriptGenerator(api_key="k", model_name="m", temperature=0.2)
+    client = client_cls.return_value
+    client.models.generate_content.return_value = MagicMock(text="out", usage_metadata=None)
+    return gen, client
+
+
+def test_gemini_generate_text_passes_thinking_level():
+    from google.genai import types
+    gen, client = _gemini_gen()
+    with patch("pipeline.generator.log_gemini_usage"):
+        assert gen.generate_text("sys", "user", thinking_level="low") == "out"
+    config = client.models.generate_content.call_args.kwargs["config"]
+    assert isinstance(config.thinking_config, types.ThinkingConfig)
+    assert config.thinking_config.thinking_level.value.lower() == "low"
+    assert config.temperature == 0.2 and config.system_instruction == "sys"
+
+
+def test_gemini_generate_text_without_level_has_no_thinking_config():
+    gen, client = _gemini_gen()
+    with patch("pipeline.generator.log_gemini_usage"):
+        gen.generate_text("sys", "user")
+    assert client.models.generate_content.call_args.kwargs["config"].thinking_config is None
+
+
+def test_gemini_batch_request_carries_thinking_level():
+    from google.genai import types
+    gen, client = _gemini_gen()
+    gen.submit_batch("sys", "user", temperature=0.2, custom_id="c", thinking_level="high")
+    request = client.batches.create.call_args.kwargs["src"][0]
+    assert request["config"]["thinking_config"] == {"thinking_level": "high"}
+    parsed = types.InlinedRequest(**request)  # the SDK accepts the request shape
+    assert parsed.config.thinking_config.thinking_level.value.lower() == "high"
+    gen.submit_batch("sys", "user", temperature=0.2, custom_id="c")
+    assert "thinking_config" not in client.batches.create.call_args.kwargs["src"][0]["config"]
+
+
+def test_gemini_other_calls_unaffected_by_thinking_level():
+    gen, client = _gemini_gen()
+    with patch("pipeline.generator.log_gemini_usage"):
+        gen.polish_siman_script("draft", "rel", "instr")
+    assert client.models.generate_content.call_count == 1
+    for call in client.models.generate_content.call_args_list:
+        assert getattr(call.kwargs.get("config"), "thinking_config", None) is None
+
+
+def test_main_save_transcript_without_tagging_skips_pronunciation_files(tmp_path):
     import main as main_mod
-    cfg = MagicMock(pronunciation_enabled=False, output_dir=str(tmp_path), section_slug="YD")
-    out = main_mod.finalize_and_save_transcript(94, 'הש"ך', cfg, "m")
+    cfg = MagicMock(output_dir=str(tmp_path), section_slug="YD")
+    out = main_mod.save_transcript(94, 'הש"ך', None, cfg, "m")
     assert out == "השַׁךְ"
     names = os.listdir(tmp_path)
     assert "YD_Siman_94_m_transcript.txt" in names
     assert not any("pronunciation" in n for n in names)
 
 
-def test_main_finalize_enabled_saves_outputs(tmp_path):
+def test_main_save_transcript_with_tagging_saves_outputs(tmp_path):
     import main as main_mod
     cfg = MagicMock(output_dir=str(tmp_path), section_slug="YD")
-    with patch.object(main_mod, "run_pronunciation_stage", return_value=(TAGGED, [("טית", "tet")])):
-        out = main_mod.finalize_and_save_transcript(94, ORIG, cfg, "m")
+    out = main_mod.save_transcript(94, TAGGED, [("טית", "tet")], cfg, "m")
     assert TET in out
     assert (tmp_path / "YD_Siman_94_m_pronunciation_tags.txt").read_text(encoding="utf-8") == "טית\ttet\n"
     assert (tmp_path / "YD_Siman_94_m_pronunciation.txt").read_text(encoding="utf-8") == TAGGED
 
 
-def test_main_finalize_tagging_failure_writes_nothing(tmp_path):
-    import main as main_mod
-    cfg = MagicMock(output_dir=str(tmp_path), section_slug="YD")
-    err = PronunciationTaggingError("pronunciation tagging output rejected: bad")
-    with patch.object(main_mod, "run_pronunciation_stage", side_effect=err):
-        with pytest.raises(main_mod.SimanStageError) as exc:
-            main_mod.finalize_and_save_transcript(94, ORIG, cfg, "m")
-    assert exc.value.stage == main_mod.STAGE_PRONUNCIATION
-    assert "rejected: bad" in exc.value.reason
-    assert os.listdir(tmp_path) == []
-
-
-def test_main_tagging_failure_skips_tts(tmp_path):
-    import main as main_mod
-    cfg = MagicMock(output_dir=str(tmp_path), section_slug="YD")
-    args = MagicMock(skip_tts=False)
-    with patch.object(main_mod, "run_pronunciation_stage", side_effect=PronunciationTaggingError("x")), \
-         patch.object(main_mod, "create_tts_engine") as tts:
-        with pytest.raises(main_mod.SimanStageError):
-            main_mod.finalize_and_synthesize(94, ORIG, cfg, args, "m")
-    tts.assert_not_called()
-
-
 def test_main_tts_failure_is_stage_error(tmp_path):
     import main as main_mod
-    cfg = MagicMock(pronunciation_enabled=False, output_dir=str(tmp_path), section_slug="YD")
+    cfg = MagicMock(output_dir=str(tmp_path), section_slug="YD")
     args = MagicMock(skip_tts=False)
     with patch.object(main_mod, "create_tts_engine", side_effect=RuntimeError("quota")):
         with pytest.raises(main_mod.SimanStageError) as exc:
-            main_mod.finalize_and_synthesize(94, ORIG, cfg, args, "m")
+            main_mod.finish_siman(94, ORIG, None, cfg, args, "m")
     assert exc.value.stage == main_mod.STAGE_TTS and exc.value.reason == "quota"
 
 
@@ -411,7 +516,8 @@ def test_tag_script_errors_without_writing(tmp_path, monkeypatch, capsys):
     gen = MagicMock(model_name="m")
     gen.generate_text.return_value = TAGGED.replace("עוסק", "דן")
     monkeypatch.setattr("pipeline.config.PipelineConfig", MagicMock())
-    monkeypatch.setattr("pipeline.factory.create_pronunciation_generator", lambda c: gen)
+    monkeypatch.setattr("pipeline.pronunciation.create_pronunciation_tagger",
+                        lambda c: PronunciationTagger(gen, "INSTR", None))
     with pytest.raises(SystemExit) as exc:
         script.main([str(src)])
     assert exc.value.code == 1
