@@ -89,11 +89,11 @@ class BaseScriptGenerator(ABC):
         """
         pass
 
-    def generate_text(self, system_instruction: str, user_prompt: str) -> str:
+    def generate_text(self, system_instruction: str, user_prompt: str, thinking_level: str = None) -> str:
         """
         Generic single-shot completion (system instruction + user prompt) at this
         generator's configured temperature. Used by auxiliary stages such as
-        pronunciation tagging.
+        pronunciation tagging. thinking_level is honoured by Gemini only (None = model default).
         """
         raise NotImplementedError(f"{type(self).__name__} does not implement generate_text().")
 
@@ -111,9 +111,13 @@ class BatchCapableGenerator(ABC):
         user_prompt: str,
         temperature: float,
         custom_id: str,
-        cache_dir: str = "./cache"
+        cache_dir: str = "./cache",
+        thinking_level: str = None
     ) -> str:
-        """Submit a single request as a batch job. Returns a job identifier string."""
+        """
+        Submit a single request as a batch job. Returns a job identifier string.
+        thinking_level is honoured by Gemini only (None = model default).
+        """
         pass
 
     @abstractmethod
@@ -134,12 +138,9 @@ class GeminiScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
     """
     Generates custom, TTS-optimized Hebrew script files using Gemini API (google-genai SDK).
     """
-    def __init__(self, api_key: str = None, model_name: str = "gemini-3.5-flash", temperature: float = 0.3, ssl_verify: bool = True,
-                 text_thinking_level: str = None):
+    def __init__(self, api_key: str = None, model_name: str = "gemini-3.5-flash", temperature: float = 0.3, ssl_verify: bool = True):
         super().__init__(api_key, model_name, temperature)
         self.ssl_verify = ssl_verify
-        # Applied only to generate_text() (the pronunciation stage); None = model default.
-        self.text_thinking_level = text_thinking_level
         kwargs = {}
         if api_key:
             kwargs["api_key"] = api_key
@@ -256,14 +257,14 @@ class GeminiScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
             logger.error(f"Error during Gemini script polish call: {e}")
             raise
 
-    def generate_text(self, system_instruction: str, user_prompt: str) -> str:
+    def generate_text(self, system_instruction: str, user_prompt: str, thinking_level: str = None) -> str:
         logger.info(
             f"Running Gemini text call via model {self.model_name} (temperature {self.temperature}"
-            + (f", thinking_level {self.text_thinking_level}" if self.text_thinking_level else "") + ")..."
+            + (f", thinking_level {thinking_level}" if thinking_level else "") + ")..."
         )
         config_kwargs = {"system_instruction": system_instruction, "temperature": self.temperature}
-        if self.text_thinking_level:
-            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=self.text_thinking_level)
+        if thinking_level:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=thinking_level)
         config = types.GenerateContentConfig(**config_kwargs)
         response = self.client.models.generate_content(
             model=self.model_name,
@@ -282,15 +283,19 @@ class GeminiScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
         user_prompt: str,
         temperature: float,
         custom_id: str,
-        cache_dir: str = "./cache"
+        cache_dir: str = "./cache",
+        thinking_level: str = None
     ) -> str:
         logger.info(f"Submitting Gemini batch job (custom_id: {custom_id})...")
+        request_config = {
+            'system_instruction': system_instruction,
+            'temperature': temperature
+        }
+        if thinking_level:
+            request_config['thinking_config'] = {'thinking_level': thinking_level}
         inline_request = {
             'contents': [{'role': 'user', 'parts': [{'text': user_prompt}]}],
-            'config': {
-                'system_instruction': system_instruction,
-                'temperature': temperature
-            }
+            'config': request_config
         }
         batch_job = self.client.batches.create(
             model=self.model_name,
@@ -468,7 +473,8 @@ class OpenAIScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
             logger.error(f"Error during OpenAI script polish call: {e}")
             raise
 
-    def generate_text(self, system_instruction: str, user_prompt: str) -> str:
+    def generate_text(self, system_instruction: str, user_prompt: str, thinking_level: str = None) -> str:
+        # thinking_level is Gemini-only; ignored here.
         logger.info(f"Running OpenAI text call via model {self.model_name}...")
         is_reasoning_model = self.model_name.startswith("o1") or self.model_name.startswith("o3")
         messages = [
@@ -492,8 +498,10 @@ class OpenAIScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
         user_prompt: str,
         temperature: float,
         custom_id: str,
-        cache_dir: str = "./cache"
+        cache_dir: str = "./cache",
+        thinking_level: str = None
     ) -> str:
+        # thinking_level is Gemini-only; ignored here.
         logger.info(f"Submitting OpenAI batch job (custom_id: {custom_id})...")
 
         messages = []

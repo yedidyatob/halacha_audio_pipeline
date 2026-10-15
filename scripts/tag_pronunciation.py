@@ -53,8 +53,7 @@ def main(argv=None):
     load_dotenv(dotenv_path=REPO_ROOT.parent / ".env")  # .env lives in the folder above the repo
 
     from pipeline.config import PipelineConfig
-    from pipeline.factory import create_pronunciation_generator
-    from pipeline.pronunciation import tag_pronunciation, format_pairs, PronunciationTaggingError
+    from pipeline.pronunciation import create_pronunciation_tagger, format_pairs, PronunciationTaggingError
     from pipeline.apply_nikkud import apply_nikkud_to_abbreviations
 
     if not os.path.exists(args.input):
@@ -64,12 +63,11 @@ def main(argv=None):
         text = f.read()
 
     config = PipelineConfig(args.config)
-    generator = create_pronunciation_generator(config)
-    instruction = config.pronunciation_instruction
-    print(f"Tagging {args.input} ({len(text)} chars) via {config.pronunciation_engine} / {generator.model_name}...")
+    tagger = create_pronunciation_tagger(config)
+    print(f"Tagging {args.input} ({len(text)} chars) via {config.pronunciation_engine} / {tagger.generator.model_name}...")
 
     try:
-        tagged, pairs = tag_pronunciation(text, lambda t: generator.generate_text(instruction, t))
+        tagged, pairs = tagger.tag(text)
     except PronunciationTaggingError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         print("Nothing was written.", file=sys.stderr)
