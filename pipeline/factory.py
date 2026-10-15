@@ -36,9 +36,11 @@ def create_pronunciation_generator(config: PipelineConfig) -> BaseScriptGenerato
             api_key=config.gemini_api_key,
             model_name=config.pronunciation_model_name,
             temperature=config.pronunciation_temperature,
-            ssl_verify=config.ssl_verify
+            ssl_verify=config.ssl_verify,
+            text_thinking_level=config.pronunciation_thinking_level
         )
     elif engine == "openai":
+        # pronunciation.thinking_level is Gemini-only and is ignored for openai.
         return OpenAIScriptGenerator(
             api_key=config.openai_api_key,
             model_name=config.pronunciation_model_name,

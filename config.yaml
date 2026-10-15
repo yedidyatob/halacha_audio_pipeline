@@ -140,6 +140,9 @@ pronunciation:
   engine: "gemini"  # "gemini" or "openai" (openai reuses generator.openai.service_tier)
   model_name: "gemini-3.1-pro-preview"
   temperature: 0.2
+  # Gemini thinking level for the tagging call (required for engine gemini; ignored for openai).
+  # Gemini 3.1 Pro accepts low/medium/high; try low to compare cost vs tag quality.
+  thinking_level: "high"
   # Filled into {always_tag} / {never_tag} in pronunciation_instruction (joined with ", ";
   # an empty list renders as "אין").
   always_tag: ["עובר בהמה", "כותח", "נבילה"]

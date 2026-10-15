@@ -288,10 +288,95 @@ def test_stage_runs_when_enabled():
 def test_factory_creates_pronunciation_generator():
     from pipeline.factory import create_pronunciation_generator
     cfg = MagicMock(pronunciation_engine="gemini", pronunciation_model_name="pm",
-                    pronunciation_temperature=0.2, gemini_api_key="k", ssl_verify=True)
+                    pronunciation_temperature=0.2, gemini_api_key="k", ssl_verify=True,
+                    pronunciation_thinking_level="low")
     with patch("pipeline.factory.GeminiScriptGenerator") as gem:
         create_pronunciation_generator(cfg)
-    gem.assert_called_once_with(api_key="k", model_name="pm", temperature=0.2, ssl_verify=True)
+    gem.assert_called_once_with(api_key="k", model_name="pm", temperature=0.2, ssl_verify=True,
+                                text_thinking_level="low")
+
+
+def test_factory_openai_pronunciation_ignores_thinking_level():
+    from pipeline.factory import create_pronunciation_generator
+    cfg = MagicMock(pronunciation_engine="openai", pronunciation_model_name="gpt", pronunciation_temperature=0.2,
+                    openai_api_key="k", openai_service_tier="auto", ssl_verify=True)
+    with patch("pipeline.factory.OpenAIScriptGenerator") as oa:
+        create_pronunciation_generator(cfg)
+    assert "text_thinking_level" not in oa.call_args.kwargs and "thinking_level" not in oa.call_args.kwargs
+
+
+def _thinking_cfg(engine, level_line):
+    return _config(f"""
+pronunciation:
+  enabled: true
+  engine: "{engine}"
+  model_name: "m"
+  temperature: 0.2
+{level_line}""")
+
+
+@pytest.mark.parametrize("level", ["low", "medium", "high"])
+def test_config_thinking_level_valid(level):
+    assert _thinking_cfg("gemini", f'  thinking_level: "{level}"\n').pronunciation_thinking_level == level
+
+
+def test_config_thinking_level_required_for_gemini():
+    with pytest.raises(ValueError, match="thinking_level"):
+        _thinking_cfg("gemini", "").pronunciation_thinking_level
+
+
+@pytest.mark.parametrize("bad", ['"HIGH"', '"minimal"', "1", "true"])
+def test_config_thinking_level_invalid(bad):
+    with pytest.raises(ValueError, match="low, medium, high"):
+        _thinking_cfg("gemini", f"  thinking_level: {bad}\n").pronunciation_thinking_level
+
+
+def test_config_thinking_level_ignored_for_openai():
+    assert _thinking_cfg("openai", "").pronunciation_thinking_level is None
+    assert _thinking_cfg("openai", '  thinking_level: "bogus"\n').pronunciation_thinking_level is None
+
+
+def test_real_config_thinking_level_high():
+    from pipeline.config import PipelineConfig
+    with patch("os.makedirs"):
+        cfg = PipelineConfig("config.yaml")
+    assert cfg.pronunciation_thinking_level == "high"
+
+
+def _gemini_gen(level):
+    from pipeline.generator import GeminiScriptGenerator
+    with patch("pipeline.generator.genai.Client") as client_cls:
+        gen = GeminiScriptGenerator(api_key="k", model_name="m", temperature=0.2, text_thinking_level=level)
+    client = client_cls.return_value
+    client.models.generate_content.return_value = MagicMock(text="out", usage_metadata=None)
+    return gen, client
+
+
+def test_gemini_generate_text_passes_thinking_level():
+    from google.genai import types
+    gen, client = _gemini_gen("low")
+    with patch("pipeline.generator.log_gemini_usage"):
+        assert gen.generate_text("sys", "user") == "out"
+    config = client.models.generate_content.call_args.kwargs["config"]
+    assert isinstance(config.thinking_config, types.ThinkingConfig)
+    assert config.thinking_config.thinking_level.value.lower() == "low"
+    assert config.temperature == 0.2 and config.system_instruction == "sys"
+
+
+def test_gemini_generate_text_without_level_has_no_thinking_config():
+    gen, client = _gemini_gen(None)
+    with patch("pipeline.generator.log_gemini_usage"):
+        gen.generate_text("sys", "user")
+    assert client.models.generate_content.call_args.kwargs["config"].thinking_config is None
+
+
+def test_gemini_other_calls_unaffected_by_thinking_level():
+    gen, client = _gemini_gen("high")
+    with patch("pipeline.generator.log_gemini_usage"):
+        gen.polish_siman_script("draft", "rel", "instr")
+    assert client.models.generate_content.call_count == 1
+    for call in client.models.generate_content.call_args_list:
+        assert getattr(call.kwargs.get("config"), "thinking_config", None) is None
 
 
 def test_main_finalize_disabled_skips_pronunciation_files(tmp_path):

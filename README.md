@@ -79,6 +79,8 @@ The pipeline runs in three stages:
 ### Pronunciation tags (Stage 3.4)
 
 Configured in `config.yaml` (`pronunciation:` section + `pronunciation_instruction`; no code defaults).
+`pronunciation.thinking_level` (`low`/`medium`/`high`) sets the Gemini thinking level for the tagging call
+only; it is required when `pronunciation.engine` is `gemini` and ignored for `openai`.
 `pronunciation.always_tag` / `pronunciation.never_tag` are word lists filled into the `{always_tag}` /
 `{never_tag}` placeholders of the instruction (joined with ", "; an empty list renders as "אין").
 The output is validated: with the tags stripped it must equal the input exactly (only trailing

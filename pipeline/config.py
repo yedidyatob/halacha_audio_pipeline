@@ -224,6 +224,16 @@ class PipelineConfig:
             raise ValueError(f"'pronunciation.temperature' must be a number, got {value!r}.")
         return float(value)
 
+    @property
+    def pronunciation_thinking_level(self) -> str:
+        """Gemini thinking level for the tagging call. Required for engine gemini; ignored for openai."""
+        if self.pronunciation_engine != "gemini":
+            return None
+        value = self._pronunciation_value("thinking_level")
+        if value not in ("low", "medium", "high"):
+            raise ValueError(f"'pronunciation.thinking_level' must be one of low, medium, high, got {value!r}.")
+        return value
+
     def _pronunciation_word_list(self, key: str) -> list:
         value = self._pronunciation_value(key)
         if not isinstance(value, list) or not all(isinstance(w, str) and w.strip() for w in value):
