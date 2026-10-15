@@ -234,6 +234,29 @@ class PipelineConfig:
             raise ValueError(f"'pronunciation.thinking_level' must be one of low, medium, high, got {value!r}.")
         return value
 
+    @property
+    def experiment_combined_addendum_header(self) -> str:
+        """Header placed between polishing_instruction and the pronunciation rules (combined experiment)."""
+        section = self.config_data.get("experiment_combined_polish_tag")
+        value = section.get("addendum_header") if isinstance(section, dict) else None
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("Missing 'experiment_combined_polish_tag.addendum_header' in config.yaml.")
+        return value
+
+    def experiment_pricing(self, model_name: str):
+        """Per-1M-token prices for model_name from 'experiment_pricing' in config.yaml (no defaults)."""
+        from pipeline.usage import ModelPricing
+        section = self.config_data.get("experiment_pricing")
+        if not isinstance(section, dict) or not isinstance(section.get(model_name), dict):
+            raise ValueError(f"Missing 'experiment_pricing.{model_name}' in config.yaml.")
+        entry = section[model_name]
+        for key in ("input_per_1m_usd", "output_per_1m_usd", "max_prompt_tokens"):
+            value = entry.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+                raise ValueError(f"'experiment_pricing.{model_name}.{key}' must be a non-negative number, got {value!r}.")
+        return ModelPricing(float(entry["input_per_1m_usd"]), float(entry["output_per_1m_usd"]),
+                            int(entry["max_prompt_tokens"]))
+
     def _pronunciation_word_list(self, key: str) -> list:
         value = self._pronunciation_value(key)
         if not isinstance(value, list) or not all(isinstance(w, str) and w.strip() for w in value):

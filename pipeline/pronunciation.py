@@ -164,10 +164,19 @@ class PronunciationTagger:
 
     def tag(self, script_text: str) -> tuple[str, list[tuple[str, str]]]:
         """Synchronous tagging. Raises PronunciationTaggingError on any failure."""
-        return tag_pronunciation(
-            script_text,
-            lambda text: self.generator.generate_text(self.instruction, text, thinking_level=self.thinking_level),
-        )
+        return self.tag_with_usage(script_text)[0]
+
+    def tag_with_usage(self, script_text: str):
+        """Like tag(), also returning the TokenUsage of the call: ((text, pairs), usage)."""
+        results = []
+
+        def generate(text: str) -> str:
+            results.append(self.generator.complete(
+                self.instruction, text, self.generator.temperature, self.thinking_level
+            ))
+            return results[0].text
+
+        return tag_pronunciation(script_text, generate), results[0].usage
 
     def submit_batch(self, script_text: str, custom_id: str, cache_dir: str) -> str:
         """Submits the tagging request as a batch job; returns the job id."""

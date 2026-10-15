@@ -9,6 +9,7 @@ Writes:
   <output>              the tagged script (default: <input stem>_tagged.txt next to the input)
   <output stem>_tags.txt  one 'word<TAB>ipa' line per tagged word
 Runs regardless of pronunciation.enabled (calling the script is the explicit request).
+Prints token usage and an estimated cost (prices from experiment_pricing in config.yaml).
 If tagging fails (LLM error, text changed outside tags, malformed tags) nothing is written
 and the script exits with code 1.
 """
@@ -54,6 +55,7 @@ def main(argv=None):
 
     from pipeline.config import PipelineConfig
     from pipeline.pronunciation import create_pronunciation_tagger, format_pairs, PronunciationTaggingError
+    from pipeline.usage import format_usage_report
     from pipeline.apply_nikkud import apply_nikkud_to_abbreviations
 
     if not os.path.exists(args.input):
@@ -64,14 +66,16 @@ def main(argv=None):
 
     config = PipelineConfig(args.config)
     tagger = create_pronunciation_tagger(config)
+    pricing = config.experiment_pricing(tagger.generator.model_name)  # fail before paying for a call
     print(f"Tagging {args.input} ({len(text)} chars) via {config.pronunciation_engine} / {tagger.generator.model_name}...")
 
     try:
-        tagged, pairs = tagger.tag(text)
+        (tagged, pairs), usage = tagger.tag_with_usage(text)
     except PronunciationTaggingError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         print("Nothing was written.", file=sys.stderr)
         sys.exit(1)
+    print(format_usage_report("Pronunciation tagging", tagger.generator.model_name, usage, pricing))
     if args.apply_nikkud:
         tagged = apply_nikkud_to_abbreviations(tagged)
 

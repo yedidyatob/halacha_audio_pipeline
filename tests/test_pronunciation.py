@@ -9,6 +9,7 @@ from pipeline.pronunciation import (
     PronunciationTagger, create_pronunciation_tagger,
     PronunciationTaggingError,
 )
+from pipeline.usage import TextResult, TokenUsage
 from pipeline.apply_nikkud import apply_nikkud_to_abbreviations
 from pipeline.tts import BaseTTS, _split_outside_phoneme
 
@@ -278,10 +279,11 @@ def _tagger(level="low", temperature=0.2):
 
 def test_tagger_sync_uses_instruction_and_thinking_level():
     tagger, gen = _tagger("low")
-    gen.generate_text.return_value = TAGGED
+    gen.complete.return_value = TextResult(TAGGED, TokenUsage(10, 20, 5))
     text, pairs = tagger.tag(ORIG)
     assert text == TAGGED and len(pairs) == 3
-    gen.generate_text.assert_called_once_with("INSTR", ORIG, thinking_level="low")
+    gen.complete.assert_called_once_with("INSTR", ORIG, 0.2, "low")
+    assert tagger.tag_with_usage(ORIG)[1] == TokenUsage(10, 20, 5)
 
 
 def test_tagger_batch_request_uses_own_model_settings():
@@ -384,21 +386,21 @@ def _gemini_gen():
     return gen, client
 
 
-def test_gemini_generate_text_passes_thinking_level():
+def test_gemini_complete_passes_thinking_level():
     from google.genai import types
     gen, client = _gemini_gen()
     with patch("pipeline.generator.log_gemini_usage"):
-        assert gen.generate_text("sys", "user", thinking_level="low") == "out"
+        assert gen.complete("sys", "user", 0.2, "low").text == "out"
     config = client.models.generate_content.call_args.kwargs["config"]
     assert isinstance(config.thinking_config, types.ThinkingConfig)
     assert config.thinking_config.thinking_level.value.lower() == "low"
     assert config.temperature == 0.2 and config.system_instruction == "sys"
 
 
-def test_gemini_generate_text_without_level_has_no_thinking_config():
+def test_gemini_complete_without_level_has_no_thinking_config():
     gen, client = _gemini_gen()
     with patch("pipeline.generator.log_gemini_usage"):
-        gen.generate_text("sys", "user")
+        gen.complete("sys", "user", 0.2)
     assert client.models.generate_content.call_args.kwargs["config"].thinking_config is None
 
 
@@ -514,7 +516,7 @@ def test_tag_script_errors_without_writing(tmp_path, monkeypatch, capsys):
     src = tmp_path / "x_transcript.txt"
     src.write_text(ORIG, encoding="utf-8")
     gen = MagicMock(model_name="m")
-    gen.generate_text.return_value = TAGGED.replace("עוסק", "דן")
+    gen.complete.return_value = TextResult(TAGGED.replace("עוסק", "דן"), TokenUsage(1, 1, 0))
     monkeypatch.setattr("pipeline.config.PipelineConfig", MagicMock())
     monkeypatch.setattr("pipeline.pronunciation.create_pronunciation_tagger",
                         lambda c: PronunciationTagger(gen, "INSTR", None))

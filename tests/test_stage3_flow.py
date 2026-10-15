@@ -6,6 +6,7 @@ import pytest
 import main as main_mod
 from pipeline.generator import BatchCapableGenerator
 from pipeline.pronunciation import PronunciationTagger
+from pipeline.usage import TextResult, TokenUsage
 
 TET = '<phoneme alphabet="ipa" ph="tet">טית</phoneme>'
 
@@ -136,13 +137,13 @@ def test_sync_mode_tags_each_siman_synchronously(tmp_path):
     gen = MagicMock()
     gen.polish_siman_script.side_effect = lambda draft, rel, instr: draft
     tag_gen = MagicMock(model_name="m", temperature=0.2)
-    tag_gen.generate_text.side_effect = lambda instr, text, thinking_level: (
-        text.replace("95", "99") if "95" in text else tagged(text))
+    tag_gen.complete.side_effect = lambda instr, text, temperature, thinking_level: TextResult(
+        text.replace("95", "99") if "95" in text else tagged(text), TokenUsage(1, 1, 0))
     summary = _run(tmp_path, gen, PronunciationTagger(tag_gen, "TAG", "high"), batch=False)
     assert summary.succeeded == [94, 96, 97]
     assert summary.failed[95][0] == main_mod.STAGE_PRONUNCIATION
-    assert tag_gen.generate_text.call_count == 4
-    assert all(c.kwargs == {"thinking_level": "high"} for c in tag_gen.generate_text.call_args_list)
+    assert tag_gen.complete.call_count == 4
+    assert all(c.args[2:] == (0.2, "high") for c in tag_gen.complete.call_args_list)
     tag_gen.submit_batch.assert_not_called()
     gen.submit_batch.assert_not_called()
     assert _transcripts(tmp_path) == [94, 96, 97]

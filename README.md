@@ -99,6 +99,25 @@ Standalone (Windows PowerShell, from the repo root):
 
 `scripts/tag_pronunciation.py` likewise writes nothing and exits with code 1 if tagging fails.
 
+### Experiment: combined polish + tagging vs two stages
+
+Compare cost and quality of one LLM call (polish + tags) against the pipeline's two calls.
+Each script prints prompt / output / thinking tokens and an estimated USD cost, using the per-1M
+prices in `experiment_pricing:` in `config.yaml` (add an entry for any other model you use).
+
+```powershell
+# One call: polish + tags (writes <draft>_combined_tagged.txt and ..._tags.txt)
+.venv\Scripts\python scripts\polish_and_tag_combined.py output\drafts\<draft>.txt output\relations\<relations>.txt --apply-nikkud
+# Two calls: polish only, then tag the result
+.venv\Scripts\python scripts\polish_draft.py output\drafts\<draft>.txt output\relations\<relations>.txt
+.venv\Scripts\python scripts\tag_pronunciation.py output\drafts\<draft>_polished.txt --apply-nikkud
+```
+
+The combined system instruction is `polishing_instruction`, then
+`experiment_combined_polish_tag.addendum_header`, then `pronunciation_instruction` without its first
+paragraph (the "return the script exactly as is" lines, which conflict with polishing).
+Phoneme tags in the combined output must be well formed, or the script exits 1.
+
 ### Run summary and exit code
 
 A failure in Stage 3 for one siman (polishing, pronunciation tagging, nikkud/transcript save, TTS)

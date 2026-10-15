@@ -173,6 +173,27 @@ pronunciation_instruction: |
     <phoneme alphabet="ipa" ph="pat">פת</phoneme>
     <phoneme alphabet="ipa" ph="taˈut soˈfer">טעות סופר</phoneme>
 
+# Experiment scripts only (scripts/polish_draft.py, scripts/tag_pronunciation.py,
+# scripts/polish_and_tag_combined.py): USD per 1M tokens, used to print an estimated cost.
+# Thinking tokens are billed at the output rate. Prices apply to prompts <= max_prompt_tokens.
+experiment_pricing:
+  gemini-3.1-pro-preview:
+    input_per_1m_usd: 2.00
+    output_per_1m_usd: 12.00
+    max_prompt_tokens: 200000
+
+# scripts/polish_and_tag_combined.py: polish + pronunciation tagging in ONE call.
+# The system instruction is polishing_instruction, then this header, then
+# pronunciation_instruction WITHOUT its first paragraph (the "return the script exactly
+# as is / only allowed change" lines, which conflict with polishing).
+experiment_combined_polish_tag:
+  addendum_header: |
+    ===== תוספת: תגיות הגייה =====
+    כל ההנחיות לעיל לעריכת השיעור נשארות בתוקף. בנוסף, בתסריט המלוטש שאתה כותב,
+    עטוף מילים או צירופים שמנוע ה-TTS עלול לקרוא לא נכון בתגית:
+    <phoneme alphabet="ipa" ph="...">המילה</phoneme>
+    הטקסט שבתוך התגית הוא המילה עצמה כפי שהיא מופיעה בתסריט. הכללים לבחירת המילים:
+
 # TTS Engine Selection and Settings
 tts:
   engine: "elevenlabs"  # "elevenlabs", "google", "openai", or "gemini"

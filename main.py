@@ -22,6 +22,7 @@ from pipeline.extractor import SefariaExtractor
 from pipeline.logger import get_logger
 from pipeline.utils import save_output_file
 from pipeline.factory import create_generator_engine, create_tts_engine
+from pipeline.generator import POLISH_TEMPERATURE
 from pipeline.gematria import int_to_gematria
 from pipeline.apply_nikkud import apply_nikkud_to_abbreviations
 from pipeline.pronunciation import create_pronunciation_tagger, format_pairs
@@ -133,7 +134,7 @@ def polish_simanim(drafts: dict, relations_text: str, generator, config, args, s
             submit=lambda siman, draft: generator.submit_batch(
                 system_instruction=config.polishing_instruction,
                 user_prompt=generator._get_polishing_user_prompt(draft, relations_text),
-                temperature=0.1,
+                temperature=POLISH_TEMPERATURE,
                 custom_id=f"stage3_siman_{siman}",
                 cache_dir=config.cache_dir
             ),
