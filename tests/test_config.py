@@ -16,6 +16,9 @@ generator:
 tts:
   chunk_gap_paragraph_ms: 700
   chunk_gap_sentence_ms: 300
+  elevenlabs:
+    chunk_size: 8000
+    context_chars: 500
 """
     with patch("builtins.open", mock_open(read_data=yaml_content)), \
          patch("os.path.exists", return_value=True), \
@@ -37,6 +40,9 @@ generator:
 tts:
   chunk_gap_paragraph_ms: 700
   chunk_gap_sentence_ms: 300
+  elevenlabs:
+    chunk_size: 8000
+    context_chars: 500
 """
     with patch("builtins.open", mock_open(read_data=yaml_content)), \
          patch("os.path.exists", return_value=True), \
@@ -57,6 +63,9 @@ generator:
 tts:
   chunk_gap_paragraph_ms: 700
   chunk_gap_sentence_ms: 300
+  elevenlabs:
+    chunk_size: 8000
+    context_chars: 500
 """
 
     # Test Yoreh De'ah

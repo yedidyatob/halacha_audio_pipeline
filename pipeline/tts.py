@@ -30,6 +30,26 @@ def validate_gap_ms(value, name: str = "chunk gap") -> int:
     return int(round(value))
 
 
+# Google Cloud TTS rejects SynthesisInput.text above 5000 BYTES (not characters).
+GOOGLE_TTS_MAX_INPUT_BYTES = 5000
+# Chunking counts characters; Hebrew (incl. nikkud) is 2 bytes per char in UTF-8.
+GOOGLE_TTS_ASSUMED_BYTES_PER_CHAR = 2
+
+
+def validate_chunk_size(value, name: str = "chunk_size") -> int:
+    """Validates a max-characters-per-chunk setting: must be a positive int."""
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"'{name}' must be a positive integer, got {value!r}.")
+    return value
+
+
+def validate_context_chars(value, name: str = "context_chars") -> int:
+    """Validates the ElevenLabs previous/next context length: must be a positive int."""
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"'{name}' must be a positive integer, got {value!r}.")
+    return value
+
+
 def plan_gaps(break_types: list, paragraph_ms: int, sentence_ms: int) -> list:
     """
     Pure helper: maps the break type of each chunk to the silence (ms) to insert after it.
@@ -48,6 +68,44 @@ def plan_gaps(break_types: list, paragraph_ms: int, sentence_ms: int) -> list:
 
 
 _PHONEME_SPAN_RE = re.compile(r"<phoneme\b[^>]*>.*?</phoneme>", re.IGNORECASE | re.DOTALL)
+
+
+_PHONEME_TAG_CAPTURE_RE = re.compile(r"<phoneme\b[^>]*>(.*?)</phoneme>", re.IGNORECASE | re.DOTALL)
+
+
+def strip_phoneme_markup(text: str) -> str:
+    """Replaces every <phoneme ...>word</phoneme> span with its inner word."""
+    return _PHONEME_TAG_CAPTURE_RE.sub(lambda m: m.group(1), text)
+
+
+def context_tail(text: str, max_chars: int) -> str:
+    """
+    The last <= max_chars characters of `text` (phoneme tags stripped first), starting at
+    a word boundary. Returns "" if no word boundary fits.
+    """
+    clean = strip_phoneme_markup(text).strip()
+    if len(clean) <= max_chars:
+        return clean
+    cut = clean[-max_chars:]
+    if not clean[-max_chars - 1].isspace():  # landed mid-word: drop the partial word
+        parts = cut.split(None, 1)
+        cut = parts[1] if len(parts) > 1 else ""
+    return cut.strip()
+
+
+def context_head(text: str, max_chars: int) -> str:
+    """
+    The first <= max_chars characters of `text` (phoneme tags stripped first), ending at
+    a word boundary. Returns "" if no word boundary fits.
+    """
+    clean = strip_phoneme_markup(text).strip()
+    if len(clean) <= max_chars:
+        return clean
+    cut = clean[:max_chars]
+    if not clean[max_chars].isspace():  # landed mid-word: drop the partial word
+        parts = cut.rsplit(None, 1)
+        cut = parts[0] if len(parts) > 1 else ""
+    return cut.strip()
 
 
 def _split_outside_phoneme(text: str, pattern: str) -> list:
@@ -72,8 +130,10 @@ def _split_outside_phoneme(text: str, pattern: str) -> list:
 class BaseTTS(ABC):
     """
     Abstract Base Class for Text-to-Speech synthesis engines.  Subclasses that produce MP3 per chunk must implement:
-      - _chunk_size (property): max characters per chunk for this engine
       - _synthesize_chunk(text): returns raw MP3 bytes for a single chunk
+    The max characters per chunk comes from config.yaml (tts.<engine>.chunk_size) via
+    _set_chunk_size(). Engines that use neighbouring text for prosody (ElevenLabs)
+    override _synthesize_chunk_in_context() instead of / in addition to _synthesize_chunk.
       - _setup(): hook called once before chunking begins, for lazy imports and client init
 
     Subclasses with a fundamentally different encoding pipeline (e.g. GeminiTTS,
@@ -99,11 +159,21 @@ class BaseTTS(ABC):
     def file_extension(self) -> str:
         return "mp3"
 
+    def _set_chunk_size(self, chunk_size: int) -> None:
+        """Validates and stores the max characters per chunk (from config.yaml)."""
+        self.chunk_size = validate_chunk_size(chunk_size, "chunk_size")
+
     @property
-    @abstractmethod
     def _chunk_size(self) -> int:
         """Maximum characters per text chunk for this engine."""
-        pass
+        return self.chunk_size
+
+    def _synthesize_chunk_in_context(self, text: str, previous_chunk, next_chunk) -> bytes:
+        """
+        Synthesizes one chunk, given the full text of its neighbouring chunks (None at the
+        ends / for a single chunk). Default: ignore the neighbours.
+        """
+        return self._synthesize_chunk(text)
 
     @abstractmethod
     def _synthesize_chunk(self, text: str) -> bytes:
@@ -141,7 +211,7 @@ class BaseTTS(ABC):
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
         if len(text_chunks) == 1:
-            audio_bytes = self._synthesize_chunk(text_chunks[0])
+            audio_bytes = self._synthesize_chunk_in_context(text_chunks[0], None, None)
             with open(output_path, "wb") as f:
                 f.write(audio_bytes)
         else:
@@ -151,7 +221,9 @@ class BaseTTS(ABC):
                     logger.info(
                         f"Synthesizing chunk {idx}/{len(text_chunks)} ({len(chunk)} chars)..."
                     )
-                    audio_bytes = self._synthesize_chunk(chunk)
+                    previous_chunk = text_chunks[idx - 2] if idx > 1 else None
+                    next_chunk = text_chunks[idx] if idx < len(text_chunks) else None
+                    audio_bytes = self._synthesize_chunk_in_context(chunk, previous_chunk, next_chunk)
                     chunk_path = os.path.join(tmp_dir, f"chunk_{idx:04d}.mp3")
                     with open(chunk_path, "wb") as f:
                         f.write(audio_bytes)
@@ -392,12 +464,6 @@ class ElevenLabsTTS(BaseTTS):
     Supports automatic chunking for texts exceeding ElevenLabs' character limit.
     """
 
-    # ElevenLabs streaming endpoint terminates early above ~2000 chars.
-    # 1500 is a safe ceiling to account for Unicode normalization variance.
-    @property
-    def _chunk_size(self) -> int:
-        return 1500
-
     def __init__(
         self,
         api_key: str = None,
@@ -407,10 +473,14 @@ class ElevenLabsTTS(BaseTTS):
         similarity_boost: float = None,
         ssl_verify: bool = True,
         *,
+        chunk_size: int,
+        context_chars: int,
         chunk_gap_paragraph_ms: int,
         chunk_gap_sentence_ms: int,
     ):
         self._set_chunk_gaps(chunk_gap_paragraph_ms, chunk_gap_sentence_ms)
+        self._set_chunk_size(chunk_size)
+        self.context_chars = validate_context_chars(context_chars, "tts.elevenlabs.context_chars")
         self.api_key = api_key or os.environ.get("ELEVENLABS_API_KEY")
         if not self.api_key:
             logger.warning(
@@ -449,6 +519,21 @@ class ElevenLabsTTS(BaseTTS):
             raise
 
     def _synthesize_chunk(self, text: str) -> bytes:
+        return self._synthesize_chunk_in_context(text, None, None)
+
+    def _synthesize_chunk_in_context(self, text: str, previous_chunk, next_chunk) -> bytes:
+        """
+        Request stitching: previous_text / next_text are the last / first context_chars
+        of the neighbouring chunks (phoneme tags stripped, cut at a word boundary).
+        Omitted for the first / last chunk and for a single-chunk text.
+        """
+        kwargs = {}
+        previous_text = context_tail(previous_chunk, self.context_chars) if previous_chunk else ""
+        next_text = context_head(next_chunk, self.context_chars) if next_chunk else ""
+        if previous_text:
+            kwargs["previous_text"] = previous_text
+        if next_text:
+            kwargs["next_text"] = next_text
         audio_generator = self._client.text_to_speech.convert(
             text=text,
             voice_id=self.voice_id,
@@ -456,6 +541,7 @@ class ElevenLabsTTS(BaseTTS):
             output_format="mp3_44100_128",
             optimize_streaming_latency=None,
             voice_settings=self._voice_settings,
+            **kwargs,
         )
         return b"".join(audio_generator)
 
@@ -465,11 +551,6 @@ class GoogleCloudTTS(BaseTTS):
     Synthesizes speech using Google Cloud Text-to-Speech API.
     """
 
-    # 2000 chars is safe for Hebrew (2-byte chars) within Google's 5000-byte limit.
-    @property
-    def _chunk_size(self) -> int:
-        return 2000
-
     def __init__(
         self,
         credentials_path: str = None,
@@ -478,10 +559,19 @@ class GoogleCloudTTS(BaseTTS):
         speaking_rate: float = 1.0,
         pitch: float = 0.0,
         *,
+        chunk_size: int,
         chunk_gap_paragraph_ms: int,
         chunk_gap_sentence_ms: int,
     ):
         self._set_chunk_gaps(chunk_gap_paragraph_ms, chunk_gap_sentence_ms)
+        self._set_chunk_size(chunk_size)
+        max_chars = GOOGLE_TTS_MAX_INPUT_BYTES // GOOGLE_TTS_ASSUMED_BYTES_PER_CHAR
+        if self.chunk_size > max_chars:
+            raise ValueError(
+                f"'tts.google.chunk_size' is {self.chunk_size}, but Google TTS accepts at most "
+                f"{GOOGLE_TTS_MAX_INPUT_BYTES} bytes per request; at {GOOGLE_TTS_ASSUMED_BYTES_PER_CHAR} "
+                f"bytes per Hebrew character the maximum is {max_chars}."
+            )
         if credentials_path:
             os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_path
 
@@ -524,6 +614,12 @@ class GoogleCloudTTS(BaseTTS):
             raise
 
     def _synthesize_chunk(self, text: str) -> bytes:
+        n_bytes = len(text.encode("utf-8"))
+        if n_bytes > GOOGLE_TTS_MAX_INPUT_BYTES:
+            raise ValueError(
+                f"Google TTS chunk is {n_bytes} bytes (limit {GOOGLE_TTS_MAX_INPUT_BYTES}); "
+                f"lower tts.google.chunk_size."
+            )
         synthesis_input = self._texttospeech.SynthesisInput(text=text)
         response = self._google_client.synthesize_speech(
             input=synthesis_input, voice=self._voice, audio_config=self._audio_config
@@ -537,11 +633,6 @@ class OpenAITTS(BaseTTS):
     Supports automatic chunking for texts exceeding OpenAI's character limit.
     """
 
-    # OpenAI's hard limit is 4096 chars; 4000 gives a safe buffer.
-    @property
-    def _chunk_size(self) -> int:
-        return 4000
-
     def __init__(
         self,
         api_key: str = None,
@@ -550,10 +641,12 @@ class OpenAITTS(BaseTTS):
         speed: float = 1.0,
         ssl_verify: bool = True,
         *,
+        chunk_size: int,
         chunk_gap_paragraph_ms: int,
         chunk_gap_sentence_ms: int,
     ):
         self._set_chunk_gaps(chunk_gap_paragraph_ms, chunk_gap_sentence_ms)
+        self._set_chunk_size(chunk_size)
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         if not self.api_key:
             logger.warning(
@@ -604,21 +697,18 @@ class GeminiTTS(BaseTTS):
     so GeminiTTS overrides synthesize() directly.
     """
 
-    # Gemini TTS uses max_chars=2000 to stay within the API's length limits.
-    @property
-    def _chunk_size(self) -> int:
-        return 2000
-
     def __init__(
         self,
         model_id: str,
         voice_name: str,
         api_key: str = None,
         *,
+        chunk_size: int,
         chunk_gap_paragraph_ms: int,
         chunk_gap_sentence_ms: int,
     ):
         self._set_chunk_gaps(chunk_gap_paragraph_ms, chunk_gap_sentence_ms)
+        self._set_chunk_size(chunk_size)
         self.model_id = model_id
         self.voice_name = voice_name
 

@@ -146,17 +146,17 @@ def test_validate_gap_ms():
 
 
 def test_engine_explicit_gaps():
-    e = ElevenLabsTTS(api_key="k", chunk_gap_paragraph_ms=700, chunk_gap_sentence_ms=300)
+    e = ElevenLabsTTS(chunk_size=8000, context_chars=500, api_key="k", chunk_gap_paragraph_ms=700, chunk_gap_sentence_ms=300)
     assert (e.chunk_gap_paragraph_ms, e.chunk_gap_sentence_ms) == (700, 300)
-    o = OpenAITTS(api_key="k", chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=50)
+    o = OpenAITTS(api_key="k", chunk_size=4000, chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=50)
     assert (o.chunk_gap_paragraph_ms, o.chunk_gap_sentence_ms) == (0, 50)
-    g = GoogleCloudTTS(chunk_gap_paragraph_ms=10, chunk_gap_sentence_ms=20)
+    g = GoogleCloudTTS(chunk_size=2000, chunk_gap_paragraph_ms=10, chunk_gap_sentence_ms=20)
     assert (g.chunk_gap_paragraph_ms, g.chunk_gap_sentence_ms) == (10, 20)
     with patch("google.auth.default", side_effect=Exception("no creds")):
-        gem = GeminiTTS("m", "v", chunk_gap_paragraph_ms=11, chunk_gap_sentence_ms=22)
+        gem = GeminiTTS("m", "v", chunk_size=2000, chunk_gap_paragraph_ms=11, chunk_gap_sentence_ms=22)
     assert (gem.chunk_gap_paragraph_ms, gem.chunk_gap_sentence_ms) == (11, 22)
     with pytest.raises(ValueError):
-        OpenAITTS(api_key="k", chunk_gap_paragraph_ms=-5, chunk_gap_sentence_ms=0)
+        OpenAITTS(api_key="k", chunk_size=4000, chunk_gap_paragraph_ms=-5, chunk_gap_sentence_ms=0)
 
 
 def test_engines_require_gap_arguments():
@@ -170,7 +170,7 @@ def test_engines_require_gap_arguments():
     with pytest.raises(TypeError):
         GeminiTTS("m", "v")
     with pytest.raises(ValueError):
-        OpenAITTS(api_key="k", chunk_gap_paragraph_ms=None, chunk_gap_sentence_ms=0)
+        OpenAITTS(api_key="k", chunk_size=4000, chunk_gap_paragraph_ms=None, chunk_gap_sentence_ms=0)
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +202,7 @@ def test_config_chunk_gap_explicit_values():
     config = _load_config(
         'halachic_section: "Yoreh De\'ah"\n'
         'tts:\n  engine: "openai"\n  chunk_gap_paragraph_ms: 1000\n  chunk_gap_sentence_ms: 0\n'
+        '  openai:\n    chunk_size: 4000\n'
     )
     assert config.tts_chunk_gap_paragraph_ms == 1000
     assert config.tts_chunk_gap_sentence_ms == 0
@@ -227,6 +228,7 @@ def test_repo_config_yaml_has_gap_settings():
 def test_factory_passes_gaps_to_engine(_mock_openai):
     config = MagicMock(spec=PipelineConfig)
     config.tts_engine = "openai"
+    config.tts_chunk_size = {"elevenlabs":8000,"google":2000,"openai":4000,"gemini":2000}["openai"]
     config.openai_api_key = "k"
     config.openai_tts_settings = {"voice": "alloy", "model": "tts-1"}
     config.ssl_verify = True
@@ -239,6 +241,7 @@ def test_factory_passes_gaps_to_engine(_mock_openai):
 def test_factory_passes_gaps_to_gemini():
     config = MagicMock(spec=PipelineConfig)
     config.tts_engine = "gemini"
+    config.tts_chunk_size = {"elevenlabs":8000,"google":2000,"openai":4000,"gemini":2000}["gemini"]
     config.gemini_tts_model = "m"
     config.gemini_tts_voice = "Achird"
     config.gemini_api_key = "k"
@@ -266,7 +269,7 @@ def test_gemini_silence_pcm_length_and_even():
 
 def test_gemini_assemble_pcm_inserts_gaps():
     with patch("google.auth.default", side_effect=Exception("no creds")):
-        gem = GeminiTTS("m", "v", chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=0)
+        gem = GeminiTTS("m", "v", chunk_size=2000, chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=0)
     out = gem._assemble_pcm([b"\x01\x01", b"\x02\x02", b"\x03\x03"], [1000, 0])
     assert out == b"\x01\x01" + bytes(48000) + b"\x02\x02" + b"\x03\x03"
     assert gem._assemble_pcm([b"\x01\x01"], []) == b"\x01\x01"

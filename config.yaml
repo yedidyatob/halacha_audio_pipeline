@@ -187,23 +187,34 @@ tts:
     model_name: "gemini-3.1-flash-tts-preview"
     voice_name: "Achird" # Options: Puck, Charon, Kore, Fenrir, Aoede, Achird
     temperature: 0.3
+    chunk_size: 2000  # max characters per request
 
   elevenlabs:
     voice_id: "vKaxWReVD8llVRJRbBf5"  # jack - Default voice
     model_id: "eleven_v4"
     stability: 0.5
     similarity_boost: 0.75
+    # Max characters per request. eleven_v4 allows 10,000 per request; 8000 leaves room
+    # for SSML <phoneme> tag markup (which counts toward the limit).
+    chunk_size: 8000
+    # Request stitching: previous_text / next_text sent with each chunk are the last / first
+    # context_chars characters of the neighbouring chunks (tags stripped, cut at a word boundary).
+    context_chars: 500
     
   google:
     voice_name: "he-IL-Chirp3-HD-Achird" # Options: he-IL-Chirp3-HD-Achird (Male), he-IL-Chirp3-HD-Achernar (Female), he-IL-Neural2-M, he-IL-Neural2-F
     language_code: "he-IL"
     speaking_rate: 1.0
     pitch: 0.0
+    # Max characters per request. Google's limit is 5000 BYTES; Hebrew is 2 bytes/char in
+    # UTF-8, so this must be <= 2500 (validated). 2000 leaves headroom.
+    chunk_size: 2000
 
   openai:
     voice: "alloy" # Options: alloy, echo, fable, onyx, nova, shimmer
     model: "tts-1" # Options: tts-1, tts-1-hd
     speed: 1.0
+    chunk_size: 4000  # max characters per request (OpenAI hard limit is 4096)
 
 # Directory settings for output files
 directories:

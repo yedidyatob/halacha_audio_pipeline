@@ -3,7 +3,10 @@ import yaml
 from typing import Dict, Any
 from pipeline.logger import get_logger
 from pipeline.domain import SECTIONS_METADATA
-from pipeline.tts import validate_gap_ms
+from pipeline.tts import (
+    validate_gap_ms, validate_chunk_size, validate_context_chars,
+    GOOGLE_TTS_MAX_INPUT_BYTES, GOOGLE_TTS_ASSUMED_BYTES_PER_CHAR,
+)
 
 logger = get_logger(__name__)
 
@@ -116,6 +119,30 @@ class PipelineConfig:
                 raise ValueError(f"Missing required configuration parameter '{key}' under 'tts' in config.yaml.")
             setattr(self, attr, validate_gap_ms(tts[key], f"tts.{key}"))
         
+        # Max characters per TTS request chunk for the selected engine (tts.<engine>.chunk_size).
+        # Required: no defaults in code.
+        engine_settings = tts.get(self.tts_engine) or {}
+        if engine_settings.get("chunk_size") is None:
+            raise ValueError(
+                f"Missing required configuration parameter 'chunk_size' under 'tts.{self.tts_engine}' in config.yaml."
+            )
+        self.tts_chunk_size = validate_chunk_size(engine_settings["chunk_size"], f"tts.{self.tts_engine}.chunk_size")
+        if self.tts_engine == "google":
+            max_chars = GOOGLE_TTS_MAX_INPUT_BYTES // GOOGLE_TTS_ASSUMED_BYTES_PER_CHAR
+            if self.tts_chunk_size > max_chars:
+                raise ValueError(
+                    f"'tts.google.chunk_size' is {self.tts_chunk_size}, but Google TTS accepts at most "
+                    f"{GOOGLE_TTS_MAX_INPUT_BYTES} bytes per request ({max_chars} Hebrew characters)."
+                )
+        if self.tts_engine == "elevenlabs":
+            if self.elevenlabs_settings.get("context_chars") is None:
+                raise ValueError(
+                    "Missing required configuration parameter 'context_chars' under 'tts.elevenlabs' in config.yaml."
+                )
+            self.elevenlabs_context_chars = validate_context_chars(
+                self.elevenlabs_settings["context_chars"], "tts.elevenlabs.context_chars"
+            )
+
         # Validation for Gemini TTS settings (no hardcoded defaults allowed in pipeline)
         if self.tts_engine == "gemini":
             if not self.gemini_tts_settings:
