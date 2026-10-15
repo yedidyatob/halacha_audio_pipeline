@@ -158,6 +158,13 @@ python main.py 94 --context-range 87-111 --batch
 python main.py 94 --retrieve-batch <batch_id>
 ```
 
+With `--batch`, every LLM stage runs as batch jobs with polling, including pronunciation tagging
+(Stage 3.4): one tagging job per siman that polished successfully, using the `pronunciation:` engine,
+model, temperature and `thinking_level` (which may differ from the generator engine). Each result
+goes through the same validation as sync mode; a failed job, empty result or rejected output fails
+only that siman (stage "Stage 3.4 (Pronunciation tagging)" in the run summary). The run stops at
+startup if `pronunciation.engine` does not support batch.
+
 ---
 
 ## Configuration

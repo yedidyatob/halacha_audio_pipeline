@@ -111,6 +111,21 @@ def validate_tagged_output(original: str, tagged: str) -> Optional[str]:
     return None
 
 
+def parse_tagged_response(script_text: str, tagged: str) -> tuple[str, list[tuple[str, str]]]:
+    """
+    Validates an LLM tagging response against the original script.
+    Returns (tagged_text, pairs); raises PronunciationTaggingError if the output is invalid
+    (empty, malformed tags, or text changed outside tags). Shared by sync and batch mode.
+    """
+    reason = validate_tagged_output(script_text, tagged)
+    if reason:
+        raise PronunciationTaggingError(f"pronunciation tagging output rejected: {reason}")
+    tagged = tagged.replace("\r\n", "\n")
+    pairs = extract_phoneme_pairs(tagged)
+    logger.info(f"Pronunciation tagging: {len(pairs)} word(s) tagged.")
+    return tagged, pairs
+
+
 def tag_pronunciation(script_text: str, generate: Callable[[str], str]) -> tuple[str, list[tuple[str, str]]]:
     """
     Sends the script to the LLM via `generate(script_text) -> tagged_text` and validates.
@@ -122,15 +137,7 @@ def tag_pronunciation(script_text: str, generate: Callable[[str], str]) -> tuple
         tagged = generate(script_text)
     except Exception as e:
         raise PronunciationTaggingError(f"pronunciation tagging LLM call failed: {e}") from e
-
-    reason = validate_tagged_output(script_text, tagged)
-    if reason:
-        raise PronunciationTaggingError(f"pronunciation tagging output rejected: {reason}")
-
-    tagged = tagged.replace("\r\n", "\n")
-    pairs = extract_phoneme_pairs(tagged)
-    logger.info(f"Pronunciation tagging: {len(pairs)} word(s) tagged.")
-    return tagged, pairs
+    return parse_tagged_response(script_text, tagged)
 
 
 def format_pairs(pairs: list[tuple[str, str]]) -> str:
@@ -138,18 +145,54 @@ def format_pairs(pairs: list[tuple[str, str]]) -> str:
     return "".join(f"{word}\t{ipa}\n" for word, ipa in pairs)
 
 
-def run_pronunciation_stage(script_text: str, config, generator_factory=None):
+class PronunciationTagger:
     """
-    Pipeline entry point. Returns (text, pairs) or None when pronunciation.enabled is false
-    (the stage is skipped entirely and no LLM client is created).
-    Raises PronunciationTaggingError on any tagging failure.
+    The pronunciation-tagging stage, bound to its own generator (model, temperature),
+    instruction and thinking_level from config.yaml. The same request and the same
+    validation are used for a synchronous call and for a batch job.
     """
-    if not config.pronunciation_enabled:
-        logger.info("Pronunciation tagging disabled (pronunciation.enabled: false); skipping.")
-        return None
+
+    def __init__(self, generator, instruction: str, thinking_level: Optional[str]):
+        self.generator = generator
+        self.instruction = instruction
+        self.thinking_level = thinking_level
+
+    @property
+    def supports_batch(self) -> bool:
+        from pipeline.generator import BatchCapableGenerator
+        return isinstance(self.generator, BatchCapableGenerator)
+
+    def tag(self, script_text: str) -> tuple[str, list[tuple[str, str]]]:
+        """Synchronous tagging. Raises PronunciationTaggingError on any failure."""
+        return tag_pronunciation(
+            script_text,
+            lambda text: self.generator.generate_text(self.instruction, text, thinking_level=self.thinking_level),
+        )
+
+    def submit_batch(self, script_text: str, custom_id: str, cache_dir: str) -> str:
+        """Submits the tagging request as a batch job; returns the job id."""
+        return self.generator.submit_batch(
+            system_instruction=self.instruction,
+            user_prompt=script_text,
+            temperature=self.generator.temperature,
+            custom_id=custom_id,
+            cache_dir=cache_dir,
+            thinking_level=self.thinking_level,
+        )
+
+    def batch_result(self, script_text: str, job_id: str) -> tuple[str, list[tuple[str, str]]]:
+        """Fetches and validates a completed batch job. Raises PronunciationTaggingError on failure."""
+        try:
+            tagged = self.generator.get_batch_result(job_id)
+        except Exception as e:
+            raise PronunciationTaggingError(f"pronunciation tagging batch result unavailable: {e}") from e
+        return parse_tagged_response(script_text, tagged)
+
+
+def create_pronunciation_tagger(config, generator_factory=None) -> PronunciationTagger:
+    """Builds the tagger from the 'pronunciation' section of config.yaml (ignores pronunciation.enabled)."""
     if generator_factory is None:
         from pipeline.factory import create_pronunciation_generator as generator_factory
     generator = generator_factory(config)
-    instruction = config.pronunciation_instruction
-    logger.info(f"Running pronunciation tagging via {config.pronunciation_engine} ({generator.model_name})...")
-    return tag_pronunciation(script_text, lambda text: generator.generate_text(instruction, text))
+    logger.info(f"Pronunciation tagging via {config.pronunciation_engine} ({generator.model_name}).")
+    return PronunciationTagger(generator, config.pronunciation_instruction, config.pronunciation_thinking_level)
