@@ -134,9 +134,12 @@ class GeminiScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
     """
     Generates custom, TTS-optimized Hebrew script files using Gemini API (google-genai SDK).
     """
-    def __init__(self, api_key: str = None, model_name: str = "gemini-3.5-flash", temperature: float = 0.3, ssl_verify: bool = True):
+    def __init__(self, api_key: str = None, model_name: str = "gemini-3.5-flash", temperature: float = 0.3, ssl_verify: bool = True,
+                 text_thinking_level: str = None):
         super().__init__(api_key, model_name, temperature)
         self.ssl_verify = ssl_verify
+        # Applied only to generate_text() (the pronunciation stage); None = model default.
+        self.text_thinking_level = text_thinking_level
         kwargs = {}
         if api_key:
             kwargs["api_key"] = api_key
@@ -254,11 +257,14 @@ class GeminiScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
             raise
 
     def generate_text(self, system_instruction: str, user_prompt: str) -> str:
-        logger.info(f"Running Gemini text call via model {self.model_name} (temperature {self.temperature})...")
-        config = types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            temperature=self.temperature
+        logger.info(
+            f"Running Gemini text call via model {self.model_name} (temperature {self.temperature}"
+            + (f", thinking_level {self.text_thinking_level}" if self.text_thinking_level else "") + ")..."
         )
+        config_kwargs = {"system_instruction": system_instruction, "temperature": self.temperature}
+        if self.text_thinking_level:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=self.text_thinking_level)
+        config = types.GenerateContentConfig(**config_kwargs)
         response = self.client.models.generate_content(
             model=self.model_name,
             contents=user_prompt,
