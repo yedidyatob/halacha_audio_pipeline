@@ -41,6 +41,9 @@ source venv/bin/activate  # On Windows: .\venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+Re-run this after pulling: an existing venv is not upgraded automatically. ElevenLabs request stitching
+needs `elevenlabs>=1.3.0`; an older SDK fails with `unexpected keyword argument 'next_text'`.
+
 ### 2. Configure API Keys
 
 Create a `.env` file with your API keys:
