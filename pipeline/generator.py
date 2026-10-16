@@ -93,7 +93,7 @@ class BaseScriptGenerator(ABC):
         """
         Generic single-shot completion (system instruction + user prompt) at this
         generator's configured temperature. Used by auxiliary stages such as
-        pronunciation tagging. thinking_level is honoured by Gemini only (None = model default).
+        the pronunciation stage. thinking_level is honoured by Gemini only (None = model default).
         """
         raise NotImplementedError(f"{type(self).__name__} does not implement generate_text().")
 

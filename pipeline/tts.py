@@ -67,23 +67,12 @@ def plan_gaps(break_types: list, paragraph_ms: int, sentence_ms: int) -> list:
     return gaps
 
 
-_PHONEME_SPAN_RE = re.compile(r"<phoneme\b[^>]*>.*?</phoneme>", re.IGNORECASE | re.DOTALL)
-
-
-_PHONEME_TAG_CAPTURE_RE = re.compile(r"<phoneme\b[^>]*>(.*?)</phoneme>", re.IGNORECASE | re.DOTALL)
-
-
-def strip_phoneme_markup(text: str) -> str:
-    """Replaces every <phoneme ...>word</phoneme> span with its inner word."""
-    return _PHONEME_TAG_CAPTURE_RE.sub(lambda m: m.group(1), text)
-
-
 def context_tail(text: str, max_chars: int) -> str:
     """
-    The last <= max_chars characters of `text` (phoneme tags stripped first), starting at
+    The last <= max_chars characters of `text`, starting at
     a word boundary. Returns "" if no word boundary fits.
     """
-    clean = strip_phoneme_markup(text).strip()
+    clean = text.strip()
     if len(clean) <= max_chars:
         return clean
     cut = clean[-max_chars:]
@@ -95,10 +84,10 @@ def context_tail(text: str, max_chars: int) -> str:
 
 def context_head(text: str, max_chars: int) -> str:
     """
-    The first <= max_chars characters of `text` (phoneme tags stripped first), ending at
+    The first <= max_chars characters of `text`, ending at
     a word boundary. Returns "" if no word boundary fits.
     """
-    clean = strip_phoneme_markup(text).strip()
+    clean = text.strip()
     if len(clean) <= max_chars:
         return clean
     cut = clean[:max_chars]
@@ -106,25 +95,6 @@ def context_head(text: str, max_chars: int) -> str:
         parts = cut.rsplit(None, 1)
         cut = parts[0] if len(parts) > 1 else ""
     return cut.strip()
-
-
-def _split_outside_phoneme(text: str, pattern: str) -> list:
-    """
-    re.split(pattern, text) that never cuts inside a <phoneme ...>...</phoneme> span
-    (SSML phoneme tags are passed through to the TTS engine and must stay intact).
-    Separator matches are discarded, like re.split without groups.
-    """
-    spans = [m.span() for m in _PHONEME_SPAN_RE.finditer(text)]
-    if not spans:
-        return re.split(pattern, text)
-    parts, pos = [], 0
-    for m in re.finditer(pattern, text):
-        if any(start < m.end() and m.start() < end for start, end in spans):
-            continue  # separator overlaps a tag span: do not split here
-        parts.append(text[pos:m.start()])
-        pos = m.end()
-    parts.append(text[pos:])
-    return parts
 
 
 class BaseTTS(ABC):
@@ -264,7 +234,7 @@ class BaseTTS(ABC):
             current_chunk = []
             current_length = 0
 
-        for para in _split_outside_phoneme(text, r"\n"):
+        for para in text.split("\n"):
             para = para.strip()
             if not para:
                 continue
@@ -273,10 +243,10 @@ class BaseTTS(ABC):
                 flush(BREAK_PARAGRAPH)
 
                 # Split by punctuation; every cut inside this paragraph is a "sentence" break.
-                sentences = _split_outside_phoneme(para, r'(?<=[.!?])\s+')
+                sentences = re.split(r'(?<=[.!?])\s+', para)
                 for sentence in sentences:
                     if len(sentence) > max_chars:
-                        words = _split_outside_phoneme(sentence, " ")
+                        words = sentence.split(" ")
                         for word in words:
                             if current_length + len(word) + 1 > max_chars:
                                 flush(BREAK_SENTENCE)
@@ -524,7 +494,7 @@ class ElevenLabsTTS(BaseTTS):
     def _synthesize_chunk_in_context(self, text: str, previous_chunk, next_chunk) -> bytes:
         """
         Request stitching: previous_text / next_text are the last / first context_chars
-        of the neighbouring chunks (phoneme tags stripped, cut at a word boundary).
+        of the neighbouring chunks (cut at a word boundary).
         Omitted for the first / last chunk and for a single-chunk text.
         """
         kwargs = {}

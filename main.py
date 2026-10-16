@@ -24,13 +24,14 @@ from pipeline.utils import save_output_file
 from pipeline.factory import create_generator_engine, create_tts_engine
 from pipeline.gematria import int_to_gematria
 from pipeline.apply_nikkud import apply_nikkud_to_abbreviations
-from pipeline.pronunciation import create_pronunciation_tagger, format_pairs
+from pipeline.pronunciation import create_pronunciation_vocalizer, format_changes
 
 logger = get_logger("halacha_pipeline_cli")
 
 STAGE_POLISH = "Stage 3 (Polishing)"
-STAGE_PRONUNCIATION = "Stage 3.4 (Pronunciation tagging)"
-STAGE_TRANSCRIPT = "Stage 3.5 (Nikkud + transcript save)"
+STAGE_NIKKUD = "Stage 3.4 (Dictionary nikkud)"
+STAGE_PRONUNCIATION = "Stage 3.5 (Pronunciation nikkud)"
+STAGE_TRANSCRIPT = "Stage 3.6 (Transcript save)"
 STAGE_TTS = "TTS"
 
 
@@ -146,50 +147,44 @@ def polish_simanim(drafts: dict, relations_text: str, generator, config, args, s
     )
 
 
-def tag_simanim(polished: dict, tagger, config, args, summary: RunSummary) -> dict:
+def apply_dictionary_nikkud(polished: dict, summary: RunSummary) -> dict:
+    """Stage 3.4: {siman: polished_text} -> {siman: text} with the dictionary nikkud applied."""
+    return run_per_siman(summary, polished, STAGE_NIKKUD, lambda siman, text: apply_nikkud_to_abbreviations(text))
+
+
+def vocalize_simanim(texts: dict, vocalizer, config, args, summary: RunSummary) -> dict:
     """
-    Stage 3.4: {siman: polished_text} -> {siman: (text, pairs)}. pairs is None when
-    pronunciation tagging is disabled (tagger is None) and the text passes through.
+    Stage 3.5: {siman: text} -> {siman: (text, changes)}. changes is None when the
+    pronunciation stage is disabled (vocalizer is None) and the text passes through.
     """
-    if tagger is None:
-        return {siman: (text, None) for siman, text in polished.items()}
+    if vocalizer is None:
+        return {siman: (text, None) for siman, text in texts.items()}
     if args.batch:
         return run_batch_stage(
-            tagger.generator, summary, polished, STAGE_PRONUNCIATION,
-            submit=lambda siman, text: tagger.submit_batch(
-                text, custom_id=f"stage3_4_siman_{siman}", cache_dir=config.cache_dir
+            vocalizer.generator, summary, texts, STAGE_PRONUNCIATION,
+            submit=lambda siman, text: vocalizer.submit_batch(
+                text, custom_id=f"stage3_5_siman_{siman}", cache_dir=config.cache_dir
             ),
-            fetch=lambda siman, text, job_id: tagger.batch_result(text, job_id),
+            fetch=lambda siman, text, job_id: vocalizer.batch_result(text, job_id),
             args=args,
         )
-    return run_per_siman(summary, polished, STAGE_PRONUNCIATION, lambda siman, text: tagger.tag(text))
+    return run_per_siman(summary, texts, STAGE_PRONUNCIATION, lambda siman, text: vocalizer.vocalize(text))
 
 
-def save_transcript(siman: int, text: str, pairs, config, model_suffix: str) -> str:
+def save_transcript(siman: int, text: str, changes, config, model_suffix: str) -> None:
     """
-    Stage 3.5: saves the pronunciation outputs (if tagging ran), applies nikkud
-    (never touches phoneme tag spans) and saves the transcript. Returns the TTS text.
+    Stage 3.6: saves the final transcript and, if the pronunciation stage ran, the list of
+    words it vocalized (original TAB vocalized) for review.
     """
     base_name = f"{config.section_slug}_Siman_{siman}_{model_suffix}"
-    if pairs is not None:
+    if changes is not None:
         save_output_file(
             directory=config.output_dir,
-            base_name=f"{base_name}_pronunciation",
+            base_name=f"{base_name}_pronunciation_changes",
             extension="txt",
-            content=text,
+            content=format_changes(changes),
             logger=logger
         )
-        save_output_file(
-            directory=config.output_dir,
-            base_name=f"{base_name}_pronunciation_tags",
-            extension="txt",
-            content=format_pairs(pairs),
-            logger=logger
-        )
-
-    logger.info(f"Applying nikkud abbreviation replacements for Siman {siman}...")
-    text = apply_nikkud_to_abbreviations(text)
-
     save_output_file(
         directory=config.output_dir,
         base_name=f"{base_name}_transcript",
@@ -197,7 +192,6 @@ def save_transcript(siman: int, text: str, pairs, config, model_suffix: str) -> 
         content=text,
         logger=logger
     )
-    return text
 
 
 def synthesize_siman_audio(siman: int, text: str, config, model_suffix: str) -> None:
@@ -219,20 +213,20 @@ def synthesize_siman_audio(siman: int, text: str, config, model_suffix: str) -> 
     )
 
 
-def finish_siman(siman: int, text: str, pairs, config, args, model_suffix: str) -> None:
-    """Stage 3.5 (transcript) then TTS unless --skip-tts. Raises SimanStageError on failure."""
-    final_text = run_siman_stage(siman, STAGE_TRANSCRIPT, lambda: save_transcript(siman, text, pairs, config, model_suffix))
+def finish_siman(siman: int, text: str, changes, config, args, model_suffix: str) -> None:
+    """Stage 3.6 (transcript save) then TTS unless --skip-tts. Raises SimanStageError on failure."""
+    run_siman_stage(siman, STAGE_TRANSCRIPT, lambda: save_transcript(siman, text, changes, config, model_suffix))
     if args.skip_tts:
         logger.info("Skipping TTS synthesis as requested by --skip-tts.")
         return
-    run_siman_stage(siman, STAGE_TTS, lambda: synthesize_siman_audio(siman, final_text, config, model_suffix))
+    run_siman_stage(siman, STAGE_TTS, lambda: synthesize_siman_audio(siman, text, config, model_suffix))
 
 
-def run_lesson_stages(target_simanim: list, drafts: dict, relations_text: str, generator, tagger,
+def run_lesson_stages(target_simanim: list, drafts: dict, relations_text: str, generator, vocalizer,
                       config, args, model_suffix: str) -> RunSummary:
     """
     Stage 3 onwards for every target siman, one stage at a time (sync or batch):
-    polish -> pronunciation tagging -> nikkud + transcript -> TTS.
+    polish -> dictionary nikkud -> pronunciation nikkud (LLM) -> transcript save -> TTS.
     A failure removes only that siman from the later stages.
     """
     summary = RunSummary()
@@ -245,9 +239,9 @@ def run_lesson_stages(target_simanim: list, drafts: dict, relations_text: str, g
             summary.failure(siman, STAGE_POLISH, "Stage 1 draft is missing")
 
     polished = polish_simanim(available, relations_text, generator, config, args, summary)
-    tagged = tag_simanim(polished, tagger, config, args, summary)
+    vocalized = vocalize_simanim(apply_dictionary_nikkud(polished, summary), vocalizer, config, args, summary)
     finished = run_per_siman(
-        summary, tagged, STAGE_TRANSCRIPT,
+        summary, vocalized, STAGE_TRANSCRIPT,
         lambda siman, item: finish_siman(siman, *item, config, args, model_suffix)
     )
     for siman in finished:
@@ -418,21 +412,21 @@ def main():
             logger.error("Batch mode requires a generator engine that supports batch operations (Gemini or OpenAI).")
             sys.exit(1)
 
-    # 4. Pronunciation tagger (Stage 3.4) with its own engine/model from config.yaml
+    # 4. Pronunciation stage (Stage 3.5) with its own engine/model from config.yaml
     try:
-        tagger = create_pronunciation_tagger(config) if config.pronunciation_enabled else None
+        vocalizer = create_pronunciation_vocalizer(config) if config.pronunciation_enabled else None
     except Exception as e:
-        logger.error(f"Pronunciation tagger setup failed: {e}")
+        logger.error(f"Pronunciation stage setup failed: {e}")
         sys.exit(1)
-    if tagger is not None:
-        if args.batch and not tagger.supports_batch:
+    if vocalizer is not None:
+        if args.batch and not vocalizer.supports_batch:
             logger.error(
                 f"Batch mode requires a pronunciation engine that supports batch operations; "
                 f"'{config.pronunciation_engine}' does not (pronunciation.engine in config.yaml)."
             )
             sys.exit(1)
     else:
-        logger.info("Pronunciation tagging disabled (pronunciation.enabled: false); skipping Stage 3.4.")
+        logger.info("Pronunciation stage disabled (pronunciation.enabled: false); skipping Stage 3.5.")
     if args.batch:
         logger.info("Batch mode enabled. All stages will use the Batch API with polling.")
         
@@ -648,8 +642,8 @@ def main():
             logger=logger
         )
 
-    # 9. Stage 3+: polish, pronunciation tagging, transcript, TTS (per-siman failures do not stop the run)
-    summary = run_lesson_stages(target_generation_simanim, drafts, relations_text, generator, tagger,
+    # 9. Stage 3+: polish, dictionary nikkud, pronunciation nikkud, transcript, TTS (per-siman failures do not stop the run)
+    summary = run_lesson_stages(target_generation_simanim, drafts, relations_text, generator, vocalizer,
                                 config, args, model_suffix)
 
     summary.log()
