@@ -26,7 +26,7 @@ def create_generator_engine(config: PipelineConfig) -> BaseScriptGenerator:
 
 def create_pronunciation_generator(config: PipelineConfig) -> BaseScriptGenerator:
     """
-    Generator for the pronunciation-tagging stage. Reuses the Gemini/OpenAI generator
+    Generator for the pronunciation stage. Reuses the Gemini/OpenAI generator
     classes with the model settings from the 'pronunciation' section of config.yaml.
     (OpenAI service_tier is shared with the 'generator.openai' section.)
     """

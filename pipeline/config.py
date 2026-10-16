@@ -184,7 +184,7 @@ class PipelineConfig:
         logger.info("Configuration validated and directories established.")
 
     # ------------------------------------------------------------------
-    # Pronunciation tagging stage (IPA phoneme tags). No defaults: every value
+    # Pronunciation stage (LLM nikkud for ambiguous words). No defaults: every value
     # must come from config.yaml; a missing key raises a clear ValueError.
     # ------------------------------------------------------------------
     def _pronunciation_section(self) -> Dict[str, Any]:
@@ -226,7 +226,7 @@ class PipelineConfig:
 
     @property
     def pronunciation_thinking_level(self) -> str:
-        """Gemini thinking level for the tagging call. Required for engine gemini; ignored for openai."""
+        """Gemini thinking level for the pronunciation call. Required for engine gemini; ignored for openai."""
         if self.pronunciation_engine != "gemini":
             return None
         value = self._pronunciation_value("thinking_level")
@@ -241,12 +241,12 @@ class PipelineConfig:
         return [w.strip() for w in value]
 
     @property
-    def pronunciation_always_tag(self) -> list:
-        return self._pronunciation_word_list("always_tag")
+    def pronunciation_always_vocalize(self) -> list:
+        return self._pronunciation_word_list("always_vocalize")
 
     @property
-    def pronunciation_never_tag(self) -> list:
-        return self._pronunciation_word_list("never_tag")
+    def pronunciation_never_vocalize(self) -> list:
+        return self._pronunciation_word_list("never_vocalize")
 
     @staticmethod
     def _render_word_list(words: list) -> str:
@@ -254,10 +254,10 @@ class PipelineConfig:
 
     @property
     def pronunciation_instruction(self) -> str:
-        """The prompt with {always_tag} / {never_tag} filled in (targeted replace; other braces untouched)."""
+        """The prompt with {always_vocalize} / {never_vocalize} filled in (targeted replace; other braces untouched)."""
         value = self.config_data.get("pronunciation_instruction")
         if not value or not str(value).strip():
             raise ValueError("Missing required configuration parameter 'pronunciation_instruction' in config.yaml.")
         return (str(value)
-                .replace("{always_tag}", self._render_word_list(self.pronunciation_always_tag))
-                .replace("{never_tag}", self._render_word_list(self.pronunciation_never_tag)))
+                .replace("{always_vocalize}", self._render_word_list(self.pronunciation_always_vocalize))
+                .replace("{never_vocalize}", self._render_word_list(self.pronunciation_never_vocalize)))
