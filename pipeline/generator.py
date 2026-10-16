@@ -5,9 +5,13 @@ from google.genai import types
 from openai import OpenAI
 from pipeline.gematria import int_to_gematria
 from pipeline.logger import get_logger
+from pipeline.usage import TextResult, TokenUsage
 from pipeline.utils import log_gemini_usage
 
 logger = get_logger(__name__)
+
+# Sampling temperature of the Stage 3 polish call (sync and batch).
+POLISH_TEMPERATURE = 0.1
 
 class BaseScriptGenerator(ABC):
     """
@@ -82,20 +86,34 @@ class BaseScriptGenerator(ABC):
         """
         pass
 
-    @abstractmethod
-    def polish_siman_script(self, script_text: str, relations_text: str, polishing_instruction: str) -> str:
-        """
-        Refines a draft script to ensure it is 100% optimized for TTS pronunciation.
-        """
-        pass
+    # Whether complete() honours a thinking_level (Gemini) or ignores it (OpenAI).
+    supports_thinking_level = False
 
-    def generate_text(self, system_instruction: str, user_prompt: str, thinking_level: str = None) -> str:
+    @abstractmethod
+    def complete(self, system_instruction: str, user_prompt: str, temperature: float,
+                 thinking_level: str = None) -> TextResult:
         """
-        Generic single-shot completion (system instruction + user prompt) at this
-        generator's configured temperature. Used by auxiliary stages such as
-        pronunciation tagging. thinking_level is honoured by Gemini only (None = model default).
+        Single-shot completion (system instruction + user prompt). Returns the text and the
+        token usage. thinking_level is honoured only if supports_thinking_level (None = model default).
+        Raises ValueError on an empty response.
         """
-        raise NotImplementedError(f"{type(self).__name__} does not implement generate_text().")
+
+    def polish(self, script_text: str, relations_text: str, polishing_instruction: str,
+               thinking_level: str = None) -> TextResult:
+        """Stage 3 polish request (draft + relations map) with the given system instruction."""
+        logger.info(f"Polishing script via {self.model_name}...")
+        result = self.complete(
+            polishing_instruction,
+            self._get_polishing_user_prompt(script_text, relations_text),
+            POLISH_TEMPERATURE,
+            thinking_level,
+        )
+        logger.info(f"Successfully polished script ({len(result.text)} chars).")
+        return result
+
+    def polish_siman_script(self, script_text: str, relations_text: str, polishing_instruction: str) -> str:
+        """Refines a draft script so it is optimized for TTS. Returns the polished text."""
+        return self.polish(script_text, relations_text, polishing_instruction).text
 
 
 class BatchCapableGenerator(ABC):
@@ -227,55 +245,27 @@ class GeminiScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
             logger.error(f"Error during Gemini relations analysis: {e}")
             raise
 
-    def polish_siman_script(self, script_text: str, relations_text: str, polishing_instruction: str) -> str:
-        logger.info("Polishing generated script for TTS compliance via Gemini...")
-        
-        user_prompt = self._get_polishing_user_prompt(script_text, relations_text)
-        
-        try:
-            config = types.GenerateContentConfig(
-                system_instruction=polishing_instruction,
-                temperature=0.1
-            )
-            
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=user_prompt,
-                config=config
-            )
-            
-            log_gemini_usage(logger, response, self.model_name)
-            
-            polished_text = response.text
-            if not polished_text:
-                raise ValueError("Gemini API returned an empty text response for polish call.")
-                
-            logger.info(f"Successfully polished script ({len(polished_text)} chars).")
-            return polished_text
-            
-        except Exception as e:
-            logger.error(f"Error during Gemini script polish call: {e}")
-            raise
+    supports_thinking_level = True
 
-    def generate_text(self, system_instruction: str, user_prompt: str, thinking_level: str = None) -> str:
+    def complete(self, system_instruction: str, user_prompt: str, temperature: float,
+                 thinking_level: str = None) -> TextResult:
         logger.info(
-            f"Running Gemini text call via model {self.model_name} (temperature {self.temperature}"
+            f"Running Gemini text call via model {self.model_name} (temperature {temperature}"
             + (f", thinking_level {thinking_level}" if thinking_level else "") + ")..."
         )
-        config_kwargs = {"system_instruction": system_instruction, "temperature": self.temperature}
+        config_kwargs = {"system_instruction": system_instruction, "temperature": temperature}
         if thinking_level:
             config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=thinking_level)
-        config = types.GenerateContentConfig(**config_kwargs)
         response = self.client.models.generate_content(
             model=self.model_name,
             contents=user_prompt,
-            config=config
+            config=types.GenerateContentConfig(**config_kwargs)
         )
         log_gemini_usage(logger, response, self.model_name)
         text = response.text
         if not text:
             raise ValueError("Gemini API returned an empty text response.")
-        return text
+        return TextResult(text, TokenUsage.from_gemini(response))
 
     def submit_batch(
         self,
@@ -436,45 +426,9 @@ class OpenAIScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
             logger.error(f"Error during OpenAI relations analysis: {e}")
             raise
 
-    def polish_siman_script(self, script_text: str, relations_text: str, polishing_instruction: str) -> str:
-        logger.info("Polishing generated script for TTS compliance via OpenAI...")
-        
-        user_prompt = self._get_polishing_user_prompt(script_text, relations_text)
-        
-        messages = []
-        is_reasoning_model = self.model_name.startswith("o1") or self.model_name.startswith("o3")
-        
-        if is_reasoning_model:
-            messages.append({"role": "developer", "content": polishing_instruction})
-        else:
-            messages.append({"role": "system", "content": polishing_instruction})
-            
-        messages.append({"role": "user", "content": user_prompt})
-        
-        try:
-            kwargs = {
-                "model": self.model_name,
-                "messages": messages,
-            }
-            if not is_reasoning_model:
-                kwargs["temperature"] = 0.1
-            if self.service_tier:
-                kwargs["service_tier"] = self.service_tier
-
-            response = self.client.chat.completions.create(**kwargs)
-            polished_text = response.choices[0].message.content
-            if not polished_text:
-                raise ValueError("OpenAI API returned an empty text response for polish call.")
-                
-            logger.info(f"Successfully polished script ({len(polished_text)} chars).")
-            return polished_text
-            
-        except Exception as e:
-            logger.error(f"Error during OpenAI script polish call: {e}")
-            raise
-
-    def generate_text(self, system_instruction: str, user_prompt: str, thinking_level: str = None) -> str:
-        # thinking_level is Gemini-only; ignored here.
+    def complete(self, system_instruction: str, user_prompt: str, temperature: float,
+                 thinking_level: str = None) -> TextResult:
+        # thinking_level is Gemini-only; ignored here (supports_thinking_level is False).
         logger.info(f"Running OpenAI text call via model {self.model_name}...")
         is_reasoning_model = self.model_name.startswith("o1") or self.model_name.startswith("o3")
         messages = [
@@ -483,14 +437,14 @@ class OpenAIScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
         ]
         kwargs = {"model": self.model_name, "messages": messages}
         if not is_reasoning_model:
-            kwargs["temperature"] = self.temperature
+            kwargs["temperature"] = temperature
         if self.service_tier:
             kwargs["service_tier"] = self.service_tier
         response = self.client.chat.completions.create(**kwargs)
         text = response.choices[0].message.content
         if not text:
             raise ValueError("OpenAI API returned an empty text response.")
-        return text
+        return TextResult(text, TokenUsage.from_openai(response))
 
     def submit_batch(
         self,

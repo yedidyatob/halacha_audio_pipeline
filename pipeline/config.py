@@ -184,7 +184,7 @@ class PipelineConfig:
         logger.info("Configuration validated and directories established.")
 
     # ------------------------------------------------------------------
-    # Pronunciation tagging stage (IPA phoneme tags). No defaults: every value
+    # Pronunciation stage (LLM nikkud for ambiguous words). No defaults: every value
     # must come from config.yaml; a missing key raises a clear ValueError.
     # ------------------------------------------------------------------
     def _pronunciation_section(self) -> Dict[str, Any]:
@@ -226,13 +226,36 @@ class PipelineConfig:
 
     @property
     def pronunciation_thinking_level(self) -> str:
-        """Gemini thinking level for the tagging call. Required for engine gemini; ignored for openai."""
+        """Gemini thinking level for the pronunciation call. Required for engine gemini; ignored for openai."""
         if self.pronunciation_engine != "gemini":
             return None
         value = self._pronunciation_value("thinking_level")
         if value not in ("low", "medium", "high"):
             raise ValueError(f"'pronunciation.thinking_level' must be one of low, medium, high, got {value!r}.")
         return value
+
+    @property
+    def experiment_combined_addendum_header(self) -> str:
+        """Header placed between polishing_instruction and the pronunciation rules (combined experiment)."""
+        section = self.config_data.get("experiment_combined_polish_vocalize")
+        value = section.get("addendum_header") if isinstance(section, dict) else None
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("Missing 'experiment_combined_polish_vocalize.addendum_header' in config.yaml.")
+        return value
+
+    def experiment_pricing(self, model_name: str):
+        """Per-1M-token prices for model_name from 'experiment_pricing' in config.yaml (no defaults)."""
+        from pipeline.usage import ModelPricing
+        section = self.config_data.get("experiment_pricing")
+        if not isinstance(section, dict) or not isinstance(section.get(model_name), dict):
+            raise ValueError(f"Missing 'experiment_pricing.{model_name}' in config.yaml.")
+        entry = section[model_name]
+        for key in ("input_per_1m_usd", "output_per_1m_usd", "max_prompt_tokens"):
+            value = entry.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+                raise ValueError(f"'experiment_pricing.{model_name}.{key}' must be a non-negative number, got {value!r}.")
+        return ModelPricing(float(entry["input_per_1m_usd"]), float(entry["output_per_1m_usd"]),
+                            int(entry["max_prompt_tokens"]))
 
     def _pronunciation_word_list(self, key: str) -> list:
         value = self._pronunciation_value(key)
@@ -241,12 +264,12 @@ class PipelineConfig:
         return [w.strip() for w in value]
 
     @property
-    def pronunciation_always_tag(self) -> list:
-        return self._pronunciation_word_list("always_tag")
+    def pronunciation_always_vocalize(self) -> list:
+        return self._pronunciation_word_list("always_vocalize")
 
     @property
-    def pronunciation_never_tag(self) -> list:
-        return self._pronunciation_word_list("never_tag")
+    def pronunciation_never_vocalize(self) -> list:
+        return self._pronunciation_word_list("never_vocalize")
 
     @staticmethod
     def _render_word_list(words: list) -> str:
@@ -254,10 +277,10 @@ class PipelineConfig:
 
     @property
     def pronunciation_instruction(self) -> str:
-        """The prompt with {always_tag} / {never_tag} filled in (targeted replace; other braces untouched)."""
+        """The prompt with {always_vocalize} / {never_vocalize} filled in (targeted replace; other braces untouched)."""
         value = self.config_data.get("pronunciation_instruction")
         if not value or not str(value).strip():
             raise ValueError("Missing required configuration parameter 'pronunciation_instruction' in config.yaml.")
         return (str(value)
-                .replace("{always_tag}", self._render_word_list(self.pronunciation_always_tag))
-                .replace("{never_tag}", self._render_word_list(self.pronunciation_never_tag)))
+                .replace("{always_vocalize}", self._render_word_list(self.pronunciation_always_vocalize))
+                .replace("{never_vocalize}", self._render_word_list(self.pronunciation_never_vocalize)))

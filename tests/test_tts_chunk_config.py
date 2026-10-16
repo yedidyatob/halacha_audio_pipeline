@@ -8,11 +8,11 @@ from pipeline.config import PipelineConfig
 from pipeline.factory import create_tts_engine
 from pipeline.tts import (
     ElevenLabsTTS, GoogleCloudTTS, OpenAITTS, GeminiTTS,
-    context_head, context_tail, strip_phoneme_markup, validate_chunk_size,
+    context_head, context_tail, validate_chunk_size,
 )
 
 GAPS = dict(chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=0)
-TAG = '<phoneme alphabet="ipa" ph="tet">טית</phoneme>'
+VOCALIZED_WORD = "טֵית"
 
 
 def _load(tts_yaml: str) -> PipelineConfig:
@@ -127,13 +127,12 @@ def test_context_tail_and_head_cut_at_word_boundary():
     assert context_head("abcdefghij", 5) == ""
 
 
-def test_context_strips_phoneme_tags():
-    text = f"סימן {TAG} עוסק בדין"
-    assert strip_phoneme_markup(text) == "סימן טית עוסק בדין"
-    for n in range(1, 40):
+def test_context_never_splits_a_vocalized_word():
+    text = " ".join(["סוֹפֵר", "עֻבָּר", "פַּת"] * 10)
+    words = set(text.split())
+    for n in range(1, 60):
         for out in (context_tail(text, n), context_head(text, n)):
-            assert "<" not in out and ">" not in out and len(out) <= n
-
+            assert len(out) <= n and all(w in words for w in out.split())
 
 # --- ElevenLabs stitching ------------------------------------------------------
 
@@ -153,7 +152,7 @@ def _run(tts, text, tmp_path):
 
 
 def test_single_chunk_sends_no_context(tmp_path):
-    calls = _run(_el(8000, 500), "טקסט קצר עם תגית " + TAG, tmp_path)
+    calls = _run(_el(8000, 500), "טקסט קצר עם " + VOCALIZED_WORD, tmp_path)
     assert len(calls) == 1
     assert "previous_text" not in calls[0] and "next_text" not in calls[0]
 
@@ -172,17 +171,3 @@ def test_previous_and_next_text_per_chunk(tmp_path):
         if i < len(calls) - 1:
             assert c["next_text"] == context_head(paras[i + 1], 20)
             assert paras[i + 1].startswith(c["next_text"]) and 0 < len(c["next_text"]) <= 20
-
-
-def test_tags_never_split_in_chunks_or_context(tmp_path):
-    words = []
-    for i in range(60):
-        words.append(TAG if i % 3 == 0 else f"מילה{i}")
-    text = " ".join(words) + "."
-    calls = _run(_el(120, 40), text, tmp_path)
-    assert len(calls) > 2
-    for c in calls:
-        assert c["text"].count("<phoneme") == c["text"].count("</phoneme>")
-        for key in ("previous_text", "next_text"):
-            if key in c:
-                assert "<" not in c[key] and ">" not in c[key] and "phoneme" not in c[key]

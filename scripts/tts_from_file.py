@@ -1,6 +1,6 @@
 """
 Synthesize a text file with the TTS engine configured in config.yaml (tts.engine),
-using pipeline/tts.py (same chunking, chunk gaps and phoneme-tag-safe splitting as the pipeline).
+using pipeline/tts.py (same chunking and chunk gaps as the pipeline).
 
 Usage (from the repo root):
   python scripts/tts_from_file.py output/<file>.txt [--output out.mp3]
