@@ -5,6 +5,7 @@ Nikkud / pronunciation fixes for TTS.
   These may carry a Hebrew prefix (הרמב"ם, ברמב"ם, להרמב"ם, מהרמב"ם ...), which is preserved.
 - NO_PREFIX_NIKKUD_DICT: the letter names הא / פא / צדי. Replaced only as a whole word,
   never with a prefix, and only in a letter-name context (see LETTER-NAME CONTEXT below).
+  A value may RESPELL the name, not only vocalize it: הא -> הֵי (ElevenLabs v4 reads הֵא wrongly).
 - additional_nikkud_corrections: list of (plain, nikkuded) pairs; the same prefixes are allowed.
 
 All prefixed entries share ONE prefix set, DEFAULT_PREFIXES (generated from a single rule).
@@ -165,7 +166,7 @@ RABBINIC_NIKKUD_DICT = {
 # Standalone words: replaced only as a whole word, never with a prefix
 # (a bare הא / פא / צדי is already risky; ב+הא etc. is meaningless).
 NO_PREFIX_NIKKUD_DICT = {
-    'הא': 'הֵא',
+    'הא': 'הֵי',  # respelled: the letter name is pronounced "hei"
     'פא': 'פֵּא',
     'צדי': 'צָדִי',
 }
@@ -360,10 +361,6 @@ def apply_nikkud_to_abbreviations(text: str) -> str:
     by one of DEFAULT_PREFIXES, which is preserved. Letter entries (NO_PREFIX_NIKKUD_DICT)
     match only as standalone words and only in a letter-name context. Already-nikkuded text
     is not matched again, so the function is idempotent.
-
-    Text inside <phoneme ...>...</phoneme> spans (the inner word and the attributes) is
-    never modified: the text is split into tag / non-tag segments and the matcher runs on
-    the non-tag segments only.
     """
     prefixable = tuple(
         list(RABBINIC_NIKKUD_DICT.items()) + list(additional_nikkud_corrections)
@@ -373,13 +370,7 @@ def apply_nikkud_to_abbreviations(text: str) -> str:
         tuple(NO_PREFIX_NIKKUD_DICT.items()),
         tuple(DEFAULT_PREFIXES),
     )
-    if "<phoneme" not in text.lower():
-        return matcher(text)
-    from pipeline.pronunciation import split_phoneme_segments
-    return "".join(
-        segment if is_tag else matcher(segment)
-        for segment, is_tag in split_phoneme_segments(text)
-    )
+    return matcher(text)
 
 
 if __name__ == "__main__":

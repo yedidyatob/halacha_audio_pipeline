@@ -7,8 +7,9 @@ builds the request (BaseScriptGenerator.polish). Prints token usage and an estim
 Usage (from the repo root):
   python scripts/polish_draft.py output/drafts/<draft>.txt output/relations/<relations>.txt [--output out.txt]
 
-Default output: <draft stem>_polished.txt next to the draft. No nikkud and no pronunciation
-tags are applied; run scripts/tag_pronunciation.py on the result for the two-stage comparison.
+Default output: <draft stem>_polished.txt next to the draft. No nikkud is applied; run
+scripts/vocalize_pronunciation.py on the result (dictionary nikkud + pronunciation stage) for the
+two-stage comparison.
 """
 import argparse
 import os
@@ -43,7 +44,7 @@ def main(argv=None):
     from pipeline.config import PipelineConfig
     from pipeline.factory import create_generator_engine
     from pipeline.usage import format_usage_report
-    from scripts.polish_and_tag_combined import read_inputs
+    from scripts.polish_and_vocalize_combined import read_inputs
 
     draft, relations = read_inputs(args.draft, args.relations)
     config = PipelineConfig(args.config)

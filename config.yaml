@@ -131,50 +131,54 @@ relations_instruction: |
 
 
 
-# Pronunciation tagging stage (runs after polish, before nikkud).
-# Wraps likely-mispronounced words in <phoneme alphabet="ipa" ph="...">word</phoneme> tags.
-# Tags are passed unchanged to every TTS engine (ElevenLabs v3/v4 honors them; Google ignores them).
-# On any tagging failure (LLM error / invalid output) that siman fails: no transcript, no TTS.
+# Pronunciation stage (Stage 3.5; runs after polish and the dictionary nikkud stage, before save/TTS).
+# An LLM adds nikkud ONLY to context-ambiguous words (homographs, letter names used as letters).
+# Plain text, no markup. Validation: the output without nikkud must equal the input without
+# nikkud, and words that were already vocalized must be unchanged. On any failure (LLM error /
+# invalid output) that siman fails: no transcript, no TTS.
+# Letter-name respellings (e.g. הא -> הֵי) are done by the dictionary nikkud stage
+# (pipeline/apply_nikkud.py, NO_PREFIX_NIKKUD_DICT), not here.
 pronunciation:
   enabled: true
   engine: "gemini"  # "gemini" or "openai" (openai reuses generator.openai.service_tier)
   model_name: "gemini-3.1-pro-preview"
   temperature: 0.2
-  # Gemini thinking level for the tagging call (required for engine gemini; ignored for openai).
-  # Gemini 3.1 Pro accepts low/medium/high; try low to compare cost vs tag quality.
+  # Gemini thinking level for the pronunciation call (required for engine gemini; ignored for openai).
+  # Gemini 3.1 Pro accepts low/medium/high; try low to compare cost vs quality.
   thinking_level: "high"
-  # Filled into {always_tag} / {never_tag} in pronunciation_instruction (joined with ", ";
+  # Filled into {always_vocalize} / {never_vocalize} in pronunciation_instruction (joined with ", ";
   # an empty list renders as "אין").
-  always_tag: ["עובר בהמה", "כותח", "נבילה"]
-  never_tag: ["דאורייתא", "דרבנן"]
+  always_vocalize: ["עובר בהמה", "כותח", "נבילה"]
+  never_vocalize: ["דאורייתא", "דרבנן"]
 
 pronunciation_instruction: |
     אתה עורך הגייה לשיעור שמע בעברית שיוקרא במנוע TTS.
-    החזר את התסריט בדיוק כפי שהוא, מילה במילה, בלי לשנות, להוסיף או להשמיט דבר.
-    השינוי היחיד המותר: לעטוף מילים או צירופים שהמנוע עלול לקרוא לא נכון בתגית:
-    <phoneme alphabet="ipa" ph="...">המילה המקורית</phoneme>
+    החזר את התסריט בדיוק כפי שהוא, מילה במילה ואות באות, בלי לשנות, להוסיף או להשמיט דבר, ובלי שום תגיות או סימון.
+    השינוי היחיד המותר: להוסיף ניקוד למילים שהמנוע עלול לקרוא לא נכון, ורק להן. אל תשנה את אותיות המילה (אל תוסיף ואל תשמיט אותיות, גם לא אמות קריאה).
+    מילה שכבר מנוקדת, אפילו חלקית, השאר בדיוק כפי שהיא: אל תשנה ואל תוסיף בה ניקוד.
 
-    עטוף מילה רק אם קורא עברית בלי ניקוד עלול לקרוא אותה בשתי דרכים שונות, ובהקשר הזה נכונה דווקא אחת מהן:
-    - ,אותן אותיות, משמעות והגייה אחרת: עובר (עֻבָּר / עוֹבֵר), פת, ספר, סופר, מבשר, כלי.
-    - מילה שנוטים לקרוא בטעות: כותח, נבילה, הקילו,.
-    - שמות אותיות (טית, הא, פא, צדי) כשהם משמשים כאות.
-    אל תעטוף מילה רק בגלל שהיא ארמית או תורנית, אם יש לה קריאה מקובלת אחת (דאורייתא, דרבנן, מותר, אסור, בדיעבד).
-    אם אינך בטוח, אל תעטוף.
+    נקד מילה רק אם קורא עברית בלי ניקוד עלול לקרוא אותה בשתי דרכים שונות, ובהקשר הזה נכונה דווקא אחת מהן:
+    - אותן אותיות, משמעות והגייה אחרת: עובר (עֻבָּר / עוֹבֵר), פת, ספר, סופר, מבשר, כלי.
+    - מילה שנוטים לקרוא בטעות: כותח, נבילה, הקילו.
+    - שמות אותיות (טית, בית, פא, צדי) כשהם משמשים כאות.
+    אל תנקד מילה רק בגלל שהיא ארמית או תורנית, אם יש לה קריאה מקובלת אחת (דאורייתא, דרבנן, מותר, אסור, בדיעבד).
+    אם אינך בטוח, אל תנקד.
 
-    תמיד לעטוף: {always_tag}
-    לעולם לא לעטוף: {never_tag}
+    תמיד לנקד: {always_vocalize}
+    לעולם לא לנקד: {never_vocalize}
 
-    בתוך התגית השאר את המילה המקורית כפי שהיא, וכתוב ב-ph את ההגייה ב-IPA במבטא ישראלי.
+    נקד רק את המילה הדו-משמעית עצמה (כולל אותיות השימוש הצמודות לה), בניקוד מלא ומדויק לפי ההקשר, ואל תנקד את שאר המשפט.
 
-    דוגמאות לעטיפה:
-    <phoneme alphabet="ipa" ph="uˈbar beheˈma">עובר בהמה</phoneme>
-    <phoneme alphabet="ipa" ph="koˈtaχ">כותח</phoneme>
-    <phoneme alphabet="ipa" ph="tet">טית</phoneme>
-    <phoneme alphabet="ipa" ph="pat">פת</phoneme>
-    <phoneme alphabet="ipa" ph="taˈut soˈfer">טעות סופר</phoneme>
+    דוגמאות:
+    עובר בהמה ← עֻבָּר בְּהֵמָה
+    כותח ← כּוּתָח
+    סימן טית ← סימן טֵית
+    סעיף בית ← סעיף בֵּית
+    אכל פת ← אכל פַּת
+    טעות סופר ← טעות סוֹפֵר
 
-# Experiment scripts only (scripts/polish_draft.py, scripts/tag_pronunciation.py,
-# scripts/polish_and_tag_combined.py): USD per 1M tokens, used to print an estimated cost.
+# Experiment scripts only (scripts/polish_draft.py, scripts/vocalize_pronunciation.py,
+# scripts/polish_and_vocalize_combined.py): USD per 1M tokens, used to print an estimated cost.
 # Thinking tokens are billed at the output rate. Prices apply to prompts <= max_prompt_tokens.
 experiment_pricing:
   gemini-3.1-pro-preview:
@@ -182,17 +186,16 @@ experiment_pricing:
     output_per_1m_usd: 12.00
     max_prompt_tokens: 200000
 
-# scripts/polish_and_tag_combined.py: polish + pronunciation tagging in ONE call.
+# scripts/polish_and_vocalize_combined.py: polish + pronunciation nikkud in ONE call.
 # The system instruction is polishing_instruction, then this header, then
 # pronunciation_instruction WITHOUT its first paragraph (the "return the script exactly
 # as is / only allowed change" lines, which conflict with polishing).
-experiment_combined_polish_tag:
+experiment_combined_polish_vocalize:
   addendum_header: |
-    ===== תוספת: תגיות הגייה =====
+    ===== תוספת: ניקוד לצורך הגייה =====
     כל ההנחיות לעיל לעריכת השיעור נשארות בתוקף. בנוסף, בתסריט המלוטש שאתה כותב,
-    עטוף מילים או צירופים שמנוע ה-TTS עלול לקרוא לא נכון בתגית:
-    <phoneme alphabet="ipa" ph="...">המילה</phoneme>
-    הטקסט שבתוך התגית הוא המילה עצמה כפי שהיא מופיעה בתסריט. הכללים לבחירת המילים:
+    הוסף ניקוד רק למילים שמנוע ה-TTS עלול לקרוא לא נכון, בלי שום תגיות או סימון.
+    מילה שכבר מנוקדת השאר כפי שהיא. הכללים לבחירת המילים:
 
 # TTS Engine Selection and Settings
 tts:
@@ -218,11 +221,11 @@ tts:
     model_id: "eleven_v4"
     stability: 0.5
     similarity_boost: 0.75
-    # Max characters per request. eleven_v4 allows 10,000 per request; 8000 leaves room
-    # for SSML <phoneme> tag markup (which counts toward the limit).
+    # Max characters per request. eleven_v4 allows 10,000 per request; 8000 leaves headroom
+    # (requests are cut at paragraph / sentence boundaries, so chunks vary in length).
     chunk_size: 8000
     # Request stitching: previous_text / next_text sent with each chunk are the last / first
-    # context_chars characters of the neighbouring chunks (tags stripped, cut at a word boundary).
+    # context_chars characters of the neighbouring chunks (cut at a word boundary).
     context_chars: 500
     
   google:

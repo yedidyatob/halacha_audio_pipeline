@@ -1,4 +1,4 @@
-"""Experiment scripts: combined polish + tagging, polish-only, and usage/cost reporting."""
+"""Experiment scripts: combined polish + nikkud, polish-only, and usage/cost reporting."""
 import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -6,22 +6,21 @@ from unittest.mock import MagicMock
 import pytest
 
 from pipeline.usage import ModelPricing, TextResult, TokenUsage, estimate_cost_usd, format_usage_report
-from scripts.polish_and_tag_combined import (
+from scripts.polish_and_vocalize_combined import (
     build_combined_instruction, pronunciation_rules, validate_combined_output,
 )
-from pipeline.pronunciation import PronunciationTaggingError
+from pipeline.pronunciation import PronunciationError
 
 PRON = (
     "אתה עורך הגייה.\n"
     "החזר את התסריט בדיוק כפי שהוא, מילה במילה.\n"
-    "השינוי היחיד המותר: לעטוף מילים בתגית:\n"
-    '<phoneme alphabet="ipa" ph="...">המילה המקורית</phoneme>\n'
+    "השינוי היחיד המותר: להוסיף ניקוד.\n"
     "\n"
-    "עטוף מילה רק אם היא דו-משמעית.\n"
+    "נקד מילה רק אם היא דו-משמעית.\n"
     "\n"
-    "תמיד לעטוף: כותח\n"
+    "תמיד לנקד: כותח\n"
 )
-TET = '<phoneme alphabet="ipa" ph="tet">טית</phoneme>'
+TET = "טֵית"
 PRICING = ModelPricing(input_per_1m_usd=2.0, output_per_1m_usd=12.0, max_prompt_tokens=200_000)
 
 
@@ -29,20 +28,20 @@ PRICING = ModelPricing(input_per_1m_usd=2.0, output_per_1m_usd=12.0, max_prompt_
 
 def test_conflicting_first_paragraph_is_dropped():
     rules = pronunciation_rules(PRON)
-    assert rules == "עטוף מילה רק אם היא דו-משמעית.\n\nתמיד לעטוף: כותח"
+    assert rules == "נקד מילה רק אם היא דו-משמעית.\n\nתמיד לנקד: כותח"
     assert "בדיוק כפי שהוא" not in rules and "השינוי היחיד המותר" not in rules
 
 
 def test_unexpected_instruction_structure_is_refused():
     with pytest.raises(ValueError, match="first|paragraph"):
-        pronunciation_rules("החזר את התסריט בדיוק כפי שהוא.\nעטוף מילים.")  # no blank line
+        pronunciation_rules("החזר את התסריט בדיוק כפי שהוא.\nנקד מילים.")  # no blank line
     with pytest.raises(ValueError):
-        pronunciation_rules("פסקה בלי פורמט תגית\n\nכללים")  # first paragraph lacks the <phoneme line
+        pronunciation_rules("פסקה בלי כלל העתקה\n\nכללים")  # first paragraph lacks the exact-copy rule
 
 
 def test_combined_instruction_order_and_separation():
     out = build_combined_instruction("POLISH RULES\n", "===== HEADER =====\n", PRON)
-    assert out == "POLISH RULES\n\n===== HEADER =====\nעטוף מילה רק אם היא דו-משמעית.\n\nתמיד לעטוף: כותח\n"
+    assert out == "POLISH RULES\n\n===== HEADER =====\nנקד מילה רק אם היא דו-משמעית.\n\nתמיד לנקד: כותח\n"
 
 
 def test_real_config_combined_instruction():
@@ -53,9 +52,9 @@ def test_real_config_combined_instruction():
     out = build_combined_instruction(cfg.polishing_instruction, cfg.experiment_combined_addendum_header,
                                      cfg.pronunciation_instruction)
     assert out.startswith(cfg.polishing_instruction.rstrip())
-    assert "תוספת: תגיות הגייה" in out
+    assert "תוספת: ניקוד לצורך הגייה" in out and "<" not in out
     assert "החזר את התסריט בדיוק כפי שהוא" not in out
-    assert "{always_tag}" not in out and "תמיד לעטוף:" in out
+    assert "{always_vocalize}" not in out and "תמיד לנקד:" in out
     assert cfg.experiment_pricing("gemini-3.1-pro-preview") == PRICING
 
 
@@ -95,15 +94,16 @@ def test_config_pricing_missing_or_invalid():
 # --- validation and the script ------------------------------------------------------
 
 def test_validate_combined_output():
-    assert validate_combined_output(f"שיעור חדש על {TET}.") == [("טית", "tet")]
-    with pytest.raises(PronunciationTaggingError, match="malformed"):
-        validate_combined_output('שיעור <phoneme alphabet="ipa" ph="tet">טית')
-    with pytest.raises(PronunciationTaggingError, match="empty"):
+    assert validate_combined_output(f"שיעור חדש על {TET}.") == [("טית.", f"{TET}.")]
+    for bad in ('שיעור <phoneme alphabet="ipa" ph="tet">טית</phoneme>', "שיעור <break time=\"1s\"/> חדש"):
+        with pytest.raises(PronunciationError, match="markup"):
+            validate_combined_output(bad)
+    with pytest.raises(PronunciationError, match="empty"):
         validate_combined_output("  ")
 
 
 def _run_combined(tmp_path, monkeypatch, llm_text, extra_args=()):
-    import scripts.polish_and_tag_combined as script
+    import scripts.polish_and_vocalize_combined as script
     monkeypatch.chdir(tmp_path)
     draft = tmp_path / "YD_Siman_94_m_draft.txt"
     relations = tmp_path / "YD_Relations_94_m.txt"
@@ -121,23 +121,24 @@ def _run_combined(tmp_path, monkeypatch, llm_text, extra_args=()):
 
 
 def test_combined_script_writes_outputs_and_usage(tmp_path, monkeypatch, capsys):
-    gen, draft = _run_combined(tmp_path, monkeypatch, f'שיעור על {TET} והש"ך.', ["--apply-nikkud"])
+    gen, draft = _run_combined(tmp_path, monkeypatch, f'שיעור על {TET} והש"ך.')
     args = gen.polish.call_args.args
     assert args[:2] == ("טיוטה", "קשרים") and args[3] == "low"
     assert args[2].startswith("POLISH\n\nHEADER\n") and "בדיוק כפי שהוא" not in args[2]
-    out = tmp_path / "YD_Siman_94_m_draft_combined_tagged.txt"
-    assert TET in out.read_text(encoding="utf-8") and "השַׁךְ" in out.read_text(encoding="utf-8")
-    assert (tmp_path / "YD_Siman_94_m_draft_combined_tagged_tags.txt").read_text(encoding="utf-8") == "טית\ttet\n"
+    out = tmp_path / "YD_Siman_94_m_draft_combined_vocalized.txt"
+    assert out.read_text(encoding="utf-8") == f"שיעור על {TET} והשַׁךְ."  # dictionary nikkud applied after
+    # only the LLM's own vocalization is listed (before the dictionary pass)
+    assert (tmp_path / "YD_Siman_94_m_draft_combined_vocalized_changes.txt").read_text(encoding="utf-8") == f"טית\t{TET}\n"
     printed = capsys.readouterr().out
     assert "thinking level: low" in printed and "Estimated cost:  $0.0320" in printed
 
 
-def test_combined_script_malformed_tags_exit_1(tmp_path, monkeypatch, capsys):
+def test_combined_script_leftover_markup_exit_1(tmp_path, monkeypatch, capsys):
     with pytest.raises(SystemExit) as exc:
         _run_combined(tmp_path, monkeypatch, 'שיעור <phoneme alphabet="ipa">טית</phoneme>')
     assert exc.value.code == 1
     captured = capsys.readouterr()
-    assert "malformed phoneme tag" in captured.err
+    assert "markup in output" in captured.err
     assert "Estimated cost" in captured.out  # the paid call's usage is still reported
     assert sorted(os.listdir(tmp_path)) == ["YD_Relations_94_m.txt", "YD_Siman_94_m_draft.txt"]
 
@@ -172,9 +173,9 @@ def test_base_polish_builds_the_pipeline_prompt():
     assert second.args == ("COMBINED", gen._get_polishing_user_prompt("draft", "rel"), POLISH_TEMPERATURE, "high")
 
 
-def test_tag_pronunciation_script_prints_usage(tmp_path, monkeypatch, capsys):
-    import scripts.tag_pronunciation as script
-    from pipeline.pronunciation import PronunciationTagger
+def test_vocalize_pronunciation_script_prints_usage(tmp_path, monkeypatch, capsys):
+    import scripts.vocalize_pronunciation as script
+    from pipeline.pronunciation import PronunciationVocalizer
     monkeypatch.chdir(tmp_path)
     src = tmp_path / "x.txt"
     src.write_text("סימן טית", encoding="utf-8")
@@ -183,11 +184,11 @@ def test_tag_pronunciation_script_prints_usage(tmp_path, monkeypatch, capsys):
     cfg = MagicMock(pronunciation_engine="gemini")
     cfg.experiment_pricing.return_value = PRICING
     monkeypatch.setattr("pipeline.config.PipelineConfig", lambda path: cfg)
-    monkeypatch.setattr("pipeline.pronunciation.create_pronunciation_tagger",
-                        lambda c: PronunciationTagger(gen, "INSTR", "high"))
+    monkeypatch.setattr("pipeline.pronunciation.create_pronunciation_vocalizer",
+                        lambda c: PronunciationVocalizer(gen, "INSTR", "high"))
     script.main([str(src)])
     printed = capsys.readouterr().out
-    assert "Pronunciation tagging: token usage (m)" in printed and "Thinking tokens: 25" in printed
+    assert "Pronunciation nikkud: token usage (m)" in printed and "Thinking tokens: 25" in printed
 
 
 def test_thinking_level_support_flags():
