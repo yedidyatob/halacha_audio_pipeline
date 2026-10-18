@@ -46,21 +46,77 @@ def test_trivial_whitespace_differences_tolerated():
 
 
 @pytest.mark.parametrize("bad", [
-    VOCALIZED.replace("עוסק", "דן"),          # word replaced
-    VOCALIZED.replace("טֵית", "טֵיית"),        # letter added while vocalizing
     VOCALIZED.replace("סימן ", "סימן  "),      # inner whitespace changed
     VOCALIZED.replace("זו ", ""),              # word dropped
+    VOCALIZED.replace("פַּת.\n", "פַּת. "),     # line joined
 ])
-def test_text_change_raises(bad):
+def test_layout_change_raises(bad):
     with pytest.raises(PronunciationError, match="text changed"):
         vocalize_pronunciation(ORIG, lambda t: bad)
 
 
-def test_already_vocalized_word_must_stay_identical():
-    for bad in (VOCALIZED.replace("השַׁךְ", "הַשַּׁךְ"),   # nikkud added to a vocalized word
-                VOCALIZED.replace("השַׁךְ", "השך")):         # nikkud removed from it
-        with pytest.raises(PronunciationError, match="already-vocalized word"):
-            vocalize_pronunciation(ORIG, lambda t: bad)
+# --- spelling: ו / י may be added or removed, except as a word's first letter ------
+
+MATRES_ORIG = "אסור לאכול עובר בהמה, ויש שהקילו.\n"
+
+
+@pytest.mark.parametrize("word, respelled", [
+    ("עובר", "עֻבָּר"),        # ו removed mid-word
+    ("שהקילו", "שֶׁהֵקֵלּוּ"),  # י removed mid-word
+    ("לאכול", "לֶאֱכוֹל"),     # unchanged letters
+    ("בהמה,", "בְּהֵימָה,"),    # י added mid-word (punctuation kept)
+    ("שהקילו", "שהקלו"),       # respelled without nikkud
+])
+def test_matres_change_mid_word_accepted(word, respelled):
+    out = MATRES_ORIG.replace(word, respelled)
+    text, changes = vocalize_pronunciation(MATRES_ORIG, lambda t: out)
+    assert text == out
+    assert changes == [(word.strip(","), respelled.strip(","))]
+
+
+def test_respelled_words_listed_in_changes():
+    out = "אסור לאכול עֻבָּר בהמה, ויש שֶׁהֵקֵלּוּ.\n"
+    _, changes = vocalize_pronunciation(MATRES_ORIG, lambda t: out)
+    assert changes == [("עובר", "עֻבָּר"), ("שהקילו", "שֶׁהֵקֵלּוּ")]
+    assert format_changes(changes) == "עובר\tעֻבָּר\nשהקילו\tשֶׁהֵקֵלּוּ\n"
+
+
+@pytest.mark.parametrize("word, bad", [
+    ("ויש", "יֵשׁ"),           # conjunction ו removed
+    ("עובר", "וְעֻבָּר"),       # ו added at word start
+    ("אסור", "יאסור"),        # י added at word start
+])
+def test_matres_change_at_word_start_rejected(word, bad):
+    with pytest.raises(PronunciationError, match=f"{word} -> {bad} \\(ו/י added or removed at the start"):
+        vocalize_pronunciation(MATRES_ORIG, lambda t: MATRES_ORIG.replace(word, bad))
+
+
+def test_matres_after_maqaf_or_in_abbreviation():
+    orig = 'בית־דין אמר ר"י\n'
+    assert validate_vocalized_output(orig, 'בית־דין אמר ר"יו\n') is None  # after gershayim: not word start
+    assert "at the start" in validate_vocalized_output(orig, 'בית־ודין אמר ר"י\n')  # after maqaf: word start
+
+
+@pytest.mark.parametrize("word, bad", [
+    ("עוסק", "דן"),            # word replaced
+    ("טֵית", "טֵאית"),          # other letter added while vocalizing
+    ("סוֹפֵר", "סוֹפֵרה"),       # other letter added at the end
+    ("סוֹפֵר", "סוֹפֵק"),        # letter substituted
+    ("פַּת.", "פַּת,."),         # punctuation added
+])
+def test_other_letter_change_rejected(word, bad):
+    with pytest.raises(PronunciationError, match="letters changed beyond adding/removing ו/י"):
+        vocalize_pronunciation(ORIG, lambda t: VOCALIZED.replace(word, bad))
+
+
+@pytest.mark.parametrize("bad", [
+    "הַשַּׁךְ",   # nikkud added to a vocalized word
+    "השך",      # nikkud removed from it
+    "השַׁיךְ",   # ו/י added to it (allowed only in unvocalized words)
+])
+def test_already_vocalized_word_must_stay_identical(bad):
+    with pytest.raises(PronunciationError, match=f"השַׁךְ\\. -> {bad}\\. \\(already vocalized, must stay identical\\)"):
+        vocalize_pronunciation(ORIG, lambda t: VOCALIZED.replace("השַׁךְ", bad))
 
 
 def test_markup_rejected():
@@ -260,7 +316,7 @@ def test_vocalizer_batch_result_validated_like_sync():
     gen.get_batch_result.return_value = VOCALIZED
     assert vocalizer.batch_result(ORIG, "job") == (VOCALIZED, CHANGES)
     gen.get_batch_result.return_value = VOCALIZED.replace("עוסק", "דן")
-    with pytest.raises(PronunciationError, match="text changed"):
+    with pytest.raises(PronunciationError, match="עוסק -> דן"):
         vocalizer.batch_result(ORIG, "job")
     gen.get_batch_result.side_effect = ValueError("Gemini batch returned empty text response.")
     with pytest.raises(PronunciationError, match="batch result unavailable: Gemini batch returned empty"):
@@ -479,7 +535,7 @@ def test_vocalize_script_errors_without_writing(tmp_path, monkeypatch, capsys):
     with pytest.raises(SystemExit) as exc:
         script.main([str(src)])
     assert exc.value.code == 1
-    assert "text changed" in capsys.readouterr().err
+    assert "עוסק -> דן (letters changed" in capsys.readouterr().err
     assert sorted(os.listdir(tmp_path)) == ["x_transcript.txt"]
 
 

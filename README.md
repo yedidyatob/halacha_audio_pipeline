@@ -90,10 +90,12 @@ only; it is required when `pronunciation.engine` is `gemini` and ignored for `op
 list renders as "אין").
 
 The stage runs after the dictionary nikkud, and the LLM is told to leave already-vocalized words
-alone. Validation is strict: with all nikkud removed the output must equal the input (only trailing
-whitespace / line endings may differ), every word that already had nikkud must be byte-identical,
-and no markup (`<...>`) may appear. There is no fallback: if the call fails or the output is
-invalid, that siman fails (no transcript, no TTS) and the run continues with the next siman.
+alone. Validation is strict and word by word: words, whitespace and lines must be unchanged (only
+trailing whitespace / line endings may differ); with nikkud removed each word must equal the input
+word, except that ו / י may be added or removed for standard voweled spelling (עובר → עֻבָּר,
+הקילו → הֵקֵלּוּ), never as the word's first letter; every word that already had nikkud must be
+byte-identical; and no markup (`<...>`) may appear. There is no fallback: if the call fails or the
+output is invalid, that siman fails (no transcript, no TTS) and the run continues with the next siman.
 Letter names whose spelling must change (הא → הֵי) are handled by the dictionary stage
 (`NO_PREFIX_NIKKUD_DICT`), not by the LLM.
 
@@ -250,7 +252,7 @@ has no `next_text`, and a single-chunk text sends neither.
 output/
 ├── {section}_Siman_{N}_{model}_transcript.txt      # Latest transcript
 ├── {section}_Siman_{N}_{model}_transcript_YYYYMMDD_HHMMSS.txt  # Timestamped history
-├── {section}_Siman_{N}_{model}_pronunciation_changes.txt  # original<TAB>vocalized per LLM-vocalized word, if enabled
+├── {section}_Siman_{N}_{model}_pronunciation_changes.txt  # original<TAB>vocalized per word the LLM changed (incl. ו/י respellings), if enabled
 ├── {section}_Siman_{N}_{model}.mp3               # Audio file
 ├── drafts/                                         # Stage 1 cached drafts
 │   └── {section}_Siman_{N}_{model}_draft.txt
