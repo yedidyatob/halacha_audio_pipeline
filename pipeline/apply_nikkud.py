@@ -3,6 +3,8 @@ Nikkud / pronunciation fixes for TTS.
 
 - RABBINIC_NIKKUD_DICT: fixed mappings for rabbinic abbreviations and terms.
   These may carry a Hebrew prefix (הרמב"ם, ברמב"ם, להרמב"ם, מהרמב"ם ...), which is preserved.
+  The abbreviations in UNQUOTED_ABBREVIATIONS also match written without the gershayim
+  (מהרשל, והמהרשל), generated from their quoted entries.
 - NO_PREFIX_NIKKUD_DICT: the letter names הא / פא / צדי. Replaced only as a whole word,
   never with a prefix, and only in a letter-name context (see LETTER-NAME CONTEXT below).
   A value may RESPELL the name, not only vocalize it: הא -> הֵי (ElevenLabs v4 reads הֵא wrongly).
@@ -162,6 +164,30 @@ RABBINIC_NIKKUD_DICT = {
     'אע"פ': 'אַף עַל פִּי',
     'שו"ת': 'שׁוּת',
 }
+
+# Abbreviations that also match WITHOUT the gershayim (the polish stage sometimes drops them:
+# והמהרשל for והמהרש"ל). The unquoted form is generated from the quoted entry and takes the
+# same prefixes. Only abbreviations whose unquoted form - bare or with any DEFAULT_PREFIXES
+# prefix - is not an ordinary Hebrew / Aramaic word or number. Left out for that reason:
+#   ראש רזה רמה רמא שך (משך) רשי (מרשי, שרשי) נציב גרא תשבץ סמק ריף (שריף) רדק (ברדק)
+#   חנן שוע (השוע) שות (ושות) יוד אוח, and the two-letter ones רת רן טז בח בי נט עפ;
+#   חומ / אעפ would end in a non-final letter, so they never occur unquoted.
+UNQUOTED_ABBREVIATIONS: tuple[str, ...] = (
+    'רמב"ם', 'רמב"ן', 'רשב"א', 'ריטב"א', 'רשב"ם', 'ראב"ד', 'ריב"ש', 'רלב"ג', 'סמ"ג', 'רמ"ך',
+    'סמ"ע', 'מג"א', 'מהרש"א', 'מהרש"ל', 'מהר"ם', 'מהרי"ל', 'מהרי"ט', 'רדב"ז', 'חיד"א', 'חת"ס',
+    'חזו"א', 'פרמ"ג', 'נוב"י', 'כה"ח', 'משנ"ב', 'ערוה"ש', 'אה"ע',
+)
+
+
+def _unquoted_variants() -> list[tuple[str, str]]:
+    """(unquoted key, nikkuded) for every UNQUOTED_ABBREVIATIONS entry."""
+    variants = []
+    for key in UNQUOTED_ABBREVIATIONS:
+        if key not in RABBINIC_NIKKUD_DICT or '"' not in key:
+            raise ValueError(f"UNQUOTED_ABBREVIATIONS entry {key!r} is not a quoted RABBINIC_NIKKUD_DICT key")
+        variants.append((key.replace('"', ""), RABBINIC_NIKKUD_DICT[key]))
+    return variants
+
 
 # Standalone words: replaced only as a whole word, never with a prefix
 # (a bare הא / פא / צדי is already risky; ב+הא etc. is meaningless).
@@ -358,12 +384,13 @@ def apply_nikkud_to_abbreviations(text: str) -> str:
     Replaces Rabbinic acronyms / additional word corrections with their nikkud forms.
 
     Each entry matches as a whole word (see the boundary rule above), optionally preceded
-    by one of DEFAULT_PREFIXES, which is preserved. Letter entries (NO_PREFIX_NIKKUD_DICT)
+    by one of DEFAULT_PREFIXES, which is preserved; UNQUOTED_ABBREVIATIONS also match
+    without their gershayim. Letter entries (NO_PREFIX_NIKKUD_DICT)
     match only as standalone words and only in a letter-name context. Already-nikkuded text
     is not matched again, so the function is idempotent.
     """
     prefixable = tuple(
-        list(RABBINIC_NIKKUD_DICT.items()) + list(additional_nikkud_corrections)
+        list(RABBINIC_NIKKUD_DICT.items()) + _unquoted_variants() + list(additional_nikkud_corrections)
     )
     matcher = _build_matcher(
         prefixable,

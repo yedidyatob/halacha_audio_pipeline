@@ -76,7 +76,7 @@ The pipeline runs in three stages:
 | **Stage 1** | Extract Halachic content from Sefaria API (Rama glosses in the Shulchan Arukh are labeled `[רמ"א] ... [/רמ"א]`, see below) |
 | **Stage 2** | Analyze cross-simanim relations for context |
 | **Stage 3** | Generate polished TTS-ready script & synthesize audio |
-| **Stage 3.4** | Dictionary nikkud (`pipeline/apply_nikkud.py`): rabbinic abbreviations, fixed word corrections and letter names in a letter-name context (incl. the respelling הא → הֵי); never touches already-vocalized words |
+| **Stage 3.4** | Dictionary nikkud (`pipeline/apply_nikkud.py`): rabbinic abbreviations (an allowlist also without gershayim, e.g. מהרשל, when the bare form is not an ordinary word), fixed word corrections and letter names in a letter-name context (incl. the respelling הא → הֵי); never touches already-vocalized words |
 | **Stage 3.5** | Pronunciation nikkud (optional, `pronunciation.enabled`): an LLM adds nikkud only to context-ambiguous words (עובר → עֻבָּר, פת, סופר, letter names used as letters). Plain text, no markup |
 | **Stage 3.6** | Save the transcript, then TTS |
 
