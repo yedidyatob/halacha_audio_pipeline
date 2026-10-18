@@ -91,7 +91,7 @@ def test_batch_pronunciation_failed_job_fails_that_siman(tmp_path):
 def test_batch_pronunciation_validation_failure_and_empty_result(tmp_path):
     def respond(cid, prompt):
         if cid.endswith("_95"):
-            return prompt.replace("95", "99")  # text changed
+            return prompt.replace("95", "99")  # a word changed
         if cid.endswith("_96"):
             raise ValueError("Gemini batch returned empty text response.")
         return vocalized(prompt)
@@ -99,7 +99,7 @@ def test_batch_pronunciation_validation_failure_and_empty_result(tmp_path):
     summary = _run(tmp_path, polish_gen, PronunciationVocalizer(FakeBatchGenerator(respond), "VOC", None), batch=True)
     assert set(summary.failed) == {95, 96}
     stage, reason = summary.failed[95]
-    assert stage == main_mod.STAGE_PRONUNCIATION and "text changed" in reason
+    assert stage == main_mod.STAGE_PRONUNCIATION and "95 -> 99 (letters changed" in reason
     stage, reason = summary.failed[96]
     assert stage == main_mod.STAGE_PRONUNCIATION and "empty text response" in reason
     assert _transcripts(tmp_path) == [94, 97]

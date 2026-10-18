@@ -6,10 +6,14 @@ as letters). The output is plain Hebrew text; there is no markup.
 It runs after the dictionary nikkud stage (apply_nikkud), so its input may already contain
 vocalized words; the LLM must leave those exactly as they are.
 
-Validation (strict):
-  - with all nikkud removed, the output must equal the input (only trailing whitespace and
-    line endings may differ), and
-  - every word that already had nikkud in the input must be unchanged in the output.
+Validation (strict), word by word:
+  - words, whitespace and lines must be unchanged (only trailing whitespace and line endings
+    may differ);
+  - a word that already had nikkud in the input must be byte-identical in the output;
+  - any other word, with nikkud removed, must equal the input word, except that ו / י may be
+    added or removed (standard voweled spelling, e.g. עובר -> עֻבָּר, הקילו -> הֵקֵלּוּ) anywhere
+    but at the start of the word;
+  - no markup, no empty output.
 On any violation, or an LLM call failure, PronunciationError is raised. There is no
 fallback: the caller decides what to do (the pipeline fails that siman).
 """
@@ -30,6 +34,12 @@ _NIKKUD_RE = re.compile("[\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4\u05C5\u05C7]")
 
 # Markup the LLM must never emit (e.g. leftover SSML / XML / HTML tags).
 _MARKUP_RE = re.compile(r"</?[A-Za-z][^<>]*>")
+
+# A ו / י the LLM may add or remove (matres lectionis, for standard voweled spelling): one
+# that follows a Hebrew letter, or a geresh / gershayim that follows one (abbreviations), so
+# never the first letter of a word (e.g. the conjunction ו).
+_MATRES_RE = re.compile("(?<=[\u05D0-\u05EA])[\u05D5\u05D9]|(?<=[\u05D0-\u05EA][\"'\u05F3\u05F4])[\u05D5\u05D9]")
+_ANY_VAV_YOD_RE = re.compile("[\u05D5\u05D9]")
 
 # Punctuation trimmed from the ends of a word in the review list of changed words.
 _EDGE_PUNCT = ".,;:!?()[]{}-\u05BE\u2013\u2014"
@@ -71,12 +81,29 @@ def _diff_summary(expected: str, actual: str, max_lines: int = 6) -> str:
     return f"{len(changed)} changed line(s): " + " | ".join(shown) + more
 
 
+def _layout(text: str) -> list[str]:
+    """The whitespace between words (and at the ends): equal layouts mean the same words per line."""
+    return re.split(r"\S+", text)
+
+
 def _word_pairs(original: str, vocalized: str) -> list[Change]:
     """
-    Aligned (input word, output word) pairs. Only valid once both texts are known to be
-    equal without nikkud, so whitespace splitting yields the same number of words.
+    Aligned (input word, output word) pairs. Only valid once both texts are known to have the
+    same layout, so whitespace splitting yields the same number of words.
     """
     return list(zip(_normalize(original).split(), _normalize(vocalized).split()))
+
+
+def _word_error(original: str, output: str) -> Optional[str]:
+    """Why `output` is not a valid rendering of the input word `original`, or None if it is."""
+    if has_nikkud(original):
+        return None if output == original else "already vocalized, must stay identical"
+    letters = strip_nikkud(output)
+    if _MATRES_RE.sub("", letters) == _MATRES_RE.sub("", original):
+        return None
+    if _ANY_VAV_YOD_RE.sub("", letters) == _ANY_VAV_YOD_RE.sub("", original):
+        return "ו/י added or removed at the start of the word"
+    return "letters changed beyond adding/removing ו/י"
 
 
 def validate_vocalized_output(original: str, vocalized: str) -> Optional[str]:
@@ -88,17 +115,24 @@ def validate_vocalized_output(original: str, vocalized: str) -> Optional[str]:
         return f"markup in output: {markup[:5]}"
     expected = strip_nikkud(_normalize(original))
     actual = strip_nikkud(_normalize(vocalized))
-    if expected != actual:
+    if _layout(expected) != _layout(actual):
         return "text changed (ignoring nikkud): " + _diff_summary(expected, actual)
-    clobbered = [(a, b) for a, b in _word_pairs(original, vocalized) if a != b and has_nikkud(a)]
-    if clobbered:
-        shown = ", ".join(f"{a} -> {b}" for a, b in clobbered[:5])
-        return f"{len(clobbered)} already-vocalized word(s) changed: {shown}"
+    rejected = [
+        f"{a} -> {b} ({error})"
+        for a, b in _word_pairs(original, vocalized)
+        if (error := _word_error(a, b))
+    ]
+    if rejected:
+        more = f" ... (+{len(rejected) - 5} more)" if len(rejected) > 5 else ""
+        return f"{len(rejected)} word(s) changed invalidly: " + " | ".join(rejected[:5]) + more
     return None
 
 
 def changed_words(original: str, vocalized: str) -> list[Change]:
-    """(original, vocalized) for every word the stage vocalized, in order, edge punctuation trimmed."""
+    """
+    (original, vocalized) for every word the stage changed (vocalized, and possibly respelled
+    with ו / י), in order, edge punctuation trimmed.
+    """
     return [
         (a.strip(_EDGE_PUNCT), b.strip(_EDGE_PUNCT))
         for a, b in _word_pairs(original, vocalized)
@@ -121,7 +155,8 @@ def parse_vocalized_response(script_text: str, vocalized: str) -> tuple[str, lis
         raise PronunciationError(f"pronunciation output rejected: {reason}")
     vocalized = vocalized.replace("\r\n", "\n")
     changes = changed_words(script_text, vocalized)
-    logger.info(f"Pronunciation stage: {len(changes)} word(s) vocalized.")
+    respelled = sum(strip_nikkud(b) != a for a, b in changes)
+    logger.info(f"Pronunciation stage: {len(changes)} word(s) vocalized ({respelled} respelled with ו/י).")
     return vocalized, changes
 
 

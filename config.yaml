@@ -134,9 +134,10 @@ relations_instruction: |
 
 # Pronunciation stage (Stage 3.5; runs after polish and the dictionary nikkud stage, before save/TTS).
 # An LLM adds nikkud ONLY to context-ambiguous words (homographs, letter names used as letters).
-# Plain text, no markup. Validation: the output without nikkud must equal the input without
-# nikkud, and words that were already vocalized must be unchanged. On any failure (LLM error /
-# invalid output) that siman fails: no transcript, no TTS.
+# Plain text, no markup. Validation (word by word): the output without nikkud must equal the
+# input, except that ו / י may be added or removed for standard voweled spelling (never as a
+# word's first letter), and words that were already vocalized must be unchanged. On any
+# failure (LLM error / invalid output) that siman fails: no transcript, no TTS.
 # Letter-name respellings (e.g. הא -> הֵי) are done by the dictionary nikkud stage
 # (pipeline/apply_nikkud.py, NO_PREFIX_NIKKUD_DICT), not here.
 pronunciation:
@@ -155,7 +156,7 @@ pronunciation:
 pronunciation_instruction: |
     אתה עורך הגייה לשיעור שמע בעברית שיוקרא במנוע TTS.
     החזר את התסריט בדיוק כפי שהוא, מילה במילה ואות באות, בלי לשנות, להוסיף או להשמיט דבר, ובלי שום תגיות או סימון.
-    השינוי היחיד המותר: להוסיף ניקוד למילים שהמנוע עלול לקרוא לא נכון, ורק להן. אל תשנה את אותיות המילה (אל תוסיף ואל תשמיט אותיות, גם לא אמות קריאה).
+    השינוי היחיד המותר: להוסיף ניקוד למילים שהמנוע עלול לקרוא לא נכון, ורק להן. במילה שאתה מנקד מותר להוסיף או להשמיט ו או י לפי הכתיב המנוקד התקני (הקילו ← הֵקֵלּוּ), אך לא באות הראשונה של המילה; אל תשנה, תוסיף או תשמיט שום אות אחרת.
     מילה שכבר מנוקדת, אפילו חלקית, השאר בדיוק כפי שהיא: אל תשנה ואל תוסיף בה ניקוד.
 
     נקד מילה רק אם קורא עברית בלי ניקוד עלול לקרוא אותה בשתי דרכים שונות, ובהקשר הזה נכונה דווקא אחת מהן:

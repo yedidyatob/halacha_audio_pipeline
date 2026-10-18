@@ -246,7 +246,7 @@ def test_already_nikkuded_words_are_not_touched():
     ('באבן העזר', "ב" + "אֶבֶן הָעֵזֶר"),
     ('שו"ע', "שׁוּלְחָן עָרוּךְ"),
     ('בשו"ע', "ב" + "שׁוּלְחָן עָרוּךְ"),
-    ('שו"ת', 'שׁוּ"ת'),
+    ('שו"ת', 'שׁוּת'),
 ])
 def test_abbreviations(text, expected):
     assert apply(text) == expected
