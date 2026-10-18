@@ -160,7 +160,7 @@ RABBINIC_NIKKUD_DICT = {
     'נ"ט': 'נַט',  # Fixed: הושאר כקיצור עם ניקוד קריא
     'ע"פ': 'עַל פִּי',
     'אע"פ': 'אַף עַל פִּי',
-    'שו"ת': 'שׁוּ"ת',
+    'שו"ת': 'שׁוּת',
 }
 
 # Standalone words: replaced only as a whole word, never with a prefix
