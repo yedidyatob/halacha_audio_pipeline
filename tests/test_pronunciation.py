@@ -193,10 +193,47 @@ pronunciation:
     assert cfg.pronunciation_instruction == "prompt"
 
 
+def _max_retries_cfg(line):
+    return _config(f"""
+pronunciation:
+  enabled: true
+{line}""")
+
+
+@pytest.mark.parametrize("value", [0, 1, 3])
+def test_config_max_retries_valid(value):
+    assert _max_retries_cfg(f"  max_retries: {value}\n").pronunciation_max_retries == value
+
+
+def test_config_max_retries_required():
+    with pytest.raises(ValueError, match="max_retries"):
+        _max_retries_cfg("").pronunciation_max_retries
+
+
+@pytest.mark.parametrize("bad", ["-1", "1.5", '"1"', "true"])
+def test_config_max_retries_invalid(bad):
+    with pytest.raises(ValueError, match="non-negative integer"):
+        _max_retries_cfg(f"  max_retries: {bad}\n").pronunciation_max_retries
+
+
+def test_real_config_max_retries():
+    from pipeline.config import PipelineConfig
+    with patch("os.makedirs"):
+        cfg = PipelineConfig("config.yaml")
+    assert cfg.pronunciation_max_retries == 1
+
+
+def test_factory_passes_max_retries():
+    cfg = MagicMock(pronunciation_instruction="I", pronunciation_thinking_level=None, pronunciation_engine="openai",
+                    pronunciation_max_retries=2)
+    vocalizer = create_pronunciation_vocalizer(cfg, generator_factory=lambda c: MagicMock(model_name="m"))
+    assert vocalizer.max_retries == 2
+
+
 def test_config_missing_section_errors():
     cfg = _config()
     for prop in ("pronunciation_enabled", "pronunciation_engine", "pronunciation_model_name",
-                 "pronunciation_temperature", "pronunciation_instruction",
+                 "pronunciation_temperature", "pronunciation_instruction", "pronunciation_max_retries",
                  "pronunciation_always_vocalize", "pronunciation_never_vocalize"):
         with pytest.raises(ValueError, match="pronunciation"):
             getattr(cfg, prop)
@@ -289,7 +326,8 @@ def test_real_config_yaml_has_pronunciation():
 # --- stage wiring ------------------------------------------------------------
 
 def _vocalizer_with_gen(level="low", temperature=0.2):
-    cfg = MagicMock(pronunciation_instruction="INSTR", pronunciation_thinking_level=level, pronunciation_engine="gemini")
+    cfg = MagicMock(pronunciation_instruction="INSTR", pronunciation_thinking_level=level, pronunciation_engine="gemini",
+                    pronunciation_max_retries=0)
     gen = MagicMock(model_name="m", temperature=temperature)
     return create_pronunciation_vocalizer(cfg, generator_factory=lambda c: gen), gen
 
@@ -323,6 +361,66 @@ def test_vocalizer_batch_result_validated_like_sync():
         vocalizer.batch_result(ORIG, "job")
 
 
+REJECTED = VOCALIZED.replace("עוסק", "דן")
+
+
+def _retrying_vocalizer(max_retries):
+    gen = MagicMock(model_name="m", temperature=0.2)
+    return PronunciationVocalizer(gen, "INSTR", "low", max_retries), gen
+
+
+def test_sync_retry_succeeds_on_second_attempt(caplog):
+    vocalizer, gen = _retrying_vocalizer(1)
+    gen.generate_text.side_effect = [REJECTED, VOCALIZED]
+    assert vocalizer.vocalize(ORIG) == (VOCALIZED, CHANGES)
+    assert gen.generate_text.call_count == 2
+    assert all(c.args == ("INSTR", ORIG) and c.kwargs == {"thinking_level": "low"}
+               for c in gen.generate_text.call_args_list)
+    assert "Pronunciation attempt 1/2 failed" in caplog.text and "עוסק -> דן" in caplog.text
+
+
+def test_sync_retry_covers_llm_errors_and_empty_output():
+    vocalizer, gen = _retrying_vocalizer(2)
+    gen.generate_text.side_effect = [RuntimeError("network"), "  ", VOCALIZED]
+    assert vocalizer.vocalize(ORIG) == (VOCALIZED, CHANGES)
+    assert gen.generate_text.call_count == 3
+
+
+def test_fails_after_max_retries_plus_one_attempts_with_last_reason(caplog):
+    vocalizer, gen = _retrying_vocalizer(2)
+    gen.generate_text.side_effect = [REJECTED, REJECTED, ""]
+    with pytest.raises(PronunciationError, match=r"empty output \(after 3 attempt\(s\)\)"):
+        vocalizer.vocalize(ORIG)
+    assert gen.generate_text.call_count == 3
+    assert [r.levelname for r in caplog.records if "Pronunciation attempt" in r.message] == ["WARNING"] * 3
+
+
+def test_no_retry_when_max_retries_zero():
+    vocalizer, gen = _retrying_vocalizer(0)
+    gen.generate_text.return_value = REJECTED
+    with pytest.raises(PronunciationError, match=r"\(after 1 attempt\(s\)\)"):
+        vocalizer.vocalize(ORIG)
+    gen.generate_text.assert_called_once()
+
+
+def test_batch_result_retried_synchronously():
+    vocalizer, gen = _retrying_vocalizer(1)
+    gen.get_batch_result.return_value = REJECTED
+    gen.generate_text.return_value = VOCALIZED
+    assert vocalizer.batch_result(ORIG, "job") == (VOCALIZED, CHANGES)
+    gen.get_batch_result.assert_called_once_with("job")
+    gen.generate_text.assert_called_once_with("INSTR", ORIG, thinking_level="low")
+    gen.submit_batch.assert_not_called()
+
+
+def test_batch_result_unavailable_then_retry_fails_with_last_reason():
+    vocalizer, gen = _retrying_vocalizer(1)
+    gen.get_batch_result.side_effect = ValueError("Gemini batch returned empty text response.")
+    gen.generate_text.return_value = REJECTED
+    with pytest.raises(PronunciationError, match=r"עוסק -> דן .*\(after 2 attempt\(s\)\)"):
+        vocalizer.batch_result(ORIG, "job")
+
+
 def test_parse_vocalized_response_shared_validation():
     assert parse_vocalized_response(ORIG, VOCALIZED.replace("\n", "\r\n"))[0] == VOCALIZED
     with pytest.raises(PronunciationError, match="empty output"):
@@ -331,8 +429,8 @@ def test_parse_vocalized_response_shared_validation():
 
 def test_vocalizer_supports_batch():
     from pipeline.generator import BatchCapableGenerator
-    assert PronunciationVocalizer(MagicMock(spec=BatchCapableGenerator), "i", None).supports_batch
-    assert not PronunciationVocalizer(object(), "i", None).supports_batch
+    assert PronunciationVocalizer(MagicMock(spec=BatchCapableGenerator), "i", None, 0).supports_batch
+    assert not PronunciationVocalizer(object(), "i", None, 0).supports_batch
 
 
 def test_factory_creates_pronunciation_generator():
@@ -531,12 +629,28 @@ def test_vocalize_script_errors_without_writing(tmp_path, monkeypatch, capsys):
     gen.generate_text.return_value = VOCALIZED.replace("עוסק", "דן")
     monkeypatch.setattr("pipeline.config.PipelineConfig", MagicMock())
     monkeypatch.setattr("pipeline.pronunciation.create_pronunciation_vocalizer",
-                        lambda c: PronunciationVocalizer(gen, "INSTR", None))
+                        lambda c: PronunciationVocalizer(gen, "INSTR", None, 0))
     with pytest.raises(SystemExit) as exc:
         script.main([str(src)])
     assert exc.value.code == 1
     assert "עוסק -> דן (letters changed" in capsys.readouterr().err
     assert sorted(os.listdir(tmp_path)) == ["x_transcript.txt"]
+
+
+def test_vocalize_script_retries_then_writes(tmp_path, monkeypatch):
+    import scripts.vocalize_pronunciation as script
+    monkeypatch.chdir(tmp_path)
+    src = tmp_path / "x.txt"
+    src.write_text(ORIG, encoding="utf-8")
+    gen = MagicMock(model_name="m")
+    gen.generate_text.side_effect = [REJECTED, VOCALIZED]
+    monkeypatch.setattr("pipeline.config.PipelineConfig", MagicMock())
+    monkeypatch.setattr("pipeline.pronunciation.create_pronunciation_vocalizer",
+                        lambda c: PronunciationVocalizer(gen, "INSTR", None, 1))
+    script.main([str(src)])
+    assert gen.generate_text.call_count == 2
+    assert (tmp_path / "x_vocalized.txt").read_text(encoding="utf-8") == VOCALIZED
+    assert (tmp_path / "x_vocalized_changes.txt").read_text(encoding="utf-8") == format_changes(CHANGES)
 
 
 def test_vocalize_script_applies_dictionary_nikkud_first(tmp_path, monkeypatch):
@@ -548,7 +662,7 @@ def test_vocalize_script_applies_dictionary_nikkud_first(tmp_path, monkeypatch):
     gen.generate_text.side_effect = lambda instr, text, thinking_level: text
     monkeypatch.setattr("pipeline.config.PipelineConfig", MagicMock())
     monkeypatch.setattr("pipeline.pronunciation.create_pronunciation_vocalizer",
-                        lambda c: PronunciationVocalizer(gen, "INSTR", None))
+                        lambda c: PronunciationVocalizer(gen, "INSTR", None, 0))
     script.main([str(src)])
     assert gen.generate_text.call_args.args[1] == "סימן הֵי והשַׁךְ"
     assert (tmp_path / "x_vocalized.txt").read_text(encoding="utf-8") == "סימן הֵי והשַׁךְ"

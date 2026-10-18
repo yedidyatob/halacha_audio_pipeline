@@ -10,8 +10,9 @@ Writes:
   <output>                  the vocalized script (default: <input stem>_vocalized.txt next to the input)
   <output stem>_changes.txt   one 'original<TAB>vocalized' line per word the LLM changed
 Runs regardless of pronunciation.enabled (calling the script is the explicit request).
-If the stage fails (LLM error, or output rejected by validation) nothing is
-written and the script exits with code 1.
+A failed attempt (LLM error, or output rejected by validation) is retried up to
+pronunciation.max_retries times; if every attempt fails nothing is written and the script
+exits with code 1.
 """
 import argparse
 import os

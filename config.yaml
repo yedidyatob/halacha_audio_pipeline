@@ -136,8 +136,9 @@ relations_instruction: |
 # An LLM adds nikkud ONLY to context-ambiguous words (homographs, letter names used as letters).
 # Plain text, no markup. Validation (word by word): the output without nikkud must equal the
 # input, except that ו / י may be added or removed for standard voweled spelling (never as a
-# word's first letter), and words that were already vocalized must be unchanged. On any
-# failure (LLM error / invalid output) that siman fails: no transcript, no TTS.
+# word's first letter), and words that were already vocalized must be unchanged. A failed
+# attempt (LLM error / invalid output) is retried up to max_retries times; if all fail, that
+# siman fails: no transcript, no TTS.
 # Letter-name respellings (e.g. הא -> הֵי) are done by the dictionary nikkud stage
 # (pipeline/apply_nikkud.py, NO_PREFIX_NIKKUD_DICT), not here.
 pronunciation:
@@ -148,6 +149,9 @@ pronunciation:
   # Gemini thinking level for the pronunciation call (required for engine gemini; ignored for openai).
   # Gemini 3.1 Pro accepts low/medium/high; try low to compare cost vs quality.
   thinking_level: "high"
+  # Extra LLM calls after a failed attempt (LLM error / rejected output); 0 = no retry.
+  # In batch mode the batch job is the first attempt and retries are synchronous calls.
+  max_retries: 1
   # Filled into {always_vocalize} / {never_vocalize} in pronunciation_instruction (joined with ", ";
   # an empty list renders as "אין").
   always_vocalize: ["עובר בהמה", "כותח", "נבילה", "למה", "שה"]
