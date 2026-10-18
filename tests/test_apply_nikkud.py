@@ -649,3 +649,56 @@ def test_context_regexes_and_letter_names_unaffected_by_blank_rule():
     assert an._key_to_regex("סי'") == "סי['\u05F3]"
     assert an._key_to_regex("a b") == f"a{an._BLANK}+b"
     assert an._norm("אבן \t\u00A0 העזר\u05F4") == 'אבן העזר"'
+
+
+# ---------------------------------------------------------------------------
+# Unquoted abbreviations (gershayim dropped by the polish stage)
+# ---------------------------------------------------------------------------
+
+MAHARSHAL = RABBINIC_NIKKUD_DICT['מהרש"ל']
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("מהרשל", MAHARSHAL),
+    ("והמהרשל אומר", f"וה{MAHARSHAL} אומר"),
+    ("כדברי הרמבם.", f"כדברי ה{RAMBAM}."),
+    ("ולדעת הרשבא", "ולדעת ה" + RABBINIC_NIKKUD_DICT['רשב"א']),
+    ("שהמגא כתב", "שה" + RABBINIC_NIKKUD_DICT['מג"א'] + " כתב"),
+    ("מהמהרשא", "מה" + RABBINIC_NIKKUD_DICT['מהרש"א']),
+    ("(הסמע)", "(ה" + RABBINIC_NIKKUD_DICT['סמ"ע'] + ")"),
+])
+def test_unquoted_abbreviation_with_and_without_prefix(text, expected):
+    assert apply(text) == expected
+
+
+def test_unquoted_matches_like_quoted():
+    for key in an.UNQUOTED_ABBREVIATIONS:
+        unquoted = key.replace('"', "")
+        for prefix in ("", "ו", "וה", "כשה", "מ"):
+            assert apply(prefix + unquoted) == apply(prefix + key) == prefix + RABBINIC_NIKKUD_DICT[key]
+
+
+@pytest.mark.parametrize("text", [
+    "ראש השנה", "הוא רזה", "רמה גבוהה", "רמא ליה", "משך הזמן", "מרשי ושרשי הדברים", "הרשי",
+    "הנציב", "גרא", "תשבץ", "סמק", "ריף", "רן", "רת", "טז", "בח", "שבח", "בי", "נט", "עפ",
+    "יוד", "אוח", "חנן", "שוע", "שות", "ושות",
+])
+def test_ambiguous_unquoted_forms_unchanged(text):
+    assert apply(text) == text
+
+
+def test_unquoted_inside_longer_word_or_after_quote_not_matched():
+    assert apply("רמבםים") == "רמבםים"
+    assert apply('ה"רמבם') == 'ה"רמבם'  # quote glued to a previous letter: inside a word
+
+
+def test_unquoted_allowlist_entries_are_quoted_dict_keys(monkeypatch):
+    assert all('"' in k and k in RABBINIC_NIKKUD_DICT for k in an.UNQUOTED_ABBREVIATIONS)
+    monkeypatch.setattr(an, "UNQUOTED_ABBREVIATIONS", ("רמבם",))
+    with pytest.raises(ValueError, match="not a quoted RABBINIC_NIKKUD_DICT key"):
+        an._unquoted_variants()
+
+
+def test_unquoted_output_is_idempotent():
+    out = apply("והמהרשל והרמבם")
+    assert apply(out) == out
