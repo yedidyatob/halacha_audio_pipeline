@@ -1,5 +1,6 @@
 # Local Configuration
 *.json
+!tests/fixtures/*.json
 
 # Output & Cache Directories
 cache/
