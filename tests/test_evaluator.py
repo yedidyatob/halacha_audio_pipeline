@@ -13,11 +13,11 @@ def test_gematria_helpers():
 @patch("requests.get")
 @patch("pipeline.extractor.SefariaExtractor.fetch_siman_sources")
 def test_evaluate_draft_success(mock_fetch_sources, mock_get):
-    # Mock Shulchan Arukh sources for Siman 94 (3 Se'ifim, Se'if 2 has Rema gloss "הגה")
+    # Mock Shulchan Arukh sources for Siman 94 (3 Se'ifim, Se'if 2 has a labeled Rema gloss)
     mock_fetch_sources.return_value = {
         "Shulchan Arukh": [
             "סעיף א: דין כלשהו",
-            "סעיף ב: הגה דין נוסף",
+            'סעיף ב: דין [רמ"א] דין נוסף [/רמ"א]',
             "סעיף ג: דין שלישי"
         ],
         "Tur": ["טקסט טור"],
@@ -70,11 +70,11 @@ def test_evaluate_draft_success(mock_fetch_sources, mock_get):
 @patch("requests.get")
 @patch("pipeline.extractor.SefariaExtractor.fetch_siman_sources")
 def test_evaluate_draft_fallback_success(mock_fetch_sources, mock_get):
-    # Mock Shulchan Arukh sources for Siman 94 (3 Se'ifim, Se'if 2 has Rema gloss "הגה")
+    # Mock Shulchan Arukh sources for Siman 94 (3 Se'ifim, Se'if 2 has a labeled Rema gloss)
     mock_fetch_sources.return_value = {
         "Shulchan Arukh": [
             "סעיף א: דין כלשהו",
-            "סעיף ב: הגה דין נוסף",
+            'סעיף ב: דין [רמ"א] דין נוסף [/רמ"א]',
             "סעיף ג: דין שלישי"
         ],
         "Tur": ["טקסט טור"],
@@ -129,7 +129,7 @@ def test_evaluate_draft_failures(mock_fetch_sources, mock_get):
     mock_fetch_sources.return_value = {
         "Shulchan Arukh": [
             "סעיף א: דין כלשהו",
-            "סעיף ב: הגה דין נוסף"
+            'סעיף ב: דין [רמ"א] דין נוסף [/רמ"א]'
         ]
     }
     
@@ -219,3 +219,24 @@ def test_evaluate_draft_seif_11_with_quotes(mock_fetch_sources, mock_get):
     assert 11 not in result["missing_seifim"]
     assert "Draft has no section block for this Se'if!" not in result["report"]
     assert result["success"] is True
+
+
+@patch("requests.get")
+@patch("pipeline.extractor.SefariaExtractor.fetch_siman_sources")
+def test_evaluator_requires_rema_for_inline_gloss_without_hagah(mock_fetch_sources, mock_get):
+    import json, os
+    from pipeline.extractor import SefariaExtractor
+    with open(os.path.join(os.path.dirname(__file__), "fixtures", "shulchan_arukh_yd_rama.json"), encoding="utf-8") as f:
+        raw = json.load(f)["seifim"]
+    extractor = SefariaExtractor(base_url="https://fake-sefaria.org")
+    seif_1 = extractor.flatten_elements(raw["94:1"], label_rama=True)[0]  # inline Rama only, no הגה
+    assert "הגה" not in seif_1.split()
+    mock_fetch_sources.return_value = {"Shulchan Arukh": [seif_1, "דין בלי הגהה"],
+                                       "Tur": ["טור"], "Beit Yosef": ["בית יוסף"]}
+    mock_get.return_value = MagicMock(status_code=200, json=MagicMock(return_value=[]))
+    without_rema = "הטור והבית יוסף.\n## סעיף א\nהמחבר פוסק.\n## סעיף ב\nהמחבר פוסק."
+    result = evaluate_draft(siman=94, draft_text=without_rema, config_path="config.yaml")
+    assert result["total_localized_flags"] == 1
+    assert "Commentators active in Sefaria source: Mechaber, Rema" in result["report"]
+    with_rema = without_rema.replace("## סעיף א\nהמחבר פוסק.", '## סעיף א\nהמחבר פוסק, והרמ"א מוסיף.')
+    assert evaluate_draft(siman=94, draft_text=with_rema, config_path="config.yaml")["success"] is True

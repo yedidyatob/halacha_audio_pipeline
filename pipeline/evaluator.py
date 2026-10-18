@@ -2,7 +2,7 @@ import re
 import requests
 from typing import Dict, List, Any, Set, Tuple, Optional
 from pipeline.config import PipelineConfig
-from pipeline.extractor import SefariaExtractor
+from pipeline.extractor import SefariaExtractor, RAMA_OPEN
 from pipeline.gematria import int_to_gematria, gematria_to_int
 from pipeline.logger import get_logger
 
@@ -176,9 +176,9 @@ def evaluate_draft(siman: int, draft_text: str, config_path: str = "config.yaml"
     for i in range(1, num_seifim + 1):
         commentators_by_seif[i].add("Mechaber")
         
-        # Check if Rema has a gloss in this Se'if
+        # The Rema has a gloss in this Se'if (inline or after הגה) if the extractor labeled one
         seif_text = shulchan_arukh_lines[i-1]
-        if "הגה" in seif_text:
+        if RAMA_OPEN in seif_text:
             commentators_by_seif[i].add("Rema")
 
     # 3. Parse the Draft into Se'ifim blocks
