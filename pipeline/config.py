@@ -234,6 +234,14 @@ class PipelineConfig:
             raise ValueError(f"'pronunciation.thinking_level' must be one of low, medium, high, got {value!r}.")
         return value
 
+    @property
+    def pronunciation_max_retries(self) -> int:
+        """Extra LLM calls after a failed pronunciation attempt (LLM error or rejected output)."""
+        value = self._pronunciation_value("max_retries")
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"'pronunciation.max_retries' must be a non-negative integer, got {value!r}.")
+        return value
+
     def _pronunciation_word_list(self, key: str) -> list:
         value = self._pronunciation_value(key)
         if not isinstance(value, list) or not all(isinstance(w, str) and w.strip() for w in value):

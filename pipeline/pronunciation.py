@@ -14,8 +14,10 @@ Validation (strict), word by word:
     added or removed (standard voweled spelling, e.g. עובר -> עֻבָּר, הקילו -> הֵקֵלּוּ) anywhere
     but at the start of the word;
   - no markup, no empty output.
-On any violation, or an LLM call failure, PronunciationError is raised. There is no
-fallback: the caller decides what to do (the pipeline fails that siman).
+A violation or an LLM call failure fails the attempt; PronunciationVocalizer retries with a
+new synchronous call up to pronunciation.max_retries times (each failure is logged), then
+raises PronunciationError with the last reason. There is no fallback: the caller decides what
+to do (the pipeline fails that siman).
 """
 
 from __future__ import annotations
@@ -174,15 +176,17 @@ def vocalize_pronunciation(script_text: str, generate: Callable[[str], str]) -> 
 
 class PronunciationVocalizer:
     """
-    The pronunciation stage, bound to its own generator (model, temperature), instruction
-    and thinking_level from config.yaml. The same request and the same validation are used
-    for a synchronous call and for a batch job.
+    The pronunciation stage, bound to its own generator (model, temperature), instruction,
+    thinking_level and max_retries from config.yaml. The same request and the same validation
+    are used for a synchronous call and for a batch job. A failed attempt (LLM error or
+    rejected output) is retried with a synchronous call, also after a batch job.
     """
 
-    def __init__(self, generator, instruction: str, thinking_level: Optional[str]):
+    def __init__(self, generator, instruction: str, thinking_level: Optional[str], max_retries: int):
         self.generator = generator
         self.instruction = instruction
         self.thinking_level = thinking_level
+        self.max_retries = max_retries
 
     @property
     def supports_batch(self) -> bool:
@@ -190,11 +194,8 @@ class PronunciationVocalizer:
         return isinstance(self.generator, BatchCapableGenerator)
 
     def vocalize(self, script_text: str) -> tuple[str, list[Change]]:
-        """Synchronous call. Raises PronunciationError on any failure."""
-        return vocalize_pronunciation(
-            script_text,
-            lambda text: self.generator.generate_text(self.instruction, text, thinking_level=self.thinking_level),
-        )
+        """Synchronous call, with retries. Raises PronunciationError if every attempt fails."""
+        return self._with_retries(script_text, lambda: self._vocalize_once(script_text))
 
     def submit_batch(self, script_text: str, custom_id: str, cache_dir: str) -> str:
         """Submits the request as a batch job; returns the job id."""
@@ -208,12 +209,37 @@ class PronunciationVocalizer:
         )
 
     def batch_result(self, script_text: str, job_id: str) -> tuple[str, list[Change]]:
-        """Fetches and validates a completed batch job. Raises PronunciationError on failure."""
+        """
+        Fetches and validates a completed batch job (the first attempt); if that fails, retries
+        with synchronous calls. Raises PronunciationError if every attempt fails.
+        """
+        return self._with_retries(script_text, lambda: self._batch_result_once(script_text, job_id))
+
+    def _vocalize_once(self, script_text: str) -> tuple[str, list[Change]]:
+        return vocalize_pronunciation(
+            script_text,
+            lambda text: self.generator.generate_text(self.instruction, text, thinking_level=self.thinking_level),
+        )
+
+    def _batch_result_once(self, script_text: str, job_id: str) -> tuple[str, list[Change]]:
         try:
             vocalized = self.generator.get_batch_result(job_id)
         except Exception as e:
             raise PronunciationError(f"pronunciation batch result unavailable: {e}") from e
         return parse_vocalized_response(script_text, vocalized)
+
+    def _with_retries(self, script_text: str, first_attempt: Callable[[], tuple[str, list[Change]]]):
+        """Runs first_attempt, then up to max_retries synchronous calls; returns the first valid result."""
+        attempts = self.max_retries + 1
+        for number in range(1, attempts + 1):
+            try:
+                return first_attempt() if number == 1 else self._vocalize_once(script_text)
+            except PronunciationError as e:
+                retrying = number < attempts
+                logger.warning(f"Pronunciation attempt {number}/{attempts} failed: {e}"
+                               + ("; retrying with a new call." if retrying else ""))
+                if not retrying:
+                    raise PronunciationError(f"{e} (after {attempts} attempt(s))") from e
 
 
 def create_pronunciation_vocalizer(config, generator_factory=None) -> PronunciationVocalizer:
@@ -222,4 +248,5 @@ def create_pronunciation_vocalizer(config, generator_factory=None) -> Pronunciat
         from pipeline.factory import create_pronunciation_generator as generator_factory
     generator = generator_factory(config)
     logger.info(f"Pronunciation stage via {config.pronunciation_engine} ({generator.model_name}).")
-    return PronunciationVocalizer(generator, config.pronunciation_instruction, config.pronunciation_thinking_level)
+    return PronunciationVocalizer(generator, config.pronunciation_instruction, config.pronunciation_thinking_level,
+                                  config.pronunciation_max_retries)

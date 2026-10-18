@@ -85,6 +85,8 @@ The pipeline runs in three stages:
 Configured in `config.yaml` (`pronunciation:` section + `pronunciation_instruction`; no code defaults).
 `pronunciation.thinking_level` (`low`/`medium`/`high`) sets the Gemini thinking level for this call
 only; it is required when `pronunciation.engine` is `gemini` and ignored for `openai`.
+`pronunciation.max_retries` is the number of extra calls after a failed attempt (LLM error, empty or
+rejected output; 0 = no retry); each failed attempt is logged as a warning with its reason.
 `pronunciation.always_vocalize` / `pronunciation.never_vocalize` are word lists filled into the
 `{always_vocalize}` / `{never_vocalize}` placeholders of the instruction (joined with ", "; an empty
 list renders as "אין").
@@ -94,8 +96,9 @@ alone. Validation is strict and word by word: words, whitespace and lines must b
 trailing whitespace / line endings may differ); with nikkud removed each word must equal the input
 word, except that ו / י may be added or removed for standard voweled spelling (עובר → עֻבָּר,
 הקילו → הֵקֵלּוּ), never as the word's first letter; every word that already had nikkud must be
-byte-identical; and no markup (`<...>`) may appear. There is no fallback: if the call fails or the
-output is invalid, that siman fails (no transcript, no TTS) and the run continues with the next siman.
+byte-identical; and no markup (`<...>`) may appear. There is no fallback: if every attempt fails,
+that siman fails with the last reason (no transcript, no TTS) and the run continues with the next
+siman.
 Letter names whose spelling must change (הא → הֵי) are handled by the dictionary stage
 (`NO_PREFIX_NIKKUD_DICT`), not by the LLM.
 
@@ -109,7 +112,8 @@ Standalone (Windows PowerShell, from the repo root):
 .venv\Scripts\python scripts\tts_from_file.py output\<file>_vocalized.txt
 ```
 
-`scripts/vocalize_pronunciation.py` writes nothing and exits with code 1 if the stage fails.
+`scripts/vocalize_pronunciation.py` retries like the pipeline (`pronunciation.max_retries`), then
+writes nothing and exits with code 1 if every attempt fails.
 
 ### Run summary and exit code
 
@@ -173,8 +177,10 @@ python main.py 94 --retrieve-batch <batch_id>
 With `--batch`, every LLM stage runs as batch jobs with polling, including pronunciation nikkud
 (Stage 3.5): one job per siman that polished successfully, using the `pronunciation:` engine,
 model, temperature and `thinking_level` (which may differ from the generator engine). Each result
-goes through the same validation as sync mode; a failed job, empty result or rejected output fails
-only that siman (stage "Stage 3.5 (Pronunciation nikkud)" in the run summary). The run stops at
+goes through the same validation as sync mode. An unavailable, empty or rejected batch result is retried with
+synchronous calls (same request, up to `pronunciation.max_retries`), so a rare bad output does not
+need another batch round; a failed job, or a result still invalid after the retries, fails only
+that siman (stage "Stage 3.5 (Pronunciation nikkud)" in the run summary). The run stops at
 startup if `pronunciation.engine` does not support batch.
 
 ---
