@@ -1,16 +1,17 @@
 """
-Pronunciation stage: wraps words the TTS engine is likely to mispronounce in
-ElevenLabs-style SSML phoneme tags with IPA:
+Pronunciation stage: an LLM adds nikkud ONLY to words the TTS engine could read in more
+than one way (context-dependent homographs such as עובר / פת / סופר, and letter names used
+as letters). The output is plain Hebrew text; there is no markup.
 
-    <phoneme alphabet="ipa" ph="tet">טית</phoneme>
+It runs after the dictionary nikkud stage (apply_nikkud), so its input may already contain
+vocalized words; the LLM must leave those exactly as they are.
 
-The tags are passed unchanged to every TTS engine (ElevenLabs v3/v4 honors them;
-Google TTS neither applies nor reads them aloud), so there is no per-engine logic here.
-
-Safety: the LLM must return the script word for word. The output is validated by
-stripping the tags and comparing with the input; on any difference, a malformed tag, or
-an LLM call failure, PronunciationTaggingError is raised. There is no untagged fallback:
-the caller decides what to do (the pipeline fails that siman).
+Validation (strict):
+  - with all nikkud removed, the output must equal the input (only trailing whitespace and
+    line endings may differ), and
+  - every word that already had nikkud in the input must be unchanged in the output.
+On any violation, or an LLM call failure, PronunciationError is raised. There is no
+fallback: the caller decides what to do (the pipeline fails that siman).
 """
 
 from __future__ import annotations
@@ -23,62 +24,35 @@ from pipeline.logger import get_logger
 
 logger = get_logger(__name__)
 
-# A single, well-formed tag: exact attribute form, non-empty ph, non-empty inner word,
-# no nested tags / angle brackets and no line breaks inside.
-PHONEME_TAG_RE = re.compile(
-    r'<phoneme alphabet="ipa" ph="(?P<ph>[^"<>\n\r]+)">(?P<word>[^<>\n\r]+)</phoneme>'
-)
+# Hebrew points and cantillation marks. Excludes maqaf (U+05BE), paseq (U+05C0),
+# sof pasuq (U+05C3) and nun hafukha (U+05C6), which are punctuation, not nikkud.
+_NIKKUD_RE = re.compile("[\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4\u05C5\u05C7]")
 
-# Anything that looks like a phoneme open or close tag (used to detect malformed markup).
-_ANY_PHONEME_MARKUP_RE = re.compile(r"</?\s*phoneme\b[^>]*>?", re.IGNORECASE)
+# Markup the LLM must never emit (e.g. leftover SSML / XML / HTML tags).
+_MARKUP_RE = re.compile(r"</?[A-Za-z][^<>]*>")
 
-# Lenient span pattern used by consumers (nikkud, TTS chunking) to protect tag spans.
-PHONEME_SPAN_RE = re.compile(r"<phoneme\b[^>]*>.*?</phoneme>", re.IGNORECASE | re.DOTALL)
+# Punctuation trimmed from the ends of a word in the review list of changed words.
+_EDGE_PUNCT = ".,;:!?()[]{}-\u05BE\u2013\u2014"
 
-
-class PronunciationTaggingError(RuntimeError):
-    """Raised when pronunciation tagging fails (LLM error or invalid tagged output)."""
+Change = tuple[str, str]  # (original word, vocalized word)
 
 
-def find_phoneme_spans(text: str) -> list[tuple[int, int]]:
-    """(start, end) offsets of every <phoneme ...>...</phoneme> span in text."""
-    return [m.span() for m in PHONEME_SPAN_RE.finditer(text)]
+class PronunciationError(RuntimeError):
+    """Raised when the pronunciation stage fails (LLM error or invalid output)."""
 
 
-def split_phoneme_segments(text: str) -> list[tuple[str, bool]]:
-    """Splits text into [(segment, is_tag), ...] preserving order; concatenation == text."""
-    segments: list[tuple[str, bool]] = []
-    pos = 0
-    for start, end in find_phoneme_spans(text):
-        if start > pos:
-            segments.append((text[pos:start], False))
-        segments.append((text[start:end], True))
-        pos = end
-    if pos < len(text) or not segments:
-        segments.append((text[pos:], False))
-    return segments
+def strip_nikkud(text: str) -> str:
+    """Removes Hebrew nikkud and cantillation marks, keeping letters and punctuation."""
+    return _NIKKUD_RE.sub("", text)
 
 
-def strip_phoneme_tags(text: str) -> str:
-    """Removes well-formed phoneme tags, keeping the inner (original) word."""
-    return PHONEME_TAG_RE.sub(lambda m: m.group("word"), text)
+def has_nikkud(text: str) -> bool:
+    return bool(_NIKKUD_RE.search(text))
 
 
-def extract_phoneme_pairs(text: str) -> list[tuple[str, str]]:
-    """List of (word, ipa) for every well-formed phoneme tag, in order of appearance."""
-    return [(m.group("word"), m.group("ph")) for m in PHONEME_TAG_RE.finditer(text)]
-
-
-def find_malformed_tags(text: str) -> list[str]:
-    """
-    Returns descriptions of malformed phoneme markup (empty list = all good):
-    unclosed / stray / nested tags, missing or empty ph, wrong alphabet, line breaks inside.
-    """
-    problems = []
-    remainder = PHONEME_TAG_RE.sub("", text)  # remove every valid tag
-    for m in _ANY_PHONEME_MARKUP_RE.finditer(remainder):
-        problems.append(m.group(0)[:80])
-    return problems
+def find_markup(text: str) -> list[str]:
+    """Tag-like markup (<...>) found in text."""
+    return [m.group(0)[:80] for m in _MARKUP_RE.finditer(text)]
 
 
 def _normalize(text: str) -> str:
@@ -89,7 +63,7 @@ def _normalize(text: str) -> str:
 
 def _diff_summary(expected: str, actual: str, max_lines: int = 6) -> str:
     diff = list(difflib.unified_diff(
-        expected.split("\n"), actual.split("\n"), "input", "output(stripped)", n=0, lineterm=""
+        expected.split("\n"), actual.split("\n"), "input", "output", n=0, lineterm=""
     ))
     changed = [l for l in diff if l[:1] in "+-" and not l.startswith(("+++", "---"))]
     shown = [l[:120] for l in changed[:max_lines]]
@@ -97,59 +71,77 @@ def _diff_summary(expected: str, actual: str, max_lines: int = 6) -> str:
     return f"{len(changed)} changed line(s): " + " | ".join(shown) + more
 
 
-def validate_tagged_output(original: str, tagged: str) -> Optional[str]:
-    """Returns None if `tagged` is a valid tagging of `original`, else a reason string."""
-    if not tagged or not tagged.strip():
+def _word_pairs(original: str, vocalized: str) -> list[Change]:
+    """
+    Aligned (input word, output word) pairs. Only valid once both texts are known to be
+    equal without nikkud, so whitespace splitting yields the same number of words.
+    """
+    return list(zip(_normalize(original).split(), _normalize(vocalized).split()))
+
+
+def validate_vocalized_output(original: str, vocalized: str) -> Optional[str]:
+    """Returns None if `vocalized` is a valid output for `original`, else a reason string."""
+    if not vocalized or not vocalized.strip():
         return "LLM returned empty output"
-    malformed = find_malformed_tags(tagged)
-    if malformed:
-        return f"malformed phoneme tag(s): {malformed[:5]}"
-    expected = _normalize(original)
-    actual = _normalize(strip_phoneme_tags(tagged))
+    markup = [m for m in find_markup(vocalized) if m not in original]
+    if markup:
+        return f"markup in output: {markup[:5]}"
+    expected = strip_nikkud(_normalize(original))
+    actual = strip_nikkud(_normalize(vocalized))
     if expected != actual:
-        return "text changed outside tags: " + _diff_summary(expected, actual)
+        return "text changed (ignoring nikkud): " + _diff_summary(expected, actual)
+    clobbered = [(a, b) for a, b in _word_pairs(original, vocalized) if a != b and has_nikkud(a)]
+    if clobbered:
+        shown = ", ".join(f"{a} -> {b}" for a, b in clobbered[:5])
+        return f"{len(clobbered)} already-vocalized word(s) changed: {shown}"
     return None
 
 
-def parse_tagged_response(script_text: str, tagged: str) -> tuple[str, list[tuple[str, str]]]:
+def changed_words(original: str, vocalized: str) -> list[Change]:
+    """(original, vocalized) for every word the stage vocalized, in order, edge punctuation trimmed."""
+    return [
+        (a.strip(_EDGE_PUNCT), b.strip(_EDGE_PUNCT))
+        for a, b in _word_pairs(original, vocalized)
+        if a != b
+    ]
+
+
+def format_changes(changes: list[Change]) -> str:
+    """'original<TAB>vocalized' per line."""
+    return "".join(f"{original}\t{vocalized}\n" for original, vocalized in changes)
+
+
+def parse_vocalized_response(script_text: str, vocalized: str) -> tuple[str, list[Change]]:
     """
-    Validates an LLM tagging response against the original script.
-    Returns (tagged_text, pairs); raises PronunciationTaggingError if the output is invalid
-    (empty, malformed tags, or text changed outside tags). Shared by sync and batch mode.
+    Validates an LLM response against the input script. Returns (text, changes); raises
+    PronunciationError if the output is invalid. Shared by sync and batch mode.
     """
-    reason = validate_tagged_output(script_text, tagged)
+    reason = validate_vocalized_output(script_text, vocalized)
     if reason:
-        raise PronunciationTaggingError(f"pronunciation tagging output rejected: {reason}")
-    tagged = tagged.replace("\r\n", "\n")
-    pairs = extract_phoneme_pairs(tagged)
-    logger.info(f"Pronunciation tagging: {len(pairs)} word(s) tagged.")
-    return tagged, pairs
+        raise PronunciationError(f"pronunciation output rejected: {reason}")
+    vocalized = vocalized.replace("\r\n", "\n")
+    changes = changed_words(script_text, vocalized)
+    logger.info(f"Pronunciation stage: {len(changes)} word(s) vocalized.")
+    return vocalized, changes
 
 
-def tag_pronunciation(script_text: str, generate: Callable[[str], str]) -> tuple[str, list[tuple[str, str]]]:
+def vocalize_pronunciation(script_text: str, generate: Callable[[str], str]) -> tuple[str, list[Change]]:
     """
-    Sends the script to the LLM via `generate(script_text) -> tagged_text` and validates.
-
-    Returns (tagged_text, pairs). Raises PronunciationTaggingError if the LLM call fails
-    or the output is invalid (text changed outside tags, malformed tags, empty output).
+    Sends the script to the LLM via `generate(script_text) -> text` and validates.
+    Returns (text, changes). Raises PronunciationError if the call fails or the output is invalid.
     """
     try:
-        tagged = generate(script_text)
+        vocalized = generate(script_text)
     except Exception as e:
-        raise PronunciationTaggingError(f"pronunciation tagging LLM call failed: {e}") from e
-    return parse_tagged_response(script_text, tagged)
+        raise PronunciationError(f"pronunciation LLM call failed: {e}") from e
+    return parse_vocalized_response(script_text, vocalized)
 
 
-def format_pairs(pairs: list[tuple[str, str]]) -> str:
-    """'word<TAB>ipa' per line."""
-    return "".join(f"{word}\t{ipa}\n" for word, ipa in pairs)
-
-
-class PronunciationTagger:
+class PronunciationVocalizer:
     """
-    The pronunciation-tagging stage, bound to its own generator (model, temperature),
-    instruction and thinking_level from config.yaml. The same request and the same
-    validation are used for a synchronous call and for a batch job.
+    The pronunciation stage, bound to its own generator (model, temperature), instruction
+    and thinking_level from config.yaml. The same request and the same validation are used
+    for a synchronous call and for a batch job.
     """
 
     def __init__(self, generator, instruction: str, thinking_level: Optional[str]):
@@ -162,15 +154,15 @@ class PronunciationTagger:
         from pipeline.generator import BatchCapableGenerator
         return isinstance(self.generator, BatchCapableGenerator)
 
-    def tag(self, script_text: str) -> tuple[str, list[tuple[str, str]]]:
-        """Synchronous tagging. Raises PronunciationTaggingError on any failure."""
-        return tag_pronunciation(
+    def vocalize(self, script_text: str) -> tuple[str, list[Change]]:
+        """Synchronous call. Raises PronunciationError on any failure."""
+        return vocalize_pronunciation(
             script_text,
             lambda text: self.generator.generate_text(self.instruction, text, thinking_level=self.thinking_level),
         )
 
     def submit_batch(self, script_text: str, custom_id: str, cache_dir: str) -> str:
-        """Submits the tagging request as a batch job; returns the job id."""
+        """Submits the request as a batch job; returns the job id."""
         return self.generator.submit_batch(
             system_instruction=self.instruction,
             user_prompt=script_text,
@@ -180,19 +172,19 @@ class PronunciationTagger:
             thinking_level=self.thinking_level,
         )
 
-    def batch_result(self, script_text: str, job_id: str) -> tuple[str, list[tuple[str, str]]]:
-        """Fetches and validates a completed batch job. Raises PronunciationTaggingError on failure."""
+    def batch_result(self, script_text: str, job_id: str) -> tuple[str, list[Change]]:
+        """Fetches and validates a completed batch job. Raises PronunciationError on failure."""
         try:
-            tagged = self.generator.get_batch_result(job_id)
+            vocalized = self.generator.get_batch_result(job_id)
         except Exception as e:
-            raise PronunciationTaggingError(f"pronunciation tagging batch result unavailable: {e}") from e
-        return parse_tagged_response(script_text, tagged)
+            raise PronunciationError(f"pronunciation batch result unavailable: {e}") from e
+        return parse_vocalized_response(script_text, vocalized)
 
 
-def create_pronunciation_tagger(config, generator_factory=None) -> PronunciationTagger:
-    """Builds the tagger from the 'pronunciation' section of config.yaml (ignores pronunciation.enabled)."""
+def create_pronunciation_vocalizer(config, generator_factory=None) -> PronunciationVocalizer:
+    """Builds the stage from the 'pronunciation' section of config.yaml (ignores pronunciation.enabled)."""
     if generator_factory is None:
         from pipeline.factory import create_pronunciation_generator as generator_factory
     generator = generator_factory(config)
-    logger.info(f"Pronunciation tagging via {config.pronunciation_engine} ({generator.model_name}).")
-    return PronunciationTagger(generator, config.pronunciation_instruction, config.pronunciation_thinking_level)
+    logger.info(f"Pronunciation stage via {config.pronunciation_engine} ({generator.model_name}).")
+    return PronunciationVocalizer(generator, config.pronunciation_instruction, config.pronunciation_thinking_level)

@@ -4,135 +4,97 @@ from unittest.mock import MagicMock, patch, mock_open
 import pytest
 
 from pipeline.pronunciation import (
-    strip_phoneme_tags, extract_phoneme_pairs, find_malformed_tags, validate_tagged_output,
-    tag_pronunciation, format_pairs, split_phoneme_segments, parse_tagged_response,
-    PronunciationTagger, create_pronunciation_tagger,
-    PronunciationTaggingError,
+    strip_nikkud, has_nikkud, find_markup, validate_vocalized_output, changed_words,
+    vocalize_pronunciation, format_changes, parse_vocalized_response,
+    PronunciationVocalizer, create_pronunciation_vocalizer, PronunciationError,
 )
 from pipeline.apply_nikkud import apply_nikkud_to_abbreviations
-from pipeline.tts import BaseTTS, _split_outside_phoneme
 
-TET = '<phoneme alphabet="ipa" ph="tet">טית</phoneme>'
-PAT = '<phoneme alphabet="ipa" ph="pat">פת</phoneme>'
-SOFER = '<phoneme alphabet="ipa" ph="taˈut soˈfer">טעות סופר</phoneme>'
-
-ORIG = "סימן טית עוסק בדין פת.\nזו טעות סופר בדברי הש\"ך.\n"
-TAGGED = f"סימן {TET} עוסק בדין {PAT}.\nזו {SOFER} בדברי הש\"ך.\n"
+# Input after the dictionary nikkud stage: השַׁךְ is already vocalized.
+ORIG = "סימן טית עוסק בדין פת.\nזו טעות סופר בדברי השַׁךְ.\n"
+VOCALIZED = "סימן טֵית עוסק בדין פַּת.\nזו טעות סוֹפֵר בדברי השַׁךְ.\n"
+CHANGES = [("טית", "טֵית"), ("פת", "פַּת"), ("סופר", "סוֹפֵר")]
 
 
-# --- strip / pairs -----------------------------------------------------------
+# --- nikkud helpers -----------------------------------------------------------
 
-def test_strip_keeps_inner_word():
-    assert strip_phoneme_tags(TAGGED) == ORIG
-
-
-def test_extract_pairs():
-    assert extract_phoneme_pairs(TAGGED) == [("טית", "tet"), ("פת", "pat"), ("טעות סופר", "taˈut soˈfer")]
-    assert format_pairs(extract_phoneme_pairs(TAGGED)).splitlines()[0] == "טית\ttet"
+def test_strip_nikkud_keeps_letters_and_punctuation():
+    assert strip_nikkud(VOCALIZED) == strip_nikkud(ORIG) == "סימן טית עוסק בדין פת.\nזו טעות סופר בדברי השך.\n"
+    assert strip_nikkud("בית־דין׀") == "בית־דין׀"  # maqaf / paseq are not nikkud
+    assert has_nikkud("טֵית") and not has_nikkud("טית")
 
 
-# --- validation (failures raise) ---------------------------------------------------
+def test_changed_words_and_format():
+    assert changed_words(ORIG, VOCALIZED) == CHANGES  # trailing punctuation trimmed
+    assert format_changes(CHANGES).splitlines()[0] == "טית\tטֵית"
 
-def test_valid_tagging_accepted():
-    text, pairs = tag_pronunciation(ORIG, lambda t: TAGGED)
-    assert text == TAGGED and len(pairs) == 3
+
+# --- validation (failures raise) -------------------------------------------------
+
+def test_valid_output_accepted():
+    text, changes = vocalize_pronunciation(ORIG, lambda t: VOCALIZED)
+    assert text == VOCALIZED and changes == CHANGES
+
+
+def test_no_changes_is_valid():
+    assert vocalize_pronunciation(ORIG, lambda t: ORIG) == (ORIG, [])
 
 
 def test_trivial_whitespace_differences_tolerated():
-    llm = TAGGED.replace("\n", "  \r\n").rstrip() + "\n\n"
-    assert validate_tagged_output(ORIG, llm) is None
+    llm = VOCALIZED.replace("\n", "  \r\n").rstrip() + "\n\n"
+    assert validate_vocalized_output(ORIG, llm) is None
 
 
-def test_changed_text_raises():
-    changed = TAGGED.replace("עוסק", "דן")
-    with pytest.raises(PronunciationTaggingError, match="text changed outside tags"):
-        tag_pronunciation(ORIG, lambda t: changed)
+@pytest.mark.parametrize("bad", [
+    VOCALIZED.replace("עוסק", "דן"),          # word replaced
+    VOCALIZED.replace("טֵית", "טֵיית"),        # letter added while vocalizing
+    VOCALIZED.replace("סימן ", "סימן  "),      # inner whitespace changed
+    VOCALIZED.replace("זו ", ""),              # word dropped
+])
+def test_text_change_raises(bad):
+    with pytest.raises(PronunciationError, match="text changed"):
+        vocalize_pronunciation(ORIG, lambda t: bad)
 
 
-def test_inner_word_changed_raises():
-    bad = TAGGED.replace(">טית<", ">טֵית<")
-    with pytest.raises(PronunciationTaggingError, match="text changed outside tags"):
-        tag_pronunciation(ORIG, lambda t: bad)
+def test_already_vocalized_word_must_stay_identical():
+    for bad in (VOCALIZED.replace("השַׁךְ", "הַשַּׁךְ"),   # nikkud added to a vocalized word
+                VOCALIZED.replace("השַׁךְ", "השך")):         # nikkud removed from it
+        with pytest.raises(PronunciationError, match="already-vocalized word"):
+            vocalize_pronunciation(ORIG, lambda t: bad)
+
+
+def test_markup_rejected():
+    bad = VOCALIZED.replace("טֵית", '<phoneme alphabet="ipa" ph="tet">טית</phoneme>')
+    assert find_markup(bad)
+    with pytest.raises(PronunciationError, match="markup in output"):
+        vocalize_pronunciation(ORIG, lambda t: bad)
 
 
 def test_llm_exception_raises():
     def boom(_):
         raise RuntimeError("network")
-    with pytest.raises(PronunciationTaggingError, match="LLM call failed: network"):
-        tag_pronunciation(ORIG, boom)
+    with pytest.raises(PronunciationError, match="LLM call failed: network"):
+        vocalize_pronunciation(ORIG, boom)
 
 
 def test_empty_output_raises():
-    with pytest.raises(PronunciationTaggingError, match="empty output"):
-        tag_pronunciation(ORIG, lambda t: "  ")
+    with pytest.raises(PronunciationError, match="empty output"):
+        vocalize_pronunciation(ORIG, lambda t: "  ")
 
 
-@pytest.mark.parametrize("bad_tag", [
-    '<phoneme alphabet="ipa" ph="tet">טית',                       # unclosed
-    'טית</phoneme>',                                              # stray close
-    '<phoneme alphabet="ipa">טית</phoneme>',                      # missing ph
-    '<phoneme alphabet="ipa" ph="">טית</phoneme>',                # empty ph
-    '<phoneme alphabet="ipa" ph="x"><phoneme alphabet="ipa" ph="tet">טית</phoneme></phoneme>',  # nested
-    '<phoneme alphabet="x-sampa" ph="tet">טית</phoneme>',          # wrong alphabet
-])
-def test_malformed_tags_rejected(bad_tag):
-    llm = f"סימן {bad_tag} עוסק בדין פת.\nזו טעות סופר בדברי הש\"ך.\n"
-    assert find_malformed_tags(llm)
-    with pytest.raises(PronunciationTaggingError, match="malformed phoneme tag"):
-        tag_pronunciation(ORIG, lambda t: llm)
+# --- dictionary nikkud stage ---------------------------------------------------
+
+def test_dictionary_respells_letter_name_he_in_letter_context():
+    assert apply_nikkud_to_abbreviations("סימן הא") == "סימן הֵי"
+    assert apply_nikkud_to_abbreviations("צדי הא") == "צָדִי הֵי"
+    assert apply_nikkud_to_abbreviations("הא דתניא") == "הא דתניא"  # not a letter name
 
 
-# --- nikkud skips tag spans --------------------------------------------------
-
-def test_nikkud_skips_tag_spans():
-    tag = '<phoneme alphabet="ipa" ph="ʃaχ">הש"ך</phoneme>'
-    text = f'סימן צדי {tag} והש"ך אומר'
+def test_dictionary_nikkud_leaves_llm_vocalized_words_alone():
+    text = 'סימן טֵית והשַׁךְ אומר הש"ך'
     out = apply_nikkud_to_abbreviations(text)
-    assert tag in out                       # inner word and ph untouched
-    assert out.endswith('והשַׁךְ אומר')       # outside text still nikkud'd
-    assert out.startswith("סימן צָדִי ")
-
-
-def test_nikkud_unchanged_without_tags():
-    assert apply_nikkud_to_abbreviations('הש"ך') == "השַׁךְ"
-
-
-def test_split_segments_roundtrip():
-    segs = split_phoneme_segments(TAGGED)
-    assert "".join(s for s, _ in segs) == TAGGED
-    assert [s for s, is_tag in segs if is_tag] == [TET, PAT, SOFER]
-
-
-# --- TTS chunker never splits inside a tag ---------------------------------
-
-class _DummyTTS(BaseTTS):
-    _chunk_size = 50
-
-    def _synthesize_chunk(self, text):
-        return b""
-
-
-def _assert_tags_intact(chunks):
-    for chunk in chunks:
-        assert chunk.count("<phoneme") == chunk.count("</phoneme>")
-
-
-def test_split_outside_phoneme():
-    assert _split_outside_phoneme(f"a {SOFER} b", " ") == ["a", SOFER, "b"]
-
-
-def test_chunker_word_split_keeps_tags():
-    text = " ".join(["מילה", SOFER] * 20)
-    chunks = _DummyTTS()._chunk_text(text, max_chars=60)
-    assert len(chunks) > 1
-    _assert_tags_intact(chunks)
-    assert "".join(strip_phoneme_tags(c).replace(" ", "") for c in chunks) == strip_phoneme_tags(text).replace(" ", "")
-
-
-def test_chunker_sentence_split_keeps_tags():
-    tag = '<phoneme alphabet="ipa" ph="a. b">א ב</phoneme>'  # '.' + space inside the tag
-    text = " ".join([f"משפט {tag} סוף."] * 15)
-    _assert_tags_intact(_DummyTTS()._chunk_text(text, max_chars=80))
+    assert out == 'סימן טֵית והשַׁךְ אומר השַׁךְ'
+    assert apply_nikkud_to_abbreviations(out) == out  # idempotent
 
 
 # --- config properties -------------------------------------------------------
@@ -165,8 +127,8 @@ pronunciation:
   engine: "Gemini"
   model_name: "m"
   temperature: 0.2
-  always_tag: []
-  never_tag: []
+  always_vocalize: []
+  never_vocalize: []
 """)
     assert cfg.pronunciation_enabled is True
     assert cfg.pronunciation_engine == "gemini"
@@ -179,7 +141,7 @@ def test_config_missing_section_errors():
     cfg = _config()
     for prop in ("pronunciation_enabled", "pronunciation_engine", "pronunciation_model_name",
                  "pronunciation_temperature", "pronunciation_instruction",
-                 "pronunciation_always_tag", "pronunciation_never_tag"):
+                 "pronunciation_always_vocalize", "pronunciation_never_vocalize"):
         with pytest.raises(ValueError, match="pronunciation"):
             getattr(cfg, prop)
 
@@ -208,7 +170,7 @@ pronunciation:
         cfg.pronunciation_engine
 
 
-PLACEHOLDER_PROMPT = 'תמיד: {always_tag} | לעולם: {never_tag} | <phoneme alphabet="ipa" ph="{x}">{y}</phoneme>'
+PLACEHOLDER_PROMPT = 'תמיד: {always_vocalize} | לעולם: {never_vocalize} | <phoneme alphabet="ipa" ph="{x}">{y}</phoneme>'
 
 
 def _placeholder_config(always, never):
@@ -219,15 +181,15 @@ pronunciation:
   engine: "gemini"
   model_name: "m"
   temperature: 0.2
-  always_tag: {always}
-  never_tag: {never}
+  always_vocalize: {always}
+  never_vocalize: {never}
 """)
 
 
 def test_instruction_placeholders_filled():
     cfg = _placeholder_config('["עובר בהמה", "כותח"]', '["דאורייתא", "דרבנן"]')
-    assert cfg.pronunciation_always_tag == ["עובר בהמה", "כותח"]
-    assert cfg.pronunciation_never_tag == ["דאורייתא", "דרבנן"]
+    assert cfg.pronunciation_always_vocalize == ["עובר בהמה", "כותח"]
+    assert cfg.pronunciation_never_vocalize == ["דאורייתא", "דרבנן"]
     assert cfg.pronunciation_instruction == (
         'תמיד: עובר בהמה, כותח | לעולם: דאורייתא, דרבנן | '
         '<phoneme alphabet="ipa" ph="{x}">{y}</phoneme>'  # other braces left untouched
@@ -241,19 +203,19 @@ def test_instruction_empty_lists_render_none_word():
 
 def test_instruction_missing_lists_error():
     cfg = _config("""
-pronunciation_instruction: "x {always_tag}"
+pronunciation_instruction: "x {always_vocalize}"
 pronunciation:
   enabled: true
 """)
-    with pytest.raises(ValueError, match="always_tag"):
+    with pytest.raises(ValueError, match="always_vocalize"):
         cfg.pronunciation_instruction
 
 
 @pytest.mark.parametrize("bad", ['"כותח"', '[1, 2]', '[""]'])
 def test_instruction_invalid_list_errors(bad):
     cfg = _placeholder_config(bad, "[]")
-    with pytest.raises(ValueError, match="always_tag"):
-        cfg.pronunciation_always_tag
+    with pytest.raises(ValueError, match="always_vocalize"):
+        cfg.pronunciation_always_vocalize
 
 
 def test_real_config_yaml_has_pronunciation():
@@ -261,61 +223,60 @@ def test_real_config_yaml_has_pronunciation():
     with patch("os.makedirs"):
         cfg = PipelineConfig("config.yaml")
     assert isinstance(cfg.pronunciation_enabled, bool)
-    assert "phoneme" in cfg.pronunciation_instruction
-    assert "{always_tag}" not in cfg.pronunciation_instruction
-    assert "{never_tag}" not in cfg.pronunciation_instruction
-    assert "תמיד לעטוף: עובר בהמה, כותח" in cfg.pronunciation_instruction
-    assert "לעולם לא לעטוף: דאורייתא, דרבנן" in cfg.pronunciation_instruction
+    instruction = cfg.pronunciation_instruction
+    assert "ניקוד" in instruction and "phoneme" not in instruction and "IPA" not in instruction
+    assert "{always_vocalize}" not in instruction and "{never_vocalize}" not in instruction
+    assert "תמיד לנקד: עובר בהמה, כותח" in instruction
+    assert "לעולם לא לנקד: דאורייתא, דרבנן" in instruction
 
 
 # --- stage wiring ------------------------------------------------------------
 
-def _tagger(level="low", temperature=0.2):
+def _vocalizer_with_gen(level="low", temperature=0.2):
     cfg = MagicMock(pronunciation_instruction="INSTR", pronunciation_thinking_level=level, pronunciation_engine="gemini")
     gen = MagicMock(model_name="m", temperature=temperature)
-    return create_pronunciation_tagger(cfg, generator_factory=lambda c: gen), gen
+    return create_pronunciation_vocalizer(cfg, generator_factory=lambda c: gen), gen
 
 
-def test_tagger_sync_uses_instruction_and_thinking_level():
-    tagger, gen = _tagger("low")
-    gen.generate_text.return_value = TAGGED
-    text, pairs = tagger.tag(ORIG)
-    assert text == TAGGED and len(pairs) == 3
+def test_vocalizer_sync_uses_instruction_and_thinking_level():
+    vocalizer, gen = _vocalizer_with_gen("low")
+    gen.generate_text.return_value = VOCALIZED
+    assert vocalizer.vocalize(ORIG) == (VOCALIZED, CHANGES)
     gen.generate_text.assert_called_once_with("INSTR", ORIG, thinking_level="low")
 
 
-def test_tagger_batch_request_uses_own_model_settings():
-    tagger, gen = _tagger("medium", temperature=0.35)
+def test_vocalizer_batch_request_uses_own_model_settings():
+    vocalizer, gen = _vocalizer_with_gen("medium", temperature=0.35)
     gen.submit_batch.return_value = "job-1"
-    assert tagger.submit_batch(ORIG, custom_id="c", cache_dir="cache") == "job-1"
+    assert vocalizer.submit_batch(ORIG, custom_id="c", cache_dir="cache") == "job-1"
     gen.submit_batch.assert_called_once_with(
         system_instruction="INSTR", user_prompt=ORIG, temperature=0.35,
         custom_id="c", cache_dir="cache", thinking_level="medium",
     )
 
 
-def test_tagger_batch_result_validated_like_sync():
-    tagger, gen = _tagger()
-    gen.get_batch_result.return_value = TAGGED
-    assert tagger.batch_result(ORIG, "job") == (TAGGED, extract_phoneme_pairs(TAGGED))
-    gen.get_batch_result.return_value = TAGGED.replace("עוסק", "דן")
-    with pytest.raises(PronunciationTaggingError, match="text changed outside tags"):
-        tagger.batch_result(ORIG, "job")
+def test_vocalizer_batch_result_validated_like_sync():
+    vocalizer, gen = _vocalizer_with_gen()
+    gen.get_batch_result.return_value = VOCALIZED
+    assert vocalizer.batch_result(ORIG, "job") == (VOCALIZED, CHANGES)
+    gen.get_batch_result.return_value = VOCALIZED.replace("עוסק", "דן")
+    with pytest.raises(PronunciationError, match="text changed"):
+        vocalizer.batch_result(ORIG, "job")
     gen.get_batch_result.side_effect = ValueError("Gemini batch returned empty text response.")
-    with pytest.raises(PronunciationTaggingError, match="batch result unavailable: Gemini batch returned empty"):
-        tagger.batch_result(ORIG, "job")
+    with pytest.raises(PronunciationError, match="batch result unavailable: Gemini batch returned empty"):
+        vocalizer.batch_result(ORIG, "job")
 
 
-def test_parse_tagged_response_shared_validation():
-    assert parse_tagged_response(ORIG, TAGGED.replace("\n", "\r\n"))[0] == TAGGED
-    with pytest.raises(PronunciationTaggingError, match="empty output"):
-        parse_tagged_response(ORIG, "")
+def test_parse_vocalized_response_shared_validation():
+    assert parse_vocalized_response(ORIG, VOCALIZED.replace("\n", "\r\n"))[0] == VOCALIZED
+    with pytest.raises(PronunciationError, match="empty output"):
+        parse_vocalized_response(ORIG, "")
 
 
-def test_tagger_supports_batch():
+def test_vocalizer_supports_batch():
     from pipeline.generator import BatchCapableGenerator
-    assert PronunciationTagger(MagicMock(spec=BatchCapableGenerator), "i", None).supports_batch
-    assert not PronunciationTagger(object(), "i", None).supports_batch
+    assert PronunciationVocalizer(MagicMock(spec=BatchCapableGenerator), "i", None).supports_batch
+    assert not PronunciationVocalizer(object(), "i", None).supports_batch
 
 
 def test_factory_creates_pronunciation_generator():
@@ -423,23 +384,20 @@ def test_gemini_other_calls_unaffected_by_thinking_level():
         assert getattr(call.kwargs.get("config"), "thinking_config", None) is None
 
 
-def test_main_save_transcript_without_tagging_skips_pronunciation_files(tmp_path):
+def test_main_save_transcript_without_pronunciation_stage(tmp_path):
     import main as main_mod
     cfg = MagicMock(output_dir=str(tmp_path), section_slug="YD")
-    out = main_mod.save_transcript(94, 'הש"ך', None, cfg, "m")
-    assert out == "השַׁךְ"
-    names = os.listdir(tmp_path)
-    assert "YD_Siman_94_m_transcript.txt" in names
-    assert not any("pronunciation" in n for n in names)
+    main_mod.save_transcript(94, ORIG, None, cfg, "m")
+    assert (tmp_path / "YD_Siman_94_m_transcript.txt").read_text(encoding="utf-8") == ORIG
+    assert not any("pronunciation" in n for n in os.listdir(tmp_path))
 
 
-def test_main_save_transcript_with_tagging_saves_outputs(tmp_path):
+def test_main_save_transcript_with_changes_list(tmp_path):
     import main as main_mod
     cfg = MagicMock(output_dir=str(tmp_path), section_slug="YD")
-    out = main_mod.save_transcript(94, TAGGED, [("טית", "tet")], cfg, "m")
-    assert TET in out
-    assert (tmp_path / "YD_Siman_94_m_pronunciation_tags.txt").read_text(encoding="utf-8") == "טית\ttet\n"
-    assert (tmp_path / "YD_Siman_94_m_pronunciation.txt").read_text(encoding="utf-8") == TAGGED
+    main_mod.save_transcript(94, VOCALIZED, CHANGES, cfg, "m")
+    assert (tmp_path / "YD_Siman_94_m_transcript.txt").read_text(encoding="utf-8") == VOCALIZED
+    assert (tmp_path / "YD_Siman_94_m_pronunciation_changes.txt").read_text(encoding="utf-8") == format_changes(CHANGES)
 
 
 def test_main_tts_failure_is_stage_error(tmp_path):
@@ -463,7 +421,7 @@ def test_run_summary_format():
         "===== Run summary =====\n"
         "Succeeded (2/3): 94, 96\n"
         "Failed (1/3): 95\n"
-        "  - Siman 95 | stage: Stage 3.4 (Pronunciation tagging) | reason: boom"
+        "  - Siman 95 | stage: Stage 3.5 (Pronunciation nikkud) | reason: boom"
     )
     empty = main_mod.RunSummary()
     empty.success(1)
@@ -508,31 +466,46 @@ def test_main_all_succeed_exits_zero(tmp_path, monkeypatch, caplog):
     assert "Succeeded (2/2): 94, 95" in caplog.text
 
 
-def test_tag_script_errors_without_writing(tmp_path, monkeypatch, capsys):
-    import scripts.tag_pronunciation as script
+def test_vocalize_script_errors_without_writing(tmp_path, monkeypatch, capsys):
+    import scripts.vocalize_pronunciation as script
     monkeypatch.chdir(tmp_path)  # script chdirs to the repo root; restore cwd afterwards
     src = tmp_path / "x_transcript.txt"
     src.write_text(ORIG, encoding="utf-8")
     gen = MagicMock(model_name="m")
-    gen.generate_text.return_value = TAGGED.replace("עוסק", "דן")
+    gen.generate_text.return_value = VOCALIZED.replace("עוסק", "דן")
     monkeypatch.setattr("pipeline.config.PipelineConfig", MagicMock())
-    monkeypatch.setattr("pipeline.pronunciation.create_pronunciation_tagger",
-                        lambda c: PronunciationTagger(gen, "INSTR", None))
+    monkeypatch.setattr("pipeline.pronunciation.create_pronunciation_vocalizer",
+                        lambda c: PronunciationVocalizer(gen, "INSTR", None))
     with pytest.raises(SystemExit) as exc:
         script.main([str(src)])
     assert exc.value.code == 1
-    assert "text changed outside tags" in capsys.readouterr().err
+    assert "text changed" in capsys.readouterr().err
     assert sorted(os.listdir(tmp_path)) == ["x_transcript.txt"]
+
+
+def test_vocalize_script_applies_dictionary_nikkud_first(tmp_path, monkeypatch):
+    import scripts.vocalize_pronunciation as script
+    monkeypatch.chdir(tmp_path)
+    src = tmp_path / "x.txt"
+    src.write_text('סימן הא והש"ך', encoding="utf-8")
+    gen = MagicMock(model_name="m")
+    gen.generate_text.side_effect = lambda instr, text, thinking_level: text
+    monkeypatch.setattr("pipeline.config.PipelineConfig", MagicMock())
+    monkeypatch.setattr("pipeline.pronunciation.create_pronunciation_vocalizer",
+                        lambda c: PronunciationVocalizer(gen, "INSTR", None))
+    script.main([str(src)])
+    assert gen.generate_text.call_args.args[1] == "סימן הֵי והשַׁךְ"
+    assert (tmp_path / "x_vocalized.txt").read_text(encoding="utf-8") == "סימן הֵי והשַׁךְ"
+    assert (tmp_path / "x_vocalized_changes.txt").read_text(encoding="utf-8") == ""
 
 
 # --- scripts ----------------------------------------------------------------
 
-def test_tag_script_args(tmp_path):
-    from scripts.tag_pronunciation import parse_args, tags_path_for
-    args = parse_args([str(tmp_path / "x_transcript.txt"), "--apply-nikkud"])
-    assert args.output == str(tmp_path / "x_transcript_tagged.txt")
-    assert args.apply_nikkud is True
-    assert tags_path_for(args.output) == str(tmp_path / "x_transcript_tagged_tags.txt")
+def test_vocalize_script_args(tmp_path):
+    from scripts.vocalize_pronunciation import parse_args, changes_path_for
+    args = parse_args([str(tmp_path / "x_transcript.txt")])
+    assert args.output == str(tmp_path / "x_transcript_vocalized.txt")
+    assert changes_path_for(args.output) == str(tmp_path / "x_transcript_vocalized_changes.txt")
 
 
 def test_tts_script_args(tmp_path):

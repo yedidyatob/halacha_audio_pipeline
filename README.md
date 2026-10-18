@@ -76,35 +76,42 @@ The pipeline runs in three stages:
 | **Stage 1** | Extract Halachic content from Sefaria API |
 | **Stage 2** | Analyze cross-simanim relations for context |
 | **Stage 3** | Generate polished TTS-ready script & synthesize audio |
-| **Stage 3.4** | Pronunciation tagging (optional, `pronunciation.enabled`): an LLM wraps likely-mispronounced words in `<phoneme alphabet="ipa" ph="...">word</phoneme>` tags |
-| **Stage 3.5** | Nikkud for rabbinic abbreviations (never touches text inside phoneme tags) |
+| **Stage 3.4** | Dictionary nikkud (`pipeline/apply_nikkud.py`): rabbinic abbreviations, fixed word corrections and letter names in a letter-name context (incl. the respelling הא → הֵי); never touches already-vocalized words |
+| **Stage 3.5** | Pronunciation nikkud (optional, `pronunciation.enabled`): an LLM adds nikkud only to context-ambiguous words (עובר → עֻבָּר, פת, סופר, letter names used as letters). Plain text, no markup |
+| **Stage 3.6** | Save the transcript, then TTS |
 
-### Pronunciation tags (Stage 3.4)
+### Pronunciation nikkud (Stage 3.5)
 
 Configured in `config.yaml` (`pronunciation:` section + `pronunciation_instruction`; no code defaults).
-`pronunciation.thinking_level` (`low`/`medium`/`high`) sets the Gemini thinking level for the tagging call
+`pronunciation.thinking_level` (`low`/`medium`/`high`) sets the Gemini thinking level for this call
 only; it is required when `pronunciation.engine` is `gemini` and ignored for `openai`.
-`pronunciation.always_tag` / `pronunciation.never_tag` are word lists filled into the `{always_tag}` /
-`{never_tag}` placeholders of the instruction (joined with ", "; an empty list renders as "אין").
-The output is validated: with the tags stripped it must equal the input exactly (only trailing
-whitespace / line endings may differ) and every tag must be well formed. There is no untagged fallback: if the LLM call fails or the output
-is invalid, that siman fails (no transcript, no TTS) and the run continues with the next siman. Tags are passed unchanged to every TTS engine
-(ElevenLabs v3/v4 honors them; Google TTS ignores them silently), and TTS chunking never splits a tag.
+`pronunciation.always_vocalize` / `pronunciation.never_vocalize` are word lists filled into the
+`{always_vocalize}` / `{never_vocalize}` placeholders of the instruction (joined with ", "; an empty
+list renders as "אין").
+
+The stage runs after the dictionary nikkud, and the LLM is told to leave already-vocalized words
+alone. Validation is strict: with all nikkud removed the output must equal the input (only trailing
+whitespace / line endings may differ), every word that already had nikkud must be byte-identical,
+and no markup (`<...>`) may appear. There is no fallback: if the call fails or the output is
+invalid, that siman fails (no transcript, no TTS) and the run continues with the next siman.
+Letter names whose spelling must change (הא → הֵי) are handled by the dictionary stage
+(`NO_PREFIX_NIKKUD_DICT`), not by the LLM.
 
 Standalone (Windows PowerShell, from the repo root):
 
 ```powershell
-# Tag an existing transcript (writes <input>_tagged.txt and <input>_tagged_tags.txt)
-.venv\Scripts\python scripts\tag_pronunciation.py output\<file>_transcript.txt --apply-nikkud
+# Dictionary nikkud + LLM pronunciation nikkud on any text file
+# (writes <input>_vocalized.txt and <input>_vocalized_changes.txt: original<TAB>vocalized per changed word)
+.venv\Scripts\python scripts\vocalize_pronunciation.py output\<file>.txt
 # Synthesize any text file with the TTS engine configured in config.yaml
-.venv\Scripts\python scripts\tts_from_file.py output\<file>_transcript_tagged.txt
+.venv\Scripts\python scripts\tts_from_file.py output\<file>_vocalized.txt
 ```
 
-`scripts/tag_pronunciation.py` likewise writes nothing and exits with code 1 if tagging fails.
+`scripts/vocalize_pronunciation.py` writes nothing and exits with code 1 if the stage fails.
 
 ### Run summary and exit code
 
-A failure in Stage 3 for one siman (polishing, pronunciation tagging, nikkud/transcript save, TTS)
+A failure in Stage 3 for one siman (polishing, dictionary nikkud, pronunciation nikkud, transcript save, TTS)
 fails only that siman; the remaining simanim still run. At the end, `main.py` logs a summary and
 exits with code 1 if any siman failed (0 otherwise):
 
@@ -112,7 +119,7 @@ exits with code 1 if any siman failed (0 otherwise):
 ===== Run summary =====
 Succeeded (2/3): 94, 96
 Failed (1/3): 95
-  - Siman 95 | stage: Stage 3.4 (Pronunciation tagging) | reason: pronunciation tagging output rejected: text changed outside tags: ...
+  - Siman 95 | stage: Stage 3.5 (Pronunciation nikkud) | reason: pronunciation output rejected: text changed (ignoring nikkud): ...
 ```
 
 Setup errors and Stage 1 / Stage 2 failures still abort the whole run immediately (exit 1),
@@ -161,11 +168,11 @@ python main.py 94 --context-range 87-111 --batch
 python main.py 94 --retrieve-batch <batch_id>
 ```
 
-With `--batch`, every LLM stage runs as batch jobs with polling, including pronunciation tagging
-(Stage 3.4): one tagging job per siman that polished successfully, using the `pronunciation:` engine,
+With `--batch`, every LLM stage runs as batch jobs with polling, including pronunciation nikkud
+(Stage 3.5): one job per siman that polished successfully, using the `pronunciation:` engine,
 model, temperature and `thinking_level` (which may differ from the generator engine). Each result
 goes through the same validation as sync mode; a failed job, empty result or rejected output fails
-only that siman (stage "Stage 3.4 (Pronunciation tagging)" in the run summary). The run stops at
+only that siman (stage "Stage 3.5 (Pronunciation nikkud)" in the run summary). The run stops at
 startup if `pronunciation.engine` does not support batch.
 
 ---
@@ -202,7 +209,7 @@ tts:
     
   elevenlabs:
     voice_id: "lJylpTXX0sNdqq5EUv4M"
-    chunk_size: 8000      # eleven_v4 allows 10,000 chars/request; headroom for <phoneme> markup
+    chunk_size: 8000      # eleven_v4 allows 10,000 chars/request
     context_chars: 500    # previous_text / next_text length for request stitching
     
   google:
@@ -216,11 +223,11 @@ tts:
 
 `tts.<engine>.chunk_size` (max characters per TTS request) is required for the selected engine and
 must be a positive integer; there are no defaults in code. Chunks are split at paragraph / sentence
-boundaries and never inside a `<phoneme>` tag.
+boundaries.
 
 **ElevenLabs request stitching:** every chunk is sent with `previous_text` (the last
 `context_chars` characters of the preceding chunk) and `next_text` (the first `context_chars`
-characters of the following chunk), with phoneme tags stripped and cut at a word boundary, so
+characters of the following chunk), cut at a word boundary, so
 prosody stays continuous across chunk boundaries. The first chunk has no `previous_text`, the last
 has no `next_text`, and a single-chunk text sends neither.
 
@@ -243,8 +250,7 @@ has no `next_text`, and a single-chunk text sends neither.
 output/
 ├── {section}_Siman_{N}_{model}_transcript.txt      # Latest transcript
 ├── {section}_Siman_{N}_{model}_transcript_YYYYMMDD_HHMMSS.txt  # Timestamped history
-├── {section}_Siman_{N}_{model}_pronunciation.txt       # Tagged script (before nikkud), if enabled
-├── {section}_Siman_{N}_{model}_pronunciation_tags.txt  # word<TAB>ipa per tagged word, if enabled
+├── {section}_Siman_{N}_{model}_pronunciation_changes.txt  # original<TAB>vocalized per LLM-vocalized word, if enabled
 ├── {section}_Siman_{N}_{model}.mp3               # Audio file
 ├── drafts/                                         # Stage 1 cached drafts
 │   └── {section}_Siman_{N}_{model}_draft.txt
