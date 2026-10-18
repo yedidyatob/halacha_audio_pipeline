@@ -13,6 +13,10 @@ sefaria:
 # Script Generator Engine Selection and Settings
 generator:
   engine: "gemini"  # "gemini" or "openai"
+  # Extra synchronous calls after a failed attempt in Stages 1-3 (drafts, relations, polish):
+  # API error, failed batch job / request, empty, blocked or cut-off response. 0 = no retry.
+  # In batch mode the batch job is the first attempt. (Stage 3.5 uses pronunciation.max_retries.)
+  max_retries: 1
   
   gemini:
     model_name: "gemini-3.1-pro-preview"

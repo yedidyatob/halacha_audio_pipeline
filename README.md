@@ -185,12 +185,20 @@ python main.py 94 --retrieve-batch <batch_id>
 
 With `--batch`, every LLM stage runs as batch jobs with polling, including pronunciation nikkud
 (Stage 3.5): one job per siman that polished successfully, using the `pronunciation:` engine,
-model, temperature and `thinking_level` (which may differ from the generator engine). Each result
-goes through the same validation as sync mode. An unavailable, empty or rejected batch result is retried with
-synchronous calls (same request, up to `pronunciation.max_retries`), so a rare bad output does not
-need another batch round; a failed job, or a result still invalid after the retries, fails only
-that siman (stage "Stage 3.5 (Pronunciation nikkud)" in the run summary). The run stops at
+model, temperature and `thinking_level` (which may differ from the generator engine). The run stops at
 startup if `pronunciation.engine` does not support batch.
+
+Failures and retries work the same way in every LLM stage, sync or batch. In batch mode the batch job
+is the first attempt. A failed submit, a failed job, or a failed request inside a job (the API's error
+code and message, or a blocked / cut-off / empty response named by its block or finish reason) is
+retried with synchronous calls for that item only, so one bad result never needs another batch round.
+Stages 1-3 retry up to `generator.max_retries` times. Stage 3.5 retries up to
+`pronunciation.max_retries` times, and its results also go through the same validation as sync mode.
+When an item still fails after its retries:
+- Stage 1 (drafts): every successful draft is already saved to the cache (each one as soon as it
+  arrives). The run then aborts, and a rerun only regenerates the missing drafts.
+- Stage 2 (relations map): the run aborts.
+- Stages 3 / 3.5: only that siman fails, and it appears in the end-of-run summary.
 
 ---
 
@@ -211,6 +219,9 @@ generator:
     temperature: 1.0
     service_tier: "auto"
 ```
+
+`generator.max_retries` is the number of extra synchronous calls after a failed attempt in Stages 1-3
+(API error, failed batch job or request, empty, blocked or cut-off response; 0 = no retry).
 
 ### TTS Engine
 

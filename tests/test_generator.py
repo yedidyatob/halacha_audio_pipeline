@@ -245,10 +245,11 @@ def test_openai_get_batch_result_completed(mock_openai_cls):
     mock_batch = MagicMock()
     mock_batch.status = "completed"
     mock_batch.output_file_id = "output-file-456"
+    mock_batch.error_file_id = None
     mock_client.batches.retrieve.return_value = mock_batch
     
     mock_content_response = MagicMock()
-    mock_content_response.text = '{"custom_id": "siman_94_generation", "response": {"status_code": 200, "body": {"choices": [{"message": {"content": "שיעור הלכה שלם ומפורט"}}]}}}\n'
+    mock_content_response.text = '{"custom_id": "siman_94_generation", "response": {"status_code": 200, "body": {"choices": [{"message": {"content": "שיעור הלכה שלם ומפורט"}, "finish_reason": "stop"}]}}, "error": null}\n'
     mock_client.files.content.return_value = mock_content_response
 
     generator = OpenAIScriptGenerator(api_key="fake-key", model_name="o1")

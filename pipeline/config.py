@@ -10,6 +10,12 @@ from pipeline.tts import (
 
 logger = get_logger(__name__)
 
+def _max_retries(value, key: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"'{key}' must be a non-negative integer, got {value!r}.")
+    return value
+
+
 class PipelineConfig:
     """
     Loads, parses, and validates the configuration file (config.yaml).
@@ -183,6 +189,17 @@ class PipelineConfig:
         
         logger.info("Configuration validated and directories established.")
 
+    @property
+    def generator_max_retries(self) -> int:
+        """
+        Extra synchronous calls after a failed generator attempt in Stages 1-3 (API error, failed
+        batch job or request, empty / blocked / cut-off response). Required: no code default.
+        """
+        value = (self.config_data.get("generator") or {}).get("max_retries")
+        if value is None:
+            raise ValueError("Missing required configuration parameter 'max_retries' under 'generator' in config.yaml.")
+        return _max_retries(value, "generator.max_retries")
+
     # ------------------------------------------------------------------
     # Pronunciation stage (LLM nikkud for ambiguous words). No defaults: every value
     # must come from config.yaml; a missing key raises a clear ValueError.
@@ -237,10 +254,7 @@ class PipelineConfig:
     @property
     def pronunciation_max_retries(self) -> int:
         """Extra LLM calls after a failed pronunciation attempt (LLM error or rejected output)."""
-        value = self._pronunciation_value("max_retries")
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ValueError(f"'pronunciation.max_retries' must be a non-negative integer, got {value!r}.")
-        return value
+        return _max_retries(self._pronunciation_value("max_retries"), "pronunciation.max_retries")
 
     def _pronunciation_word_list(self, key: str) -> list:
         value = self._pronunciation_value(key)

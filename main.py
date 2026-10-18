@@ -2,6 +2,8 @@ import os
 import argparse
 import sys
 import time
+from dataclasses import dataclass
+from typing import Any, Callable, Optional
 from dotenv import load_dotenv
 
 # Load environment variables from .env file at startup
@@ -25,9 +27,12 @@ from pipeline.factory import create_generator_engine, create_tts_engine
 from pipeline.gematria import int_to_gematria
 from pipeline.apply_nikkud import apply_nikkud_to_abbreviations
 from pipeline.pronunciation import create_pronunciation_vocalizer, format_changes
+from pipeline.retry import call_with_retries
 
 logger = get_logger("halacha_pipeline_cli")
 
+STAGE_DRAFTS = "Stage 1 (Drafts)"
+STAGE_RELATIONS = "Stage 2 (Relations)"
 STAGE_POLISH = "Stage 3 (Polishing)"
 STAGE_NIKKUD = "Stage 3.4 (Dictionary nikkud)"
 STAGE_PRONUNCIATION = "Stage 3.5 (Pronunciation nikkud)"
@@ -44,6 +49,11 @@ class SimanStageError(Exception):
         self.reason = reason
 
 
+def item_label(key) -> str:
+    """'Siman 94' for a siman, the key itself for a non-siman item (the Stage 2 relations map)."""
+    return f"Siman {key}" if isinstance(key, int) else str(key)
+
+
 def run_siman_stage(siman: int, stage: str, fn):
     """Runs fn(); any exception is logged and re-raised as SimanStageError(stage, reason)."""
     try:
@@ -51,7 +61,7 @@ def run_siman_stage(siman: int, stage: str, fn):
     except SimanStageError:
         raise
     except Exception as e:
-        logger.error(f"Siman {siman} failed at {stage}: {e}")
+        logger.error(f"{item_label(siman)} failed at {stage}: {e}")
         raise SimanStageError(stage, str(e)) from e
 
 
@@ -82,7 +92,7 @@ class RunSummary:
             + (", ".join(str(s) for s in self.failed) or "none"),
         ]
         for siman, (stage, reason) in self.failed.items():
-            lines.append(f"  - Siman {siman} | stage: {stage} | reason: {reason}")
+            lines.append(f"  - {item_label(siman)} | stage: {stage} | reason: {reason}")
         return "\n".join(lines)
 
     def log(self) -> None:
@@ -106,31 +116,152 @@ def run_per_siman(summary: RunSummary, items: dict, stage: str, fn) -> dict:
     return results
 
 
-def run_batch_stage(batch_generator, summary: RunSummary, items: dict, stage: str, submit, fetch, args) -> dict:
+@dataclass(frozen=True)
+class BatchCalls:
+    """How an LLM stage runs in batch mode: submit(key, value) -> job_id, fetch(key, value, job_id) -> result."""
+    generator: Any
+    submit: Callable[[Any, Any], str]
+    fetch: Callable[[Any, Any, str], Any]
+
+
+def _batch_first_attempts(batch: BatchCalls, items: dict, stage: str, args) -> dict:
     """
-    Batch counterpart of run_per_siman: submit(siman, value) -> job_id for every item,
-    poll all jobs, then fetch(siman, value, job_id) -> result for each completed job.
-    Submit errors, failed jobs and fetch errors fail only their siman.
+    Submits one batch job per item and polls them all. Returns {key: first_attempt}: fetching
+    the job's result, or raising the submit error / job failure.
     """
-    jobs = run_per_siman(summary, items, stage, submit)
-    if not jobs:
-        return {}
-    statuses = poll_batch_jobs(batch_generator, jobs, args.batch_poll_interval, args.batch_timeout,
-                               stage, raise_on_failure=False)
-    completed = {}
-    for siman, job_id in jobs.items():
-        if statuses[siman] == "failed":
-            summary.failure(siman, stage, f"batch job failed (job_id: {job_id})")
-        else:
-            completed[siman] = (items[siman], job_id)
-    return run_per_siman(summary, completed, stage, lambda siman, item: fetch(siman, *item))
+    def failed(reason: str):
+        def attempt():
+            raise RuntimeError(reason)
+        return attempt
+
+    attempts, jobs = {}, {}
+    for key, value in items.items():
+        try:
+            jobs[key] = batch.submit(key, value)
+        except Exception as e:
+            logger.error(f"{item_label(key)}: {stage} batch submit failed: {e}")
+            attempts[key] = failed(f"batch submit failed: {e}")
+    if jobs:
+        statuses = poll_batch_jobs(batch.generator, jobs, args.batch_poll_interval, args.batch_timeout, stage)
+        for key, job_id in jobs.items():
+            if statuses[key] == "failed":
+                attempts[key] = failed(f"batch job failed (job_id: {job_id})")
+            else:
+                attempts[key] = lambda key=key, job_id=job_id: batch.fetch(key, items[key], job_id)
+    return attempts
+
+
+def run_llm_stage(summary: RunSummary, items: dict, stage: str, call, max_retries: int, args,
+                  batch: BatchCalls, on_result: Optional[Callable[[Any, Any], None]] = None) -> dict:
+    """
+    Runs an LLM stage over {key: value}, sync or batch (args.batch). Each item gets a first
+    attempt - call(key, value), or in batch mode its batch job's result - and up to max_retries
+    synchronous call(key, value) retries (pipeline.retry). on_result(key, result) runs as soon
+    as an item succeeds (e.g. to save it). Returns {key: result} for the items that succeeded;
+    the others are recorded in the summary with the last reason.
+    """
+    first_attempts = _batch_first_attempts(batch, items, stage, args) if args.batch else {}
+
+    def attempt(key, value):
+        result = call_with_retries(lambda: call(key, value), max_retries, f"{item_label(key)} {stage}",
+                                   first_attempt=first_attempts.get(key))
+        if on_result is not None:
+            on_result(key, result)
+        return result
+
+    return run_per_siman(summary, items, stage, attempt)
+
+
+def abort_if_failed(summary: RunSummary, stage: str, saved: dict) -> None:
+    """Stages 1 and 2 are needed by every siman: any failure ends the run (after saving the rest)."""
+    if not summary.has_failures:
+        return
+    summary.log()
+    logger.error(f"{stage} failed; aborting the run. {len(saved)} result(s) were saved to the cache "
+                 f"and are reused on a rerun.")
+    sys.exit(1)
+
+
+def save_draft(siman: int, draft_text: str, config, model_suffix: str) -> None:
+    save_output_file(
+        directory=config.drafts_dir,
+        base_name=f"{config.section_slug}_Siman_{siman}_{model_suffix}_draft",
+        extension="txt",
+        content=draft_text,
+        logger=logger
+    )
+
+
+def generate_drafts(simanim: list, extractor, generator, config, args, model_suffix: str) -> dict:
+    """
+    Stage 1: {siman: draft} for the given simanim (sync or batch, with generator.max_retries).
+    Each draft is saved to the cache as soon as it is ready; if any siman still fails, the run
+    is aborted after all of them were tried.
+    """
+    summary = RunSummary()
+    contexts = run_per_siman(
+        summary, {siman: siman for siman in simanim}, STAGE_DRAFTS,
+        lambda siman, _: extractor.compile_simanim_context([siman], target_simanim=[siman])
+    )
+    commentators = config.section_metadata["prompt_commentators_desc"]
+    drafts = run_llm_stage(
+        summary, contexts, STAGE_DRAFTS,
+        call=lambda siman, context: generator.generate_siman_script(
+            siman=siman, master_context=context,
+            system_instruction=config.gemini_system_instruction, commentators_desc=commentators
+        ),
+        max_retries=config.generator_max_retries, args=args,
+        batch=BatchCalls(
+            generator,
+            submit=lambda siman, context: generator.submit_batch(
+                system_instruction=config.gemini_system_instruction,
+                user_prompt=generator._get_generation_user_prompt(int_to_gematria(siman), context, commentators),
+                temperature=generator.temperature,
+                custom_id=f"stage1_siman_{siman}",
+                cache_dir=config.cache_dir
+            ),
+            fetch=lambda siman, context, job_id: generator.get_batch_result(job_id),
+        ),
+        on_result=lambda siman, draft: save_draft(siman, draft, config, model_suffix),
+    )
+    abort_if_failed(summary, STAGE_DRAFTS, drafts)
+    return drafts
+
+
+RELATIONS_KEY = "Relations map"
+
+
+def generate_relations(drafts: dict, generator, config, args) -> str:
+    """Stage 2: the cross-siman relations map (sync or batch, with generator.max_retries). Aborts on failure."""
+    summary = RunSummary()
+    result = run_llm_stage(
+        summary, {RELATIONS_KEY: drafts}, STAGE_RELATIONS,
+        call=lambda _, drafts: generator.analyze_cross_relations(drafts, config.relations_instruction),
+        max_retries=config.generator_max_retries, args=args,
+        batch=BatchCalls(
+            generator,
+            submit=lambda _, drafts: generator.submit_batch(
+                system_instruction=config.relations_instruction,
+                user_prompt=generator._get_relations_user_prompt(drafts),
+                temperature=generator.temperature,
+                custom_id="stage2_relations",
+                cache_dir=config.cache_dir
+            ),
+            fetch=lambda _, drafts, job_id: generator.get_batch_result(job_id),
+        ),
+    )
+    abort_if_failed(summary, STAGE_RELATIONS, result)
+    return result[RELATIONS_KEY]
 
 
 def polish_simanim(drafts: dict, relations_text: str, generator, config, args, summary: RunSummary) -> dict:
-    """Stage 3: {siman: draft} -> {siman: polished_text}."""
-    if args.batch:
-        return run_batch_stage(
-            generator, summary, drafts, STAGE_POLISH,
+    """Stage 3: {siman: draft} -> {siman: polished_text} (sync or batch, with generator.max_retries)."""
+    return run_llm_stage(
+        summary, drafts, STAGE_POLISH,
+        call=lambda siman, draft: generator.polish_siman_script(draft, relations_text, config.polishing_instruction),
+        max_retries=config.generator_max_retries, args=args,
+        batch=BatchCalls(
+            generator,
             submit=lambda siman, draft: generator.submit_batch(
                 system_instruction=config.polishing_instruction,
                 user_prompt=generator._get_polishing_user_prompt(draft, relations_text),
@@ -139,11 +270,7 @@ def polish_simanim(drafts: dict, relations_text: str, generator, config, args, s
                 cache_dir=config.cache_dir
             ),
             fetch=lambda siman, draft, job_id: generator.get_batch_result(job_id),
-            args=args,
-        )
-    return run_per_siman(
-        summary, drafts, STAGE_POLISH,
-        lambda siman, draft: generator.polish_siman_script(draft, relations_text, config.polishing_instruction)
+        ),
     )
 
 
@@ -159,16 +286,18 @@ def vocalize_simanim(texts: dict, vocalizer, config, args, summary: RunSummary) 
     """
     if vocalizer is None:
         return {siman: (text, None) for siman, text in texts.items()}
-    if args.batch:
-        return run_batch_stage(
-            vocalizer.generator, summary, texts, STAGE_PRONUNCIATION,
+    return run_llm_stage(
+        summary, texts, STAGE_PRONUNCIATION,
+        call=lambda siman, text: vocalizer.vocalize_once(text),
+        max_retries=vocalizer.max_retries, args=args,
+        batch=BatchCalls(
+            vocalizer.generator,
             submit=lambda siman, text: vocalizer.submit_batch(
                 text, custom_id=f"stage3_5_siman_{siman}", cache_dir=config.cache_dir
             ),
             fetch=lambda siman, text, job_id: vocalizer.batch_result(text, job_id),
-            args=args,
-        )
-    return run_per_siman(summary, texts, STAGE_PRONUNCIATION, lambda siman, text: vocalizer.vocalize(text))
+        ),
+    )
 
 
 def save_transcript(siman: int, text: str, changes, config, model_suffix: str) -> None:
@@ -249,19 +378,16 @@ def run_lesson_stages(target_simanim: list, drafts: dict, relations_text: str, g
     return summary
 
 
-def poll_batch_jobs(generator, jobs: dict, poll_interval: int, timeout: int, stage_name: str, logger_ref=None,
-                    raise_on_failure: bool = True):
+def poll_batch_jobs(generator, jobs: dict, poll_interval: int, timeout: int, stage_name: str):
     """
     Polls a dict of {label: job_id} until all complete or timeout.
-    Returns {label: "completed" | "failed"}. Raises TimeoutError on timeout, and
-    RuntimeError on any failed job when raise_on_failure is True.
+    Returns {label: "completed" | "failed"}. Raises TimeoutError on timeout.
     """
-    log = logger_ref or logger
     start_time = time.time()
     pending = dict(jobs)
     results = {}
 
-    log.info(f"Polling {len(pending)} {stage_name} batch job(s) (interval: {poll_interval}s, timeout: {timeout}s)...")
+    logger.info(f"Polling {len(pending)} {stage_name} batch job(s) (interval: {poll_interval}s, timeout: {timeout}s)...")
 
     while pending:
         elapsed = time.time() - start_time
@@ -274,32 +400,28 @@ def poll_batch_jobs(generator, jobs: dict, poll_interval: int, timeout: int, sta
         for label, job_id in list(pending.items()):
             status = generator.get_batch_status(job_id)
             if status == "completed":
-                log.info(f"\u2705 {stage_name} batch job completed: {label}")
+                logger.info(f"\u2705 {stage_name} batch job completed: {label}")
                 results[label] = status
                 del pending[label]
             elif status == "failed":
-                log.error(f"\u274c {stage_name} batch job failed: {label} (job_id: {job_id})")
+                logger.error(f"\u274c {stage_name} batch job failed: {label} (job_id: {job_id})")
                 results[label] = status
                 del pending[label]
 
         if pending:
             elapsed_min = int((time.time() - start_time) / 60)
-            log.info(
+            logger.info(
                 f"\u23f3 {stage_name}: {len(pending)} job(s) still pending, "
                 f"{len(results)} completed. Elapsed: {elapsed_min}m. "
                 f"Polling again in {poll_interval}s..."
             )
             time.sleep(poll_interval)
 
-    # Check for any failures
     failed = [label for label, status in results.items() if status == "failed"]
-    if failed and raise_on_failure:
-        raise RuntimeError(f"{stage_name} batch jobs failed: {failed}")
-
     if failed:
-        log.error(f"{stage_name}: {len(failed)} of {len(results)} batch job(s) failed: {failed}")
+        logger.error(f"{stage_name}: {len(failed)} of {len(results)} batch job(s) failed: {failed}")
     else:
-        log.info(f"{stage_name}: All {len(results)} batch job(s) completed successfully.")
+        logger.info(f"{stage_name}: All {len(results)} batch job(s) completed successfully.")
     return results
 
 def parse_arguments():
@@ -401,6 +523,8 @@ def main():
     try:
         generator = create_generator_engine(config)
         model_suffix = generator.model_name.replace('.', '_')
+        logger.info(f"Stages 1-3 retry a failed call up to {config.generator_max_retries} time(s) "
+                    f"(generator.max_retries).")
     except Exception as e:
         logger.error(f"Generator Engine setup failed: {e}")
         sys.exit(1)
@@ -511,75 +635,10 @@ def main():
         else:
             missing_simanim.append(siman)
 
-    # Generate missing drafts
+    # Generate missing drafts (each saved as soon as it is ready; any failure aborts the run)
     if missing_simanim:
         logger.info(f"Generating missing Stage 1 drafts for Simanim: {missing_simanim}...")
-        
-        if args.batch:
-            # Batch mode: submit batch jobs for all missing drafts, poll until complete
-            logger.info("Submitting Stage 1 batch jobs for missing drafts...")
-            stage1_jobs = {}
-            for siman in missing_simanim:
-                try:
-                    logger.info(f"Compiling Sefaria context for Siman {siman}...")
-                    micro_context = extractor.compile_simanim_context([siman], target_simanim=[siman])
-                    gematria_siman = int_to_gematria(siman)
-                    user_prompt = generator._get_generation_user_prompt(
-                        gematria_siman, micro_context, config.section_metadata["prompt_commentators_desc"]
-                    )
-                    job_id = generator.submit_batch(
-                        system_instruction=config.gemini_system_instruction,
-                        user_prompt=user_prompt,
-                        temperature=generator.temperature,
-                        custom_id=f"stage1_siman_{siman}",
-                        cache_dir=config.cache_dir
-                    )
-                    stage1_jobs[siman] = job_id
-                    logger.info(f"Submitted Stage 1 batch job for Siman {siman}. Job ID: {job_id}")
-                except Exception as e:
-                    logger.error(f"Failed to submit Stage 1 batch job for Siman {siman}: {e}")
-                    sys.exit(1)
-
-            # Poll until all Stage 1 jobs complete
-            poll_batch_jobs(generator, stage1_jobs, args.batch_poll_interval, args.batch_timeout, "Stage 1 (Drafts)")
-
-            # Retrieve and save Stage 1 results
-            for siman, job_id in stage1_jobs.items():
-                draft_text = generator.get_batch_result(job_id)
-                drafts[siman] = draft_text
-                save_output_file(
-                    directory=config.drafts_dir,
-                    base_name=f"{config.section_slug}_Siman_{siman}_{model_suffix}_draft",
-                    extension="txt",
-                    content=draft_text,
-                    logger=logger
-                )
-        else:
-            # Normal synchronous mode
-            for siman in missing_simanim:
-                try:
-                    logger.info(f"Compiling Sefaria context for Siman {siman}...")
-                    micro_context = extractor.compile_simanim_context([siman], target_simanim=[siman])
-                    
-                    draft_text = generator.generate_siman_script(
-                        siman=siman,
-                        master_context=micro_context,
-                        system_instruction=config.gemini_system_instruction,
-                        commentators_desc=config.section_metadata["prompt_commentators_desc"]
-                    )
-                    drafts[siman] = draft_text
-                    
-                    # Save draft immediately
-                    save_output_file(
-                        directory=config.drafts_dir,
-                        base_name=f"{config.section_slug}_Siman_{siman}_{model_suffix}_draft",
-                        extension="txt",
-                        content=draft_text,
-                        logger=logger
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to extract Stage 1 draft for Siman {siman}: {e}")
-                    sys.exit(1)
+        drafts.update(generate_drafts(missing_simanim, extractor, generator, config, args, model_suffix))
 
     # 7.5 Run Heuristic Evaluation for resolved drafts
     logger.info("Executing Heuristic Evaluation on resolved drafts...")
@@ -612,26 +671,7 @@ def main():
     # 8. Generate relations map if it was not loaded
     if not relations_text:
         logger.info("Executing Stage 2: Cross-Siman Relations Analysis...")
-        if args.batch:
-            # Batch mode: submit relations analysis as batch job
-            user_prompt = generator._get_relations_user_prompt(drafts)
-            job_id = generator.submit_batch(
-                system_instruction=config.relations_instruction,
-                user_prompt=user_prompt,
-                temperature=generator.temperature,
-                custom_id="stage2_relations",
-                cache_dir=config.cache_dir
-            )
-            logger.info(f"Submitted Stage 2 batch job. Job ID: {job_id}")
-            poll_batch_jobs(generator, {"relations": job_id}, args.batch_poll_interval, args.batch_timeout, "Stage 2 (Relations)")
-            relations_text = generator.get_batch_result(job_id)
-        else:
-            # Synchronous mode
-            try:
-                relations_text = generator.analyze_cross_relations(drafts, config.relations_instruction)
-            except Exception as e:
-                logger.error(f"Stage 2 Relations Analysis failed: {e}")
-                sys.exit(1)
+        relations_text = generate_relations(drafts, generator, config, args)
 
         # Save relations map
         save_output_file(

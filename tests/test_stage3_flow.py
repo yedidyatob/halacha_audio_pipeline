@@ -50,7 +50,7 @@ class FakeBatchGenerator(BatchCapableGenerator):
 
 
 def _config(tmp_path):
-    return MagicMock(output_dir=str(tmp_path), section_slug="YD", cache_dir=str(tmp_path),
+    return MagicMock(output_dir=str(tmp_path), generator_max_retries=0, section_slug="YD", cache_dir=str(tmp_path),
                      polishing_instruction="POLISH")
 
 
@@ -89,7 +89,7 @@ def test_batch_pronunciation_failed_job_fails_that_siman(tmp_path):
     polish_gen = FakeBatchGenerator(lambda cid, prompt: prompt)
     voc_gen = FakeBatchGenerator(lambda cid, prompt: vocalized(prompt), failed_ids={"stage3_5_siman_95"})
     summary = _run(tmp_path, polish_gen, PronunciationVocalizer(voc_gen, "VOC", None, 0), batch=True)
-    assert summary.failed == {95: (main_mod.STAGE_PRONUNCIATION, "batch job failed (job_id: stage3_5_siman_95)")}
+    assert summary.failed == {95: (main_mod.STAGE_PRONUNCIATION, "batch job failed (job_id: stage3_5_siman_95) (after 1 attempt(s))")}
     assert _transcripts(tmp_path) == [94, 96, 97]
     assert not (tmp_path / "YD_Siman_95_m_pronunciation_changes.txt").exists()
 
@@ -127,7 +127,7 @@ def test_batch_pronunciation_rejected_result_retried_synchronously(tmp_path, cap
     assert voc_gen.sync_prompts == ["טית 95", "טית 96"]  # only rejected simanim retried
     assert len(voc_gen.submitted) == 4  # no second batch round
     assert TET in (tmp_path / "YD_Siman_95_m_transcript.txt").read_text(encoding="utf-8")
-    assert "Pronunciation attempt 1/2 failed" in caplog.text and "retrying" in caplog.text
+    assert "Siman 95 Stage 3.5 (Pronunciation nikkud) attempt 1/2 failed" in caplog.text and "retrying" in caplog.text
 
 
 def test_batch_mixed_simanim_summary(tmp_path, caplog):
@@ -139,7 +139,7 @@ def test_batch_mixed_simanim_summary(tmp_path, caplog):
                    drafts=drafts, targets=[93, 94, 95, 96])
     assert summary.succeeded == [94]
     assert summary.failed[93] == (main_mod.STAGE_POLISH, "Stage 1 draft is missing")
-    assert summary.failed[95] == (main_mod.STAGE_POLISH, "batch job failed (job_id: stage3_siman_95)")
+    assert summary.failed[95] == (main_mod.STAGE_POLISH, "batch job failed (job_id: stage3_siman_95) (after 1 attempt(s))")
     assert summary.failed[96][0] == main_mod.STAGE_PRONUNCIATION
     assert "markup in output" in summary.failed[96][1]
     # a siman that failed polish is never sent to the pronunciation stage
