@@ -215,6 +215,10 @@ failed so far, in sync mode as new sync calls and in batch mode as new batch job
 again (batch mode never falls back to sync calls). Stages 1-3 allow up to `generator.max_retries`
 rounds and Stage 3.5 up to `pronunciation.max_retries`; Stage 3.5 results also go through the same
 validation as sync mode.
+While jobs are polled, a status check that fails (network / API error) is retried up to
+`batch.status_retries` times with exponential backoff (`batch.status_retry_delay_seconds`, doubled
+per retry, at most `batch.status_retry_max_delay_seconds`). If every check fails, that job counts
+as a failed attempt and is resubmitted like any other.
 When an item still fails after its retries:
 - Stage 1 (drafts): every successful draft is already saved to the cache (each one as soon as it
   arrives). The run then aborts, and a rerun only regenerates the missing drafts.

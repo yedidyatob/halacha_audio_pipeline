@@ -7,7 +7,7 @@ from google.genai import types
 
 import main as main_mod
 from pipeline.generator import BatchCapableGenerator, GeminiScriptGenerator, OpenAIScriptGenerator
-from pipeline.retry import call_with_retries
+from pipeline.retry import Backoff, call_with_retries
 
 
 # --- Gemini: InlinedResponse carries `response` OR `error` ---------------------------
@@ -113,6 +113,18 @@ def test_call_with_retries(caplog):
     assert "Siman 94 X attempt 1/3 failed: again; retrying" in caplog.text
 
 
+def test_backoff_doubles_up_to_max():
+    assert [Backoff(2, 30).delay(n) for n in range(1, 6)] == [2, 4, 8, 16, 30]
+
+
+def test_call_with_retries_waits_with_backoff(caplog):
+    with patch("pipeline.retry.time.sleep") as sleep:
+        call = MagicMock(side_effect=[ConnectionError("reset"), ConnectionError("reset"), "ok"])
+        assert call_with_retries(call, 3, "status", backoff=Backoff(2, 3)) == "ok"
+    assert [c.args[0] for c in sleep.call_args_list] == [2, 3]
+    assert "status attempt 1/4 failed: reset; retrying in 2s." in caplog.text
+
+
 def test_call_with_retries_raises_last_reason():
     with pytest.raises(RuntimeError, match=r"^last \(after 2 attempt\(s\)\)$"):
         call_with_retries(MagicMock(side_effect=[ValueError("first"), ValueError("last")]), 1, "x")
@@ -145,6 +157,33 @@ def test_config_generator_max_retries(value):
     assert _config(f"  max_retries: {value}\n").generator_max_retries == value
 
 
+BATCH_YAML = "batch:\n  status_retries: 4\n  status_retry_delay_seconds: 2\n  status_retry_max_delay_seconds: 30\n"
+
+
+def test_config_batch_status_retry():
+    config = _config(BATCH_YAML)
+    assert config.batch_status_retries == 4 and config.batch_status_backoff == Backoff(2, 30)
+
+
+@pytest.mark.parametrize("old, new, message", [
+    ("  status_retries: 4\n", "", "'status_retries' under 'batch'"),
+    ("status_retries: 4", "status_retries: -1", "batch.status_retries' must be a non-negative integer"),
+    ("status_retry_delay_seconds: 2", "status_retry_delay_seconds: 0", "must be a positive number of seconds"),
+    ("status_retry_max_delay_seconds: 30", "status_retry_max_delay_seconds: 1", "must be at least"),
+])
+def test_config_batch_status_retry_invalid(old, new, message):
+    config = _config(BATCH_YAML.replace(old, new))
+    with pytest.raises(ValueError, match=message):
+        config.batch_status_retries, config.batch_status_backoff
+
+
+def test_real_config_batch_status_retry():
+    from pipeline.config import PipelineConfig
+    with patch("os.makedirs"):
+        config = PipelineConfig("config.yaml")
+    assert config.batch_status_retries == 4 and config.batch_status_backoff == Backoff(2, 30)
+
+
 def test_config_generator_max_retries_required():
     with pytest.raises(ValueError, match="'max_retries' under 'generator'"):
         _config("").generator_max_retries
@@ -175,6 +214,7 @@ class FakeGenerator(BatchCapableGenerator):
         self.batch, self.sync, self.failed_jobs = batch, sync, set(failed_jobs)
         self.model_name, self.temperature = "m", 0.2
         self.sync_calls, self.submitted = [], []
+        self.status_errors = {}
 
     def _answer(self, value):
         if isinstance(value, Exception):
@@ -187,6 +227,9 @@ class FakeGenerator(BatchCapableGenerator):
         return f"{custom_id}#{self.submitted.count(custom_id)}"
 
     def get_batch_status(self, job_id):
+        error = self.status_errors.get(job_id)
+        if error:  # a list of exceptions raised by consecutive status checks
+            raise error.pop(0)
         return "failed" if job_id in self.failed_jobs else "completed"
 
     def get_batch_result(self, job_id):
@@ -224,9 +267,10 @@ def cancelled(cid, rounds=(1,)):
     return lambda c, n: ValueError(CANCELLED.format(c)) if c == cid and n in rounds else f"draft {c} #{n}"
 
 
-def _cfg(tmp_path, retries):
+def _cfg(tmp_path, retries, status_retries=2):
     return MagicMock(drafts_dir=str(tmp_path), cache_dir=str(tmp_path), section_slug="YD",
-                     generator_max_retries=retries, section_metadata={"prompt_commentators_desc": "d"})
+                     generator_max_retries=retries, section_metadata={"prompt_commentators_desc": "d"},
+                     batch_status_retries=status_retries, batch_status_backoff=Backoff(1, 3))
 
 
 def _args(batch=True):
@@ -337,3 +381,37 @@ def test_stage3_polish_batch_retry_budget_then_fails_that_siman(tmp_path):
     assert gen.submitted == ["stage3_siman_94"] + ["stage3_siman_95"] * 3   # max_retries = 2 rounds
     assert gen.sync_calls == []
     assert summary.failed[95] == (main_mod.STAGE_POLISH, CANCELLED.format("stage3_siman_95") + " (after 3 attempt(s))")
+
+
+def test_poll_status_check_error_retried_with_backoff(tmp_path, caplog):
+    gen = FakeGenerator()
+    gen.status_errors["stage1_siman_95#1"] = [ConnectionError("Connection reset by peer")]
+    with patch("pipeline.retry.time.sleep") as sleep:
+        drafts = main_mod.generate_drafts([94, 95], _extractor(), gen, _cfg(tmp_path, 0), _args(), "m")
+    assert drafts == {94: "draft stage1_siman_94", 95: "draft stage1_siman_95"}
+    assert gen.submitted == ["stage1_siman_94", "stage1_siman_95"]   # not resubmitted
+    sleep.assert_called_once_with(1)
+    assert ("Stage 1 (Drafts) status check for Siman 95 (job_id: stage1_siman_95#1) attempt 1/3 failed: "
+            "Connection reset by peer; retrying in 1s.") in caplog.text
+
+
+def test_poll_status_check_exhausted_fails_job_then_resubmitted(tmp_path, caplog):
+    gen = FakeGenerator()
+    gen.status_errors["stage1_siman_95#1"] = [ConnectionError("down")] * 3
+    with patch("pipeline.retry.time.sleep"):
+        drafts = main_mod.generate_drafts([94, 95], _extractor(), gen, _cfg(tmp_path, 1), _args(), "m")
+    assert drafts == {94: "draft stage1_siman_94", 95: "draft stage1_siman_95"}
+    assert gen.submitted == ["stage1_siman_94", "stage1_siman_95", "stage1_siman_95"]
+    assert ("Siman 95 Stage 1 (Drafts) attempt 1/2 failed: batch status check failed "
+            "(job_id: stage1_siman_95#1, 3 check(s)): down; retrying.") in caplog.text
+
+
+def test_poll_status_check_exhausted_fails_only_that_siman_in_stage3(tmp_path):
+    gen = FakeGenerator(batch=lambda cid, n: f"polished {cid}")
+    gen.status_errors["stage3_siman_95#1"] = [ConnectionError("down")]
+    summary = main_mod.RunSummary()
+    polished = main_mod.polish_simanim({94: "d94", 95: "d95"}, "rel", gen, _cfg(tmp_path, 0, status_retries=0),
+                                       _args(), summary)
+    assert polished == {94: "polished stage3_siman_94"}
+    assert summary.failed[95] == (main_mod.STAGE_POLISH, "batch status check failed "
+                                  "(job_id: stage3_siman_95#1, 1 check(s)): down (after 1 attempt(s))")

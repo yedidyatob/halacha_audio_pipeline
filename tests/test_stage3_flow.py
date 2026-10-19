@@ -51,7 +51,7 @@ class FakeBatchGenerator(BatchCapableGenerator):
 
 def _config(tmp_path):
     return MagicMock(output_dir=str(tmp_path), generator_max_retries=0, section_slug="YD", cache_dir=str(tmp_path),
-                     polishing_instruction="POLISH")
+                     polishing_instruction="POLISH", batch_status_retries=0, batch_status_backoff=None)
 
 
 def _args(batch):

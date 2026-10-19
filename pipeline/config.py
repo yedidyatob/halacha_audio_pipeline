@@ -3,12 +3,19 @@ import yaml
 from typing import Dict, Any
 from pipeline.logger import get_logger
 from pipeline.domain import SECTIONS_METADATA
+from pipeline.retry import Backoff
 from pipeline.tts import (
     validate_gap_ms, validate_chunk_size, validate_context_chars,
     GOOGLE_TTS_MAX_INPUT_BYTES, GOOGLE_TTS_ASSUMED_BYTES_PER_CHAR,
 )
 
 logger = get_logger(__name__)
+
+def _seconds(value, key: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise ValueError(f"'{key}' must be a positive number of seconds, got {value!r}.")
+    return value
+
 
 def _max_retries(value, key: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -200,6 +207,30 @@ class PipelineConfig:
         if value is None:
             raise ValueError("Missing required configuration parameter 'max_retries' under 'generator' in config.yaml.")
         return _max_retries(value, "generator.max_retries")
+
+    # ------------------------------------------------------------------
+    # Batch mode (--batch). No defaults: every value must come from config.yaml.
+    # ------------------------------------------------------------------
+    def _batch_value(self, key: str):
+        section = self.config_data.get("batch")
+        if not isinstance(section, dict) or section.get(key) is None:
+            raise ValueError(f"Missing required configuration parameter '{key}' under 'batch' in config.yaml.")
+        return section[key]
+
+    @property
+    def batch_status_retries(self) -> int:
+        """Extra checks of a batch job's status after a failed one (network / API error)."""
+        return _max_retries(self._batch_value("status_retries"), "batch.status_retries")
+
+    @property
+    def batch_status_backoff(self) -> Backoff:
+        """Wait before each status-check retry: status_retry_delay_seconds, doubling up to the max."""
+        initial = _seconds(self._batch_value("status_retry_delay_seconds"), "batch.status_retry_delay_seconds")
+        maximum = _seconds(self._batch_value("status_retry_max_delay_seconds"), "batch.status_retry_max_delay_seconds")
+        if maximum < initial:
+            raise ValueError(f"'batch.status_retry_max_delay_seconds' ({maximum}) must be at least "
+                             f"'batch.status_retry_delay_seconds' ({initial}).")
+        return Backoff(initial, maximum)
 
     # ------------------------------------------------------------------
     # Pronunciation stage (LLM nikkud for ambiguous words). No defaults: every value

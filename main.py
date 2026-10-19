@@ -27,55 +27,9 @@ from pipeline.factory import create_generator_engine, create_tts_engine
 from pipeline.gematria import int_to_gematria
 from pipeline.apply_nikkud import apply_nikkud_to_abbreviations
 from pipeline.pronunciation import create_pronunciation_vocalizer, format_changes
+from pipeline.retry import call_with_retries
 
 logger = get_logger("halacha_pipeline_cli")
-
-
-def retry_with_backoff(
-    func: Callable[[], str],
-    max_retries: int = 5,
-    initial_delay: float = 2.0,
-    max_delay: float = 30.0,
-    retryable_exceptions: tuple = (Exception,)
-) -> str:
-    """
-    Retry a function with exponential backoff on specified exceptions.
-    
-    Args:
-        func: Function that returns a string result (job status)
-        max_retries: Maximum number of retry attempts
-        initial_delay: Starting delay in seconds
-        max_delay: Maximum delay in seconds
-        retryable_exceptions: Tuple of exception types to catch
-    
-    Returns:
-        Result from func() on success
-    
-    Raises:
-        Last exception if all retries fail
-    """
-    delay = initial_delay
-    last_exception = None
-    
-    for attempt in range(max_retries):
-        try:
-            return func()
-        except retryable_exceptions as e:
-            last_exception = e
-            if attempt < max_retries - 1:
-                logger.warning(
-                    f"Network error (attempt {attempt + 1}/{max_retries}): {type(e).__name__}. "
-                    f"Retrying in {delay:.1f}s..."
-                )
-                time.sleep(delay)
-                delay = min(delay * 2, max_delay)
-            else:
-                logger.error(
-                    f"Network error (attempt {attempt + 1}/{max_retries}): {type(e).__name__}. "
-                    f"No more retries remaining."
-                )
-    
-    raise last_exception
 
 
 STAGE_DRAFTS = "Stage 1 (Drafts)"
@@ -184,7 +138,7 @@ def _sync_round(call, items: dict, accept) -> dict:
     return errors
 
 
-def _batch_round(batch: BatchCalls, items: dict, stage: str, args, accept) -> dict:
+def _batch_round(batch: BatchCalls, items: dict, stage: str, args, config, accept) -> dict:
     """
     One batch job per item, all polled together; accept(key, result) as each result is fetched.
     Returns {key: error} for failed submits, failed jobs and failed results.
@@ -198,10 +152,10 @@ def _batch_round(batch: BatchCalls, items: dict, stage: str, args, accept) -> di
         else:
             logger.info(f"Submitted {stage} batch job for {item_label(key)}. Job ID: {jobs[key]}")
     if jobs:
-        statuses = poll_batch_jobs(batch.generator, jobs, args.batch_poll_interval, args.batch_timeout, stage)
+        failures = poll_batch_jobs(batch.generator, jobs, stage, args, config)
         for key, job_id in jobs.items():
-            if statuses[key] == "failed":
-                errors[key] = RuntimeError(f"batch job failed (job_id: {job_id})")
+            if failures[key]:
+                errors[key] = RuntimeError(failures[key])
                 continue
             try:
                 result = batch.fetch(key, items[key], job_id)
@@ -212,7 +166,7 @@ def _batch_round(batch: BatchCalls, items: dict, stage: str, args, accept) -> di
     return errors
 
 
-def run_llm_stage(summary: RunSummary, items: dict, stage: str, call, max_retries: int, args,
+def run_llm_stage(summary: RunSummary, items: dict, stage: str, call, max_retries: int, args, config,
                   batch: BatchCalls, on_result: Optional[Callable[[Any, Any], None]] = None) -> dict:
     """
     Runs an LLM stage over {key: value} in rounds: the first round covers every item, and each of
@@ -239,7 +193,7 @@ def run_llm_stage(summary: RunSummary, items: dict, stage: str, call, max_retrie
             logger.info(f"{stage}: retry round {number - 1}/{max_retries} for {len(pending)} item(s)"
                         + (" as new batch jobs." if args.batch else "."))
         if args.batch:
-            errors = _batch_round(batch, pending, stage, args, accept)
+            errors = _batch_round(batch, pending, stage, args, config, accept)
         else:
             errors = _sync_round(call, pending, accept)
         errors = {key: errors[key] for key in items if key in errors}  # item order
@@ -310,7 +264,7 @@ def generate_drafts(simanim: list, extractor, generator, config, args, model_suf
             siman=siman, master_context=context,
             system_instruction=config.gemini_system_instruction, commentators_desc=commentators
         ),
-        max_retries=config.generator_max_retries, args=args,
+        max_retries=config.generator_max_retries, args=args, config=config,
         batch=BatchCalls(
             generator,
             submit=lambda siman, context: generator.submit_batch(
@@ -338,7 +292,7 @@ def generate_relations(drafts: dict, generator, config, args) -> str:
     result = run_llm_stage(
         summary, {RELATIONS_KEY: drafts}, STAGE_RELATIONS,
         call=lambda _, drafts: generator.analyze_cross_relations(drafts, config.relations_instruction),
-        max_retries=config.generator_max_retries, args=args,
+        max_retries=config.generator_max_retries, args=args, config=config,
         batch=BatchCalls(
             generator,
             submit=lambda _, drafts: generator.submit_batch(
@@ -360,7 +314,7 @@ def polish_simanim(drafts: dict, relations_text: str, generator, config, args, s
     return run_llm_stage(
         summary, drafts, STAGE_POLISH,
         call=lambda siman, draft: generator.polish_siman_script(draft, relations_text, config.polishing_instruction),
-        max_retries=config.generator_max_retries, args=args,
+        max_retries=config.generator_max_retries, args=args, config=config,
         batch=BatchCalls(
             generator,
             submit=lambda siman, draft: generator.submit_batch(
@@ -390,7 +344,7 @@ def vocalize_simanim(texts: dict, vocalizer, config, args, summary: RunSummary) 
     return run_llm_stage(
         summary, texts, STAGE_PRONUNCIATION,
         call=lambda siman, text: vocalizer.vocalize_once(text),
-        max_retries=vocalizer.max_retries, args=args,
+        max_retries=vocalizer.max_retries, args=args, config=config,
         batch=BatchCalls(
             vocalizer.generator,
             submit=lambda siman, text: vocalizer.submit_batch(
@@ -615,11 +569,14 @@ def run_lesson_stages(target_simanim: list, drafts: dict, relations_text: str, g
     return summary
 
 
-def poll_batch_jobs(generator, jobs: dict, poll_interval: int, timeout: int, stage_name: str):
+def poll_batch_jobs(generator, jobs: dict, stage_name: str, args, config) -> dict:
     """
-    Polls a dict of {label: job_id} until all complete or timeout.
-    Returns {label: "completed" | "failed"}. Raises TimeoutError on timeout.
+    Polls {label: job_id} every --batch-poll-interval seconds until every job is done.
+    Returns {label: None if completed, else the failure reason}. A status check that fails
+    (network / API error) is retried with backoff (batch.status_retries in config.yaml); if it
+    still fails, that job counts as failed. Raises TimeoutError after --batch-timeout seconds.
     """
+    poll_interval, timeout = args.batch_poll_interval, args.batch_timeout
     start_time = time.time()
     pending = dict(jobs)
     results = {}
@@ -635,31 +592,25 @@ def poll_batch_jobs(generator, jobs: dict, poll_interval: int, timeout: int, sta
             )
 
         for label, job_id in list(pending.items()):
-            # Wrap the get_batch_status call with retry logic
-            def get_status():
-                return generator.get_batch_status(job_id)
-            
             try:
-                status = retry_with_backoff(
-                    get_status,
-                    max_retries=5,
-                    initial_delay=2.0,
-                    max_delay=30.0,
-                    retryable_exceptions=(Exception,)
+                status = call_with_retries(
+                    lambda: generator.get_batch_status(job_id), config.batch_status_retries,
+                    f"{stage_name} status check for {item_label(label)} (job_id: {job_id})",
+                    backoff=config.batch_status_backoff,
                 )
-            except Exception as e:
-                logger.error(f"Failed to get status for {label} (job_id: {job_id}): {e}")
-                results[label] = "failed"
+            except RuntimeError as e:
+                checks = config.batch_status_retries + 1
+                results[label] = f"batch status check failed (job_id: {job_id}, {checks} check(s)): {e.__cause__}"
+                logger.error(f"\u274c {stage_name} {results[label]}")
                 del pending[label]
                 continue
-                
             if status == "completed":
                 logger.info(f"\u2705 {stage_name} batch job completed: {label}")
-                results[label] = status
+                results[label] = None
                 del pending[label]
             elif status == "failed":
                 logger.error(f"\u274c {stage_name} batch job failed: {label} (job_id: {job_id})")
-                results[label] = status
+                results[label] = f"batch job failed (job_id: {job_id})"
                 del pending[label]
 
         if pending:
@@ -671,7 +622,7 @@ def poll_batch_jobs(generator, jobs: dict, poll_interval: int, timeout: int, sta
             )
             time.sleep(poll_interval)
 
-    failed = [label for label, status in results.items() if status == "failed"]
+    failed = [label for label, reason in results.items() if reason]
     if failed:
         logger.error(f"{stage_name}: {len(failed)} of {len(results)} batch job(s) failed: {failed}")
     else:
