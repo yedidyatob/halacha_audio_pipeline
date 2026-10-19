@@ -207,7 +207,8 @@ model, temperature and `thinking_level` (which may differ from the generator eng
 startup if `pronunciation.engine` does not support batch.
 
 Failures and retries work the same way in every LLM stage. A failed attempt is a failed call in sync
-mode; in batch mode a failed submit, a failed job, or a failed request inside a succeeded job (logged
+mode; in batch mode a failed submit, a job the API reports as failed / cancelled / expired, or a failed
+request inside a succeeded job, including a Stage 3.5 output rejected by validation (logged
 with the API's error code and message, e.g. `error code 1 (CANCELLED): The operation was cancelled.`,
 or a blocked / cut-off / empty response named by its block or finish reason). Every failed attempt is
 logged as a warning. Retries run in rounds: each round retries all the items of the stage that have
@@ -215,15 +216,19 @@ failed so far, in sync mode as new sync calls and in batch mode as new batch job
 again (batch mode never falls back to sync calls). Stages 1-3 allow up to `generator.max_retries`
 rounds and Stage 3.5 up to `pronunciation.max_retries`; Stage 3.5 results also go through the same
 validation as sync mode.
-While jobs are polled, a status check that fails (network / API error) is retried up to
-`batch.status_retries` times with exponential backoff (`batch.status_retry_delay_seconds`, doubled
-per retry, at most `batch.status_retry_max_delay_seconds`). If every check fails, that job counts
-as a failed attempt and is resubmitted like any other.
 When an item still fails after its retries:
 - Stage 1 (drafts): every successful draft is already saved to the cache (each one as soon as it
   arrives). The run then aborts, and a rerun only regenerates the missing drafts.
 - Stage 2 (relations map): the run aborts.
 - Stages 3 / 3.5: only that siman fails, and it appears in the end-of-run summary.
+
+A failed status check or result fetch while polling (network / API error) says nothing about the
+job, which may still be running or already done. It is logged as a warning and simply tried again
+at the next poll (`--batch-poll-interval`); the job is never marked failed or resubmitted for it.
+Each result is fetched (and a Stage 1 draft saved) as soon as its job completes. If
+`--batch-timeout` expires first, the run stops with an error listing every unresolved job id per
+siman and why it is unresolved (still pending, status check failed, or result fetch failed), so the
+results can be fetched later.
 
 ---
 

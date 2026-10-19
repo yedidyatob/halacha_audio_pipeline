@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import main as main_mod
-from pipeline.generator import BatchCapableGenerator
+from pipeline.generator import BatchCapableGenerator, BatchResultError
 from pipeline.pronunciation import PronunciationVocalizer
 
 TET = "טֵית"
@@ -51,7 +51,7 @@ class FakeBatchGenerator(BatchCapableGenerator):
 
 def _config(tmp_path):
     return MagicMock(output_dir=str(tmp_path), generator_max_retries=0, section_slug="YD", cache_dir=str(tmp_path),
-                     polishing_instruction="POLISH", batch_status_retries=0, batch_status_backoff=None)
+                     polishing_instruction="POLISH")
 
 
 def _args(batch):
@@ -99,7 +99,7 @@ def test_batch_pronunciation_validation_failure_and_empty_result(tmp_path):
         if cid.endswith("_95"):
             return prompt.replace("95", "99")  # a word changed
         if cid.endswith("_96"):
-            raise ValueError("Gemini batch returned empty text response.")
+            raise BatchResultError("Gemini batch returned empty text response.")
         return vocalized(prompt)
     polish_gen = FakeBatchGenerator(lambda cid, prompt: prompt)
     summary = _run(tmp_path, polish_gen, PronunciationVocalizer(FakeBatchGenerator(respond), "VOC", None, 0), batch=True)

@@ -10,16 +10,6 @@ sefaria:
   retries: 3
   ssl_verify: false
 
-# Batch mode (--batch): checking a submitted job's status
-batch:
-  # Extra status checks after a failed one (network / API error), waiting with exponential
-  # backoff: status_retry_delay_seconds, doubled per retry, at most status_retry_max_delay_seconds.
-  # If every check fails the job counts as failed, and the stage resubmits it within its retry
-  # budget (generator.max_retries / pronunciation.max_retries).
-  status_retries: 4
-  status_retry_delay_seconds: 2
-  status_retry_max_delay_seconds: 30
-
 # Script Generator Engine Selection and Settings
 generator:
   engine: "gemini"  # "gemini" or "openai"

@@ -3,6 +3,8 @@ from unittest.mock import MagicMock, patch, mock_open
 
 import pytest
 
+from pipeline.generator import BatchResultError
+
 from pipeline.pronunciation import (
     strip_nikkud, has_nikkud, find_markup, validate_vocalized_output, changed_words,
     vocalize_pronunciation, format_changes, parse_vocalized_response,
@@ -354,10 +356,8 @@ def test_vocalizer_batch_result_validated_like_sync():
     gen.get_batch_result.return_value = VOCALIZED
     assert vocalizer.batch_result(ORIG, "job") == (VOCALIZED, CHANGES)
     gen.get_batch_result.return_value = VOCALIZED.replace("עוסק", "דן")
-    with pytest.raises(PronunciationError, match="עוסק -> דן"):
-        vocalizer.batch_result(ORIG, "job")
-    gen.get_batch_result.side_effect = ValueError("Gemini batch returned empty text response.")
-    with pytest.raises(PronunciationError, match="batch result unavailable: Gemini batch returned empty"):
+    # a rejected output is an unusable result: the pipeline resubmits it as a new batch job
+    with pytest.raises(BatchResultError, match="pronunciation output rejected: .*עוסק -> דן"):
         vocalizer.batch_result(ORIG, "job")
 
 
@@ -407,10 +407,14 @@ def test_batch_result_is_one_attempt():
     # retries after a batch result are run by the pipeline (main.run_llm_stage, see test_stage3_flow)
     vocalizer, gen = _retrying_vocalizer(1)
     gen.get_batch_result.return_value = REJECTED
-    with pytest.raises(PronunciationError, match="עוסק -> דן"):
+    with pytest.raises(BatchResultError, match="עוסק -> דן"):
         vocalizer.batch_result(ORIG, "job")
-    gen.get_batch_result.side_effect = ValueError("Gemini batch request failed (job j): error code 13: Internal")
-    with pytest.raises(PronunciationError, match="batch result unavailable: .*error code 13"):
+    # the generator's BatchResultError and fetch (network) errors pass through unchanged
+    gen.get_batch_result.side_effect = BatchResultError("Gemini batch request failed (job j): error code 13: Internal")
+    with pytest.raises(BatchResultError, match="error code 13"):
+        vocalizer.batch_result(ORIG, "job")
+    gen.get_batch_result.side_effect = ConnectionError("reset")
+    with pytest.raises(ConnectionError):
         vocalizer.batch_result(ORIG, "job")
     gen.generate_text.assert_not_called()
 

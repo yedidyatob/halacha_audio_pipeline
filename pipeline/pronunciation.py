@@ -220,12 +220,17 @@ class PronunciationVocalizer:
         )
 
     def batch_result(self, script_text: str, job_id: str) -> tuple[str, list[Change]]:
-        """Fetches and validates a completed batch job (one attempt). Raises PronunciationError on failure."""
+        """
+        Fetches and validates a completed batch job (one attempt). Raises BatchResultError if the
+        job has no usable result or its output is rejected; any other exception means the fetch
+        itself failed (the result may still be there).
+        """
+        from pipeline.generator import BatchResultError
+        vocalized = self.generator.get_batch_result(job_id)
         try:
-            vocalized = self.generator.get_batch_result(job_id)
-        except Exception as e:
-            raise PronunciationError(f"pronunciation batch result unavailable: {e}") from e
-        return parse_vocalized_response(script_text, vocalized)
+            return parse_vocalized_response(script_text, vocalized)
+        except PronunciationError as e:
+            raise BatchResultError(str(e)) from e
 
 
 def create_pronunciation_vocalizer(config, generator_factory=None) -> PronunciationVocalizer:
