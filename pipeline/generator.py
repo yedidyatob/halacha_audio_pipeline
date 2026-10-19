@@ -6,7 +6,8 @@ from google.genai import types
 from openai import OpenAI
 from pipeline.gematria import int_to_gematria
 from pipeline.logger import get_logger
-from pipeline.utils import log_gemini_usage
+from typing import Optional
+from pipeline.utils import log_gemini_usage, save_output_file
 
 logger = get_logger(__name__)
 
@@ -69,7 +70,9 @@ class BaseScriptGenerator(ABC):
         siman: int, 
         master_context: str, 
         system_instruction: str,
-        commentators_desc: str = 'השפתי כהן (הש"ך) והטורי זהב (הט"ז) והמקורות שהם מביאים'
+        commentators_desc: str = 'השפתי כהן (הש"ך) והטורי זהב (הט"ז) והמקורות שהם מביאים',
+        thinking_level: Optional[str] = None,
+        thinking_name: Optional[str] = None,
     ) -> str:
         """
         Generates a custom script for a specific Siman using the Master Reference Strategy.
@@ -77,20 +80,23 @@ class BaseScriptGenerator(ABC):
         pass
 
     @abstractmethod
-    def analyze_cross_relations(self, drafts: dict, relations_instruction: str) -> str:
+    def analyze_cross_relations(self, drafts: dict, relations_instruction: str,
+                                thinking_name: Optional[str] = None) -> str:
         """
         Analyzes thematic and conceptual connections across multiple Siman drafts.
         """
         pass
 
     @abstractmethod
-    def polish_siman_script(self, script_text: str, relations_text: str, polishing_instruction: str) -> str:
+    def polish_siman_script(self, script_text: str, relations_text: str, polishing_instruction: str,
+                            thinking_name: Optional[str] = None) -> str:
         """
         Refines a draft script to ensure it is 100% optimized for TTS pronunciation.
         """
         pass
 
-    def generate_text(self, system_instruction: str, user_prompt: str, thinking_level: str = None) -> str:
+    def generate_text(self, system_instruction: str, user_prompt: str, thinking_level: str = None,
+                      thinking_name: Optional[str] = None) -> str:
         """
         Generic single-shot completion (system instruction + user prompt) at this
         generator's configured temperature. Used by auxiliary stages such as
@@ -138,145 +144,102 @@ class BatchCapableGenerator(ABC):
 class GeminiScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
     """
     Generates custom, TTS-optimized Hebrew script files using Gemini API (google-genai SDK).
+
+    Every synchronous call streams (generate_content_stream) with thought summaries enabled, so
+    bytes keep flowing while the model thinks: a long non-streaming call sends nothing until it
+    finishes, and an idle connection can be closed by a proxy or front end ("Server disconnected
+    without sending a response"). Only the answer text is returned; the thought summaries are
+    written to <thinking_dir>/<thinking_name>_thinking.txt when the caller names the call.
     """
-    def __init__(self, api_key: str = None, model_name: str = "gemini-3.5-flash", temperature: float = 0.3, ssl_verify: bool = True):
+    def __init__(self, api_key: str, model_name: str, temperature: float, ssl_verify: bool,
+                 pricing: dict, thinking_dir: str):
         super().__init__(api_key, model_name, temperature)
         self.ssl_verify = ssl_verify
-        kwargs = {}
-        if api_key:
-            kwargs["api_key"] = api_key
-        
-        # Configure httpx client with SSL verification setting
-        if not ssl_verify:
-            try:
-                import urllib3
-                # Disable SSL warnings when verification is disabled
-                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-                # Pass verify=False to the underlying httpx client via http_options
-                kwargs["http_options"] = {"client_args": {"verify": False}}
-            except ImportError:
-                logger.warning("urllib3 not available for disabling SSL warnings")
-            
-        try:
-            self.client = genai.Client(**kwargs)
-        except Exception as e:
-            logger.error(f"Failed to initialize Gemini Client: {e}")
-            raise
+        self.pricing = pricing
+        self.thinking_dir = thinking_dir
+        self.client = build_gemini_client(api_key, ssl_verify)
+
+    def _generate(self, system_instruction: str, user_prompt: str, temperature: float,
+                  thinking_level: Optional[str], source: str, thinking_name: Optional[str]) -> str:
+        """
+        The one path for synchronous Gemini calls: streams the response, writes the thought
+        summaries (if any, and if thinking_name is given), logs usage and cost from the final
+        chunk, and returns the answer text only (block / finish-reason checks as for batch results).
+        """
+        thinking_kwargs = {"include_thoughts": True}
+        if thinking_level:
+            thinking_kwargs["thinking_level"] = thinking_level
+        config = types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            temperature=temperature,
+            thinking_config=types.ThinkingConfig(**thinking_kwargs),
+        )
+        stream = self.client.models.generate_content_stream(
+            model=self.model_name, contents=user_prompt, config=config
+        )
+        response, thoughts = _collect_stream(stream)
+        if thoughts and thinking_name:
+            save_output_file(directory=self.thinking_dir, base_name=f"{thinking_name}_thinking",
+                             extension="txt", content=thoughts, logger=logger)
+        log_gemini_usage(logger, response, self.model_name, self.pricing)
+        return _gemini_response_text(response, source)
 
     def generate_siman_script(
         self, 
         siman: int, 
         master_context: str, 
         system_instruction: str,
-        commentators_desc: str = 'השפתי כהן (הש"ך) והטורי זהב (הט"ז) והמקורות שהם מביאים'
+        commentators_desc: str = 'השפתי כהן (הש"ך) והטורי זהב (הט"ז) והמקורות שהם מביאים',
+        thinking_level: Optional[str] = None,
+        thinking_name: Optional[str] = None,
     ) -> str:
         gematria_siman = int_to_gematria(siman)
-        logger.info(f"Generating script for Siman {siman} ({gematria_siman}) using Gemini model {self.model_name}...")
+        logger.info(f"Generating script for Siman {siman} ({gematria_siman}) using Gemini model {self.model_name}"
+                    + (f" (thinking_level {thinking_level})" if thinking_level else "") + "...")
         user_prompt = self._get_generation_user_prompt(gematria_siman, master_context, commentators_desc)
-
         try:
-            config = types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                temperature=self.temperature
-            )
-            
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=user_prompt,
-                config=config
-            )
-            
-            log_gemini_usage(logger, response, self.model_name)
-            
-            script_text = response.text
-            if not script_text:
-                raise ValueError("Gemini API returned an empty text response.")
-                
-            logger.info(f"Successfully generated script for Siman {siman} ({len(script_text)} chars).")
-            return script_text
-            
+            script_text = self._generate(system_instruction, user_prompt, self.temperature, thinking_level,
+                                         f"Gemini script generation for Siman {siman}", thinking_name)
         except Exception as e:
             logger.error(f"Error during Gemini script generation for Siman {siman}: {e}")
             raise
+        logger.info(f"Successfully generated script for Siman {siman} ({len(script_text)} chars).")
+        return script_text
 
-    def analyze_cross_relations(self, drafts: dict, relations_instruction: str) -> str:
+    def analyze_cross_relations(self, drafts: dict, relations_instruction: str,
+                                thinking_name: Optional[str] = None) -> str:
         logger.info(f"Analyzing cross-relations for {list(drafts.keys())} via Gemini model {self.model_name}...")
         user_prompt = self._get_relations_user_prompt(drafts)
-        
         try:
-            config = types.GenerateContentConfig(
-                system_instruction=relations_instruction,
-                temperature=self.temperature
-            )
-            
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=user_prompt,
-                config=config
-            )
-            
-            log_gemini_usage(logger, response, self.model_name)
-            
-            relations_text = response.text
-            if not relations_text:
-                raise ValueError("Gemini API returned an empty text response for relations analysis.")
-                
-            logger.info("Successfully generated cross-relations analysis.")
-            return relations_text
-            
+            relations_text = self._generate(relations_instruction, user_prompt, self.temperature, None,
+                                            "Gemini relations analysis", thinking_name)
         except Exception as e:
             logger.error(f"Error during Gemini relations analysis: {e}")
             raise
+        logger.info("Successfully generated cross-relations analysis.")
+        return relations_text
 
-    def polish_siman_script(self, script_text: str, relations_text: str, polishing_instruction: str) -> str:
+    def polish_siman_script(self, script_text: str, relations_text: str, polishing_instruction: str,
+                            thinking_name: Optional[str] = None) -> str:
         logger.info("Polishing generated script for TTS compliance via Gemini...")
-        
         user_prompt = self._get_polishing_user_prompt(script_text, relations_text)
-        
         try:
-            config = types.GenerateContentConfig(
-                system_instruction=polishing_instruction,
-                temperature=0.1
-            )
-            
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=user_prompt,
-                config=config
-            )
-            
-            log_gemini_usage(logger, response, self.model_name)
-            
-            polished_text = response.text
-            if not polished_text:
-                raise ValueError("Gemini API returned an empty text response for polish call.")
-                
-            logger.info(f"Successfully polished script ({len(polished_text)} chars).")
-            return polished_text
-            
+            polished_text = self._generate(polishing_instruction, user_prompt, 0.1, None,
+                                           "Gemini polish call", thinking_name)
         except Exception as e:
             logger.error(f"Error during Gemini script polish call: {e}")
             raise
+        logger.info(f"Successfully polished script ({len(polished_text)} chars).")
+        return polished_text
 
-    def generate_text(self, system_instruction: str, user_prompt: str, thinking_level: str = None) -> str:
+    def generate_text(self, system_instruction: str, user_prompt: str, thinking_level: str = None,
+                      thinking_name: Optional[str] = None) -> str:
         logger.info(
             f"Running Gemini text call via model {self.model_name} (temperature {self.temperature}"
             + (f", thinking_level {thinking_level}" if thinking_level else "") + ")..."
         )
-        config_kwargs = {"system_instruction": system_instruction, "temperature": self.temperature}
-        if thinking_level:
-            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=thinking_level)
-        config = types.GenerateContentConfig(**config_kwargs)
-        response = self.client.models.generate_content(
-            model=self.model_name,
-            contents=user_prompt,
-            config=config
-        )
-        log_gemini_usage(logger, response, self.model_name)
-        text = response.text
-        if not text:
-            raise ValueError("Gemini API returned an empty text response.")
-        return text
+        return self._generate(system_instruction, user_prompt, self.temperature, thinking_level,
+                              "Gemini text call", thinking_name)
 
     def submit_batch(
         self,
@@ -331,6 +294,61 @@ class GeminiScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
             raise ValueError(f"Gemini batch job {job_id} returned neither a response nor an error.")
         return _gemini_response_text(inlined.response, f"Gemini batch job {job_id}")
 
+
+
+def build_gemini_client(api_key: Optional[str], ssl_verify: bool) -> genai.Client:
+    """The Gemini client for every Gemini text call (generator, pronunciation, enhancer)."""
+    kwargs = {}
+    if api_key:
+        kwargs["api_key"] = api_key
+    if not ssl_verify:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        kwargs["http_options"] = {"client_args": {"verify": False}}
+    try:
+        return genai.Client(**kwargs)
+    except Exception as e:
+        logger.error(f"Failed to initialize Gemini Client: {e}")
+        raise
+
+
+def _collect_stream(stream) -> tuple:
+    """
+    Folds a generate_content_stream into one GenerateContentResponse (answer parts only) plus the
+    joined thought-summary text. prompt_feedback, finish_reason / finish_message and usage_metadata
+    are taken from the chunks that carry them (usage and the finish reason arrive on the last one).
+    """
+    answer_parts, thoughts = [], []
+    prompt_feedback = finish_reason = finish_message = usage = None
+    for chunk in stream:
+        if chunk.prompt_feedback:
+            prompt_feedback = chunk.prompt_feedback
+        if chunk.usage_metadata:
+            usage = chunk.usage_metadata
+        if not chunk.candidates:
+            continue
+        candidate = chunk.candidates[0]
+        if candidate.finish_reason:
+            finish_reason = candidate.finish_reason
+        if candidate.finish_message:
+            finish_message = candidate.finish_message
+        for part in (candidate.content.parts if candidate.content else None) or []:
+            if not part.text:
+                continue
+            if part.thought:
+                thoughts.append(part.text)
+            else:
+                answer_parts.append(types.Part(text=part.text))
+    candidates = []
+    if answer_parts or finish_reason or finish_message:
+        candidates = [types.Candidate(
+            content=types.Content(role="model", parts=answer_parts),
+            finish_reason=finish_reason, finish_message=finish_message,
+        )]
+    response = types.GenerateContentResponse(
+        candidates=candidates, prompt_feedback=prompt_feedback, usage_metadata=usage
+    )
+    return response, "".join(thoughts)
 
 # google.rpc.Code names, for the code of a failed batch request (JobError.code)
 _RPC_CODE_NAMES = {
@@ -409,7 +427,9 @@ class OpenAIScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
         siman: int, 
         master_context: str, 
         system_instruction: str,
-        commentators_desc: str = 'השפתי כהן (הש"ך) והטורי זהב (הט"ז) והמקורות שהם מביאים'
+        commentators_desc: str = 'השפתי כהן (הש"ך) והטורי זהב (הט"ז) והמקורות שהם מביאים',
+        thinking_level: Optional[str] = None,
+        thinking_name: Optional[str] = None,
     ) -> str:
         gematria_siman = int_to_gematria(siman)
         logger.info(f"Generating script for Siman {siman} ({gematria_siman}) using OpenAI model {self.model_name}...")
@@ -447,7 +467,8 @@ class OpenAIScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
             logger.error(f"Error during OpenAI script generation for Siman {siman}: {e}")
             raise
 
-    def analyze_cross_relations(self, drafts: dict, relations_instruction: str) -> str:
+    def analyze_cross_relations(self, drafts: dict, relations_instruction: str,
+                                thinking_name: Optional[str] = None) -> str:
         logger.info(f"Analyzing cross-relations for {list(drafts.keys())} via OpenAI model {self.model_name}...")
         user_prompt = self._get_relations_user_prompt(drafts)
         
@@ -483,7 +504,8 @@ class OpenAIScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
             logger.error(f"Error during OpenAI relations analysis: {e}")
             raise
 
-    def polish_siman_script(self, script_text: str, relations_text: str, polishing_instruction: str) -> str:
+    def polish_siman_script(self, script_text: str, relations_text: str, polishing_instruction: str,
+                            thinking_name: Optional[str] = None) -> str:
         logger.info("Polishing generated script for TTS compliance via OpenAI...")
         
         user_prompt = self._get_polishing_user_prompt(script_text, relations_text)
@@ -520,7 +542,8 @@ class OpenAIScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
             logger.error(f"Error during OpenAI script polish call: {e}")
             raise
 
-    def generate_text(self, system_instruction: str, user_prompt: str, thinking_level: str = None) -> str:
+    def generate_text(self, system_instruction: str, user_prompt: str, thinking_level: str = None,
+                      thinking_name: Optional[str] = None) -> str:
         # thinking_level is Gemini-only; ignored here.
         logger.info(f"Running OpenAI text call via model {self.model_name}...")
         is_reasoning_model = self.model_name.startswith("o1") or self.model_name.startswith("o3")

@@ -163,7 +163,7 @@ def test_batch_pronunciation_disabled_passes_text_through(tmp_path):
 
 def test_sync_mode_vocalizes_each_siman_synchronously(tmp_path):
     gen = MagicMock()
-    gen.polish_siman_script.side_effect = lambda draft, rel, instr: draft
+    gen.polish_siman_script.side_effect = lambda draft, rel, instr, thinking_name: draft
     voc_gen = MagicMock(model_name="m", temperature=0.2)
     voc_gen.generate_text.side_effect = lambda instr, text, thinking_level: (
         text.replace("95", "99") if "95" in text else vocalized(text))
@@ -197,7 +197,7 @@ def test_batch_with_non_batch_pronunciation_engine_errors_at_startup(tmp_path, m
 
 def test_dictionary_nikkud_runs_before_llm_stage(tmp_path):
     gen = MagicMock()
-    gen.polish_siman_script.side_effect = lambda draft, rel, instr: draft + ' סימן הא והש"ך'
+    gen.polish_siman_script.side_effect = lambda draft, rel, instr, thinking_name: draft + ' סימן הא והש"ך'
     voc_gen = MagicMock(model_name="m", temperature=0.2)
     voc_gen.generate_text.side_effect = lambda instr, text, thinking_level: text
     summary = _run(tmp_path, gen, PronunciationVocalizer(voc_gen, "VOC", None, 0), batch=False, drafts={94: "טית 94"})

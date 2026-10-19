@@ -260,7 +260,9 @@ def generate_drafts(simanim: list, extractor, generator, config, args, model_suf
         summary, contexts, STAGE_DRAFTS,
         call=lambda siman, context: generator.generate_siman_script(
             siman=siman, master_context=context,
-            system_instruction=config.gemini_system_instruction, commentators_desc=commentators
+            system_instruction=config.gemini_system_instruction, commentators_desc=commentators,
+            thinking_level=config.draft_thinking_level,
+            thinking_name=draft_base_name(config, siman, model_suffix),
         ),
         max_retries=config.generator_max_retries, args=args,
         batch=BatchCalls(
@@ -270,7 +272,8 @@ def generate_drafts(simanim: list, extractor, generator, config, args, model_suf
                 user_prompt=generator._get_generation_user_prompt(int_to_gematria(siman), context, commentators),
                 temperature=generator.temperature,
                 custom_id=f"stage1_siman_{siman}",
-                cache_dir=config.cache_dir
+                cache_dir=config.cache_dir,
+                thinking_level=config.draft_thinking_level,
             ),
             fetch=lambda siman, context, job_id: generator.get_batch_result(job_id),
         ),
@@ -284,12 +287,16 @@ def generate_drafts(simanim: list, extractor, generator, config, args, model_suf
 RELATIONS_KEY = "Relations map"
 
 
-def generate_relations(drafts: dict, generator, config, args) -> str:
-    """Stage 2: the cross-siman relations map (sync or batch, with generator.max_retries). Aborts on failure."""
+def generate_relations(drafts: dict, generator, config, args, base_name: str) -> str:
+    """
+    Stage 2: the cross-siman relations map (sync or batch, with generator.max_retries). Aborts on failure.
+    base_name is the map's output base name (names the sync call's thinking file).
+    """
     summary = RunSummary()
     result = run_llm_stage(
         summary, {RELATIONS_KEY: drafts}, STAGE_RELATIONS,
-        call=lambda _, drafts: generator.analyze_cross_relations(drafts, config.relations_instruction),
+        call=lambda _, drafts: generator.analyze_cross_relations(drafts, config.relations_instruction,
+                                                               thinking_name=base_name),
         max_retries=config.generator_max_retries, args=args,
         batch=BatchCalls(
             generator,
@@ -307,11 +314,14 @@ def generate_relations(drafts: dict, generator, config, args) -> str:
     return result[RELATIONS_KEY]
 
 
-def polish_simanim(drafts: dict, relations_text: str, generator, config, args, summary: RunSummary) -> dict:
+def polish_simanim(drafts: dict, relations_text: str, generator, config, args, summary: RunSummary,
+                   model_suffix: str) -> dict:
     """Stage 3: {siman: draft} -> {siman: polished_text} (sync or batch, with generator.max_retries)."""
     return run_llm_stage(
         summary, drafts, STAGE_POLISH,
-        call=lambda siman, draft: generator.polish_siman_script(draft, relations_text, config.polishing_instruction),
+        call=lambda siman, draft: generator.polish_siman_script(
+            draft, relations_text, config.polishing_instruction,
+            thinking_name=lesson_base_name(config, siman, model_suffix) + "_polish"),
         max_retries=config.generator_max_retries, args=args,
         batch=BatchCalls(
             generator,
@@ -556,7 +566,7 @@ def run_lesson_stages(target_simanim: list, drafts: dict, relations_text: str, g
             logger.error(f"Cannot polish Siman {siman}: Stage 1 draft is missing.")
             summary.failure(siman, STAGE_POLISH, "Stage 1 draft is missing")
 
-    polished = polish_simanim(available, relations_text, generator, config, args, summary)
+    polished = polish_simanim(available, relations_text, generator, config, args, summary, model_suffix)
     vocalized = vocalize_simanim(apply_dictionary_nikkud(polished, summary), vocalizer, config, args, summary)
     finished = run_per_siman(
         summary, vocalized, STAGE_TRANSCRIPT,
@@ -814,12 +824,13 @@ def main():
     # 8. Generate relations map if it was not loaded
     if not relations_text:
         logger.info("Executing Stage 2: Cross-Siman Relations Analysis...")
-        relations_text = generate_relations(drafts, generator, config, args)
+        relations_name = relations_base_name(config, plan.context_simanim, model_suffix)
+        relations_text = generate_relations(drafts, generator, config, args, relations_name)
 
         # Save relations map
         save_output_file(
             directory=config.relations_dir,
-            base_name=relations_base_name(config, plan.context_simanim, model_suffix),
+            base_name=relations_name,
             extension="txt",
             content=relations_text,
             logger=logger

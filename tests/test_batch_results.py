@@ -8,15 +8,15 @@ from google.genai import types
 import main as main_mod
 from pipeline.generator import BatchCapableGenerator, GeminiScriptGenerator, OpenAIScriptGenerator
 from pipeline.retry import call_with_retries
+from tests.gemini_fakes import make_gemini_generator
 
 
 # --- Gemini: InlinedResponse carries `response` OR `error` ---------------------------
 
 def _gemini_with(*inlined):
-    with patch("google.genai.Client") as client_cls:
-        gen = GeminiScriptGenerator(api_key="k", model_name="gemini-pro", temperature=0.2)
+    gen, client = make_gemini_generator("unused", model_name="gemini-pro", temperature=0.2)
     job = types.BatchJob(name="batches/1", dest=types.BatchJobDestination(inlined_responses=list(inlined)))
-    client_cls.return_value.batches.get.return_value = job
+    client.batches.get.return_value = job
     return gen
 
 
@@ -122,6 +122,8 @@ def test_call_with_retries_raises_last_reason():
 
 BASE_YAML = """
 halachic_section: "Yoreh De'ah"
+directories:
+  thinking_dir: "./output/thinking"
 tts:
   chunk_gap_paragraph_ms: 0
   chunk_gap_sentence_ms: 0
@@ -175,6 +177,7 @@ class FakeGenerator(BatchCapableGenerator):
         self.batch, self.sync, self.failed_jobs = batch, sync, set(failed_jobs)
         self.model_name, self.temperature = "m", 0.2
         self.sync_calls, self.submitted = [], []
+        self.sync_thinking, self.submitted_thinking = [], []
 
     def _answer(self, value):
         if isinstance(value, Exception):
@@ -184,6 +187,7 @@ class FakeGenerator(BatchCapableGenerator):
     def submit_batch(self, system_instruction, user_prompt, temperature, custom_id, cache_dir="./cache",
                      thinking_level=None):
         self.submitted.append(custom_id)
+        self.submitted_thinking.append((custom_id, thinking_level))
         return f"{custom_id}#{self.submitted.count(custom_id)}"
 
     def get_batch_status(self, job_id):
@@ -197,13 +201,17 @@ class FakeGenerator(BatchCapableGenerator):
         self.sync_calls.append((kind, key))
         return self._answer(self.sync(kind, key))
 
-    def generate_siman_script(self, siman, master_context, system_instruction, commentators_desc):
+    def generate_siman_script(self, siman, master_context, system_instruction, commentators_desc,
+                              thinking_level, thinking_name):
+        self.sync_thinking.append((siman, thinking_level, thinking_name))
         return self._sync("draft", siman)
 
-    def analyze_cross_relations(self, drafts, relations_instruction):
+    def analyze_cross_relations(self, drafts, relations_instruction, thinking_name):
+        self.sync_thinking.append(("relations", None, thinking_name))
         return self._sync("relations", tuple(drafts))
 
-    def polish_siman_script(self, script_text, relations_text, polishing_instruction):
+    def polish_siman_script(self, script_text, relations_text, polishing_instruction, thinking_name):
+        self.sync_thinking.append(("polish", None, thinking_name))
         return self._sync("polish", script_text)
 
     def _get_generation_user_prompt(self, gematria_siman, master_context, commentators_desc):
@@ -226,7 +234,8 @@ def cancelled(cid, rounds=(1,)):
 
 def _cfg(tmp_path, retries):
     return MagicMock(drafts_dir=str(tmp_path), cache_dir=str(tmp_path), section_slug="YD",
-                     generator_max_retries=retries, section_metadata={"prompt_commentators_desc": "d"})
+                     generator_max_retries=retries, section_metadata={"prompt_commentators_desc": "d"},
+                     draft_thinking_level="medium")
 
 
 def _args(batch=True):
@@ -322,18 +331,34 @@ def test_stage1_save_error_fails_siman_without_resubmission(tmp_path):
 
 def test_stage2_batch_failure_resubmitted_then_aborts(tmp_path):
     gen = FakeGenerator(batch=lambda cid, n: ValueError("no candidates") if n == 1 else "relations")
-    assert main_mod.generate_relations({94: "d"}, gen, _cfg(tmp_path, 1), _args()) == "relations"
+    assert main_mod.generate_relations({94: "d"}, gen, _cfg(tmp_path, 1), _args(), "YD_Relations_94_m") == "relations"
     assert gen.submitted == ["stage2_relations"] * 2 and gen.sync_calls == []
     gen = FakeGenerator(batch=lambda cid, n: ValueError("no candidates"))
     with pytest.raises(SystemExit):
-        main_mod.generate_relations({94: "d"}, gen, _cfg(tmp_path, 1), _args())
+        main_mod.generate_relations({94: "d"}, gen, _cfg(tmp_path, 1), _args(), "YD_Relations_94_m")
 
 
 def test_stage3_polish_batch_retry_budget_then_fails_that_siman(tmp_path):
     gen = FakeGenerator(batch=cancelled("stage3_siman_95", rounds=(1, 2, 3)))
     summary = main_mod.RunSummary()
-    polished = main_mod.polish_simanim({94: "d94", 95: "d95"}, "rel", gen, _cfg(tmp_path, 2), _args(), summary)
+    polished = main_mod.polish_simanim({94: "d94", 95: "d95"}, "rel", gen, _cfg(tmp_path, 2), _args(), summary, "m")
     assert polished == {94: "draft stage3_siman_94 #1"}
     assert gen.submitted == ["stage3_siman_94"] + ["stage3_siman_95"] * 3   # max_retries = 2 rounds
     assert gen.sync_calls == []
     assert summary.failed[95] == (main_mod.STAGE_POLISH, CANCELLED.format("stage3_siman_95") + " (after 3 attempt(s))")
+
+
+def test_stage1_sends_draft_thinking_level_in_sync_and_batch(tmp_path):
+    gen = FakeGenerator(batch=lambda c, n: f"draft {c}")
+    main_mod.generate_drafts([94], _extractor(), gen, _cfg(tmp_path, 0), _args(), "m")
+    assert gen.submitted_thinking == [("stage1_siman_94", "medium")]
+    gen = FakeGenerator(sync=lambda kind, key: f"draft {key}")
+    main_mod.generate_drafts([94], _extractor(), gen, _cfg(tmp_path, 0), _args(batch=False), "m")
+    assert gen.sync_thinking == [(94, "medium", "YD_Siman_94_m_draft")]
+
+
+def test_stage2_and_3_sync_calls_name_their_thinking_files(tmp_path):
+    gen = FakeGenerator(sync=lambda kind, key: "out")
+    main_mod.generate_relations({94: "d"}, gen, _cfg(tmp_path, 0), _args(batch=False), "YD_Relations_94_m")
+    main_mod.polish_simanim({94: "d94"}, "rel", gen, _cfg(tmp_path, 0), _args(batch=False), main_mod.RunSummary(), "m")
+    assert gen.sync_thinking == [("relations", None, "YD_Relations_94_m"), ("polish", None, "YD_Siman_94_m_polish")]
