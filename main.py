@@ -217,10 +217,27 @@ def abort_if_failed(summary: RunSummary, stage: str, note: str = "") -> None:
     sys.exit(1)
 
 
+AUDIO_EXTENSION = "mp3"
+
+
+def lesson_base_name(config, siman: int, model_suffix: str) -> str:
+    """Base name of a siman's outputs in output_dir (transcript, pronunciation changes, audio)."""
+    return f"{config.section_slug}_Siman_{siman}_{model_suffix}"
+
+
+def draft_base_name(config, siman: int, model_suffix: str) -> str:
+    return f"{config.section_slug}_Siman_{siman}_{model_suffix}_draft"
+
+
+def relations_base_name(config, context_simanim: list, model_suffix: str) -> str:
+    range_str = "_".join(str(s) for s in context_simanim)
+    return f"{config.section_slug}_Relations_{range_str}_{model_suffix}"
+
+
 def save_draft(siman: int, draft_text: str, config, model_suffix: str) -> None:
     save_output_file(
         directory=config.drafts_dir,
-        base_name=f"{config.section_slug}_Siman_{siman}_{model_suffix}_draft",
+        base_name=draft_base_name(config, siman, model_suffix),
         extension="txt",
         content=draft_text,
         logger=logger
@@ -336,12 +353,148 @@ def vocalize_simanim(texts: dict, vocalizer, config, args, summary: RunSummary) 
     )
 
 
+class PlanError(ValueError):
+    """The run cannot start (e.g. --relations-file not found); the message says why."""
+
+
+@dataclass
+class RunPlan:
+    """What a run will load from cache and what it will generate; resolved before any API call."""
+    context_simanim: list
+    target_simanim: list          # Stage 3+ (after --limit-lessons)
+    relations_source: str         # "file" (--relations-file), "cache" or "generate"
+    relations_path: str           # file it is loaded from, or where the generated map is saved
+    relations_text: str           # "" when it will be generated
+    draft_paths: dict             # {siman: cache path} for every draft needed
+    drafts: dict                  # {siman: text} loaded from cache
+    missing_drafts: list          # simanim whose Stage 1 draft will be generated
+
+    @property
+    def drafts_needed(self) -> list:
+        return list(self.draft_paths)
+
+
+def _read_text(path: str) -> str:
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def resolve_run_plan(args, config, simanim_list: list, context_list: list, model_suffix: str) -> RunPlan:
+    """
+    Resolves the relations map (--relations-file, cache unless --overwrite-cache, or generate)
+    and the Stage 1 drafts it needs (cached vs to generate), reading only local files.
+    Raises PlanError if the run cannot start.
+    """
+    relations_text, relations_source = "", "generate"
+    if args.relations_file:
+        relations_path = args.relations_file
+        if not os.path.exists(relations_path):
+            raise PlanError(f"Relations file not found at: {relations_path}")
+        try:
+            relations_text = _read_text(relations_path)
+        except Exception as e:
+            raise PlanError(f"Failed to read relations file: {e}") from e
+        relations_source = "file"
+        logger.info(f"Loaded pre-existing relations map: {relations_path} ({len(relations_text)} chars).")
+    else:
+        relations_path = os.path.join(config.relations_dir,
+                                      relations_base_name(config, context_list, model_suffix) + ".txt")
+        if os.path.exists(relations_path) and not args.overwrite_cache:
+            try:
+                relations_text = _read_text(relations_path)
+                relations_source = "cache"
+                logger.info(f"Loaded cached Stage 2 relations map: {relations_path} ({len(relations_text)} chars).")
+            except Exception as e:
+                logger.warning(f"Failed to read cached relations: {e}. Will regenerate.")
+
+    target_simanim = simanim_list
+    if args.limit_lessons is not None:
+        if args.limit_lessons <= 0:
+            raise PlanError("Limit lessons count must be greater than zero.")
+        target_simanim = simanim_list[:args.limit_lessons]
+        logger.info(f"[DEBUG LIMIT] Restricting Stage 3 styling to: {target_simanim}")
+
+    if relations_text:
+        # relations are available, so only the target simanim being polished need drafts
+        drafts_needed = target_simanim
+        logger.info(f"Relations map is already loaded. Resolving drafts only for target Simanim: {drafts_needed}")
+    else:
+        # generating relations needs a draft for every siman in the context list
+        drafts_needed = context_list
+        logger.info(f"Relations map needs to be generated. Resolving drafts for entire context range: {drafts_needed}")
+
+    draft_paths, drafts, missing = {}, {}, []
+    for siman in drafts_needed:
+        draft_path = os.path.join(config.drafts_dir, draft_base_name(config, siman, model_suffix) + ".txt")
+        draft_paths[siman] = draft_path
+        if os.path.exists(draft_path) and not args.overwrite_cache:
+            try:
+                drafts[siman] = _read_text(draft_path)
+                logger.info(f"Loaded cached Stage 1 draft for Siman {siman} ({len(drafts[siman])} chars).")
+                continue
+            except Exception as e:
+                logger.warning(f"Failed to read cached draft at '{draft_path}': {e}. Will regenerate.")
+        missing.append(siman)
+
+    return RunPlan(context_simanim=context_list, target_simanim=target_simanim,
+                   relations_source=relations_source, relations_path=relations_path,
+                   relations_text=relations_text, draft_paths=draft_paths, drafts=drafts,
+                   missing_drafts=missing)
+
+
+def format_run_plan(plan: RunPlan, args, config, generator, vocalizer, model_suffix: str) -> str:
+    """The --dry-run report: what a real run with these arguments would load, generate and write."""
+    calls = "batch jobs" if args.batch else "synchronous calls"
+    lines = [
+        "===== Dry run: plan (no API / LLM / TTS / Sefaria calls were made) =====",
+        f"Mode: {'batch' if args.batch else 'sync'} | generator: {config.generator_engine} {generator.model_name}"
+        + (" | --overwrite-cache" if args.overwrite_cache else ""),
+        f"Failed LLM calls are retried as new {calls}: Stages 1-3 up to {config.generator_max_retries} time(s)"
+        + (f", Stage 3.5 up to {vocalizer.max_retries}" if vocalizer is not None else ""),
+        f"Target simanim (Stage 3+): {plan.target_simanim}"
+        + (f" (--limit-lessons {args.limit_lessons})" if args.limit_lessons is not None else ""),
+        f"Context simanim: {plan.context_simanim}",
+    ]
+    if plan.relations_source == "file":
+        lines.append(f"Stage 2 relations map: loaded from --relations-file {plan.relations_path}")
+    elif plan.relations_source == "cache":
+        lines.append(f"Stage 2 relations map: loaded from cache {plan.relations_path}")
+    elif args.stage_1_only:
+        lines.append("Stage 2 relations map: not cached; not generated (--stage-1-only)")
+    else:
+        lines.append(f"Stage 2 relations map: will be GENERATED ({'a batch job' if args.batch else 'a synchronous call'}) "
+                     f"from the drafts of {plan.drafts_needed} and saved to {plan.relations_path}")
+    cached = [s for s in plan.drafts_needed if s in plan.drafts]
+    lines.append(f"Stage 1 drafts needed: {plan.drafts_needed}")
+    lines.append(f"  from cache ({len(cached)}): {cached or 'none'}")
+    lines += [f"    Siman {s}: {plan.draft_paths[s]}" for s in cached]
+    lines.append(f"  to be GENERATED ({len(plan.missing_drafts)}, as {calls}, after a Sefaria fetch each): "
+                 f"{plan.missing_drafts or 'none'}")
+    lines += [f"    Siman {s} -> {plan.draft_paths[s]}" for s in plan.missing_drafts]
+    if args.stage_1_only:
+        lines.append("--stage-1-only: the run stops after Stage 1 (and the heuristic evaluation).")
+        return "\n".join(lines)
+    pronunciation = (f"{config.pronunciation_engine} {vocalizer.generator.model_name}" if vocalizer is not None
+                     else "disabled (pronunciation.enabled: false)")
+    lines += [
+        f"Stage 3 polish ({calls}) -> 3.4 dictionary nikkud -> 3.5 pronunciation nikkud: {plan.target_simanim}",
+        f"  Stage 3.5 pronunciation: {pronunciation}",
+        f"Transcripts / TTS (tts.engine {config.tts_engine}{', skipped: --skip-tts' if args.skip_tts else ''}):",
+    ]
+    for siman in plan.target_simanim:
+        base = os.path.join(config.output_dir, lesson_base_name(config, siman, model_suffix))
+        lines.append(f"    Siman {siman}: {base}_transcript.txt"
+                     + ("" if args.skip_tts else f", {base}.{AUDIO_EXTENSION}"))
+    lines.append("(Each saved file also gets a timestamped history copy.)")
+    return "\n".join(lines)
+
+
 def save_transcript(siman: int, text: str, changes, config, model_suffix: str) -> None:
     """
     Stage 3.6: saves the final transcript and, if the pronunciation stage ran, the list of
     words it vocalized (original TAB vocalized) for review.
     """
-    base_name = f"{config.section_slug}_Siman_{siman}_{model_suffix}"
+    base_name = lesson_base_name(config, siman, model_suffix)
     if changes is not None:
         save_output_file(
             directory=config.output_dir,
@@ -370,8 +523,8 @@ def synthesize_siman_audio(siman: int, text: str, config, model_suffix: str) -> 
 
     save_output_file(
         directory=config.output_dir,
-        base_name=f"{config.section_slug}_Siman_{siman}_{model_suffix}",
-        extension=getattr(tts_engine, "file_extension", "mp3"),
+        base_name=lesson_base_name(config, siman, model_suffix),
+        extension=AUDIO_EXTENSION,
         content=None,
         logger=logger,
         write_callback=tts_callback
@@ -521,6 +674,12 @@ def parse_arguments():
         help="Path to a pre-existing cross-relations map file. If specified, Stage 2 relations analysis is skipped."
     )
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the run plan (relations map and drafts loaded from cache vs generated, simanim going through "
+             "Stage 3/3.5/TTS, file paths) and exit without any API, LLM, TTS or Sefaria call."
+    )
+    parser.add_argument(
         "--stage-1-only",
         action="store_true",
         help="Only run Stage 1 (Data Extraction) and exit."
@@ -590,53 +749,21 @@ def main():
     if args.batch:
         logger.info("Batch mode enabled. All stages will use the Batch API with polling.")
         
-    # 5. Stage 2: Cross-Siman Relations Analysis - Resolve Relations Map First
-    relations_text = ""
-    relations_path = None
-    range_str = "_".join(str(s) for s in context_list)
-    
-    if args.relations_file:
-        if not os.path.exists(args.relations_file):
-            logger.error(f"Relations file not found at: {args.relations_file}")
-            sys.exit(1)
-        try:
-            with open(args.relations_file, "r", encoding="utf-8") as f:
-                relations_text = f.read()
-            logger.info(f"Loaded pre-existing relations map: {args.relations_file} ({len(relations_text)} chars).")
-        except Exception as e:
-            logger.error(f"Failed to read relations file: {e}")
-            sys.exit(1)
-    else:
-        # Determine cached relations filename based on context range
-        relations_filename = f"{config.section_slug}_Relations_{range_str}_{model_suffix}.txt"
-        relations_path = os.path.join(config.relations_dir, relations_filename)
-        
-        if os.path.exists(relations_path) and not args.overwrite_cache:
-            try:
-                with open(relations_path, "r", encoding="utf-8") as f:
-                    relations_text = f.read()
-                logger.info(f"Loaded cached Stage 2 relations map: {relations_path} ({len(relations_text)} chars).")
-            except Exception as e:
-                logger.warning(f"Failed to read cached relations: {e}. Will regenerate.")
-
-    # Apply debug limit if specified
-    target_generation_simanim = simanim_list
-    if args.limit_lessons is not None:
-        if args.limit_lessons <= 0:
-            logger.error("Limit lessons count must be greater than zero.")
-            sys.exit(1)
-        target_generation_simanim = simanim_list[:args.limit_lessons]
-        logger.info(f"[DEBUG LIMIT] Restricting Stage 3 styling to: {target_generation_simanim}")
-
-    # Determine which drafts we actually need to load/generate
-    if relations_text:
-        # We already have relations, so we only need drafts for the target Simanim we are polishing
-        drafts_needed = target_generation_simanim
-        logger.info(f"Relations map is already loaded. Resolving drafts only for target Simanim: {drafts_needed}")
-    else:
-        # We need to generate relations, so we need drafts for all Simanim in context list
-        drafts_needed = context_list
-        logger.info(f"Relations map needs to be generated. Resolving drafts for entire context range: {drafts_needed}")
+    # 5. Resolve the run plan: relations map and Stage 1 drafts from cache, file or to be generated
+    try:
+        plan = resolve_run_plan(args, config, simanim_list, context_list, model_suffix)
+    except PlanError as e:
+        logger.error(str(e))
+        sys.exit(1)
+    if args.dry_run:
+        for line in format_run_plan(plan, args, config, generator, vocalizer, model_suffix).split("\n"):
+            logger.info(line)
+        sys.exit(0)
+    relations_text = plan.relations_text
+    target_generation_simanim = plan.target_simanim
+    drafts_needed = plan.drafts_needed
+    drafts = dict(plan.drafts)
+    missing_simanim = plan.missing_drafts
 
     # 6. Sefaria Extractor Setup
     try:
@@ -651,27 +778,7 @@ def main():
         logger.error(f"Sefaria Extractor initialization failed: {e}")
         sys.exit(1)
 
-    # 7. Resolve Stage 1 Drafts for drafts_needed
-    drafts = {}
-    missing_simanim = []
-    
-    # Check what drafts already exist in cache
-    for siman in drafts_needed:
-        draft_filename = f"{config.section_slug}_Siman_{siman}_{model_suffix}_draft.txt"
-        draft_path = os.path.join(config.drafts_dir, draft_filename)
-        
-        if os.path.exists(draft_path) and not args.overwrite_cache:
-            try:
-                with open(draft_path, "r", encoding="utf-8") as f:
-                    drafts[siman] = f.read()
-                logger.info(f"Loaded cached Stage 1 draft for Siman {siman} ({len(drafts[siman])} chars).")
-            except Exception as e:
-                logger.warning(f"Failed to read cached draft at '{draft_path}': {e}. Will regenerate.")
-                missing_simanim.append(siman)
-        else:
-            missing_simanim.append(siman)
-
-    # Generate missing drafts (each saved as soon as it is ready; any failure aborts the run)
+    # 7. Generate the missing Stage 1 drafts (each saved as soon as it is ready; any failure aborts the run)
     if missing_simanim:
         logger.info(f"Generating missing Stage 1 drafts for Simanim: {missing_simanim}...")
         drafts.update(generate_drafts(missing_simanim, extractor, generator, config, args, model_suffix))
@@ -712,7 +819,7 @@ def main():
         # Save relations map
         save_output_file(
             directory=config.relations_dir,
-            base_name=f"{config.section_slug}_Relations_{range_str}_{model_suffix}",
+            base_name=relations_base_name(config, plan.context_simanim, model_suffix),
             extension="txt",
             content=relations_text,
             logger=logger
