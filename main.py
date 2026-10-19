@@ -30,6 +30,54 @@ from pipeline.pronunciation import create_pronunciation_vocalizer, format_change
 
 logger = get_logger("halacha_pipeline_cli")
 
+
+def retry_with_backoff(
+    func: Callable[[], str],
+    max_retries: int = 5,
+    initial_delay: float = 2.0,
+    max_delay: float = 30.0,
+    retryable_exceptions: tuple = (Exception,)
+) -> str:
+    """
+    Retry a function with exponential backoff on specified exceptions.
+    
+    Args:
+        func: Function that returns a string result (job status)
+        max_retries: Maximum number of retry attempts
+        initial_delay: Starting delay in seconds
+        max_delay: Maximum delay in seconds
+        retryable_exceptions: Tuple of exception types to catch
+    
+    Returns:
+        Result from func() on success
+    
+    Raises:
+        Last exception if all retries fail
+    """
+    delay = initial_delay
+    last_exception = None
+    
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except retryable_exceptions as e:
+            last_exception = e
+            if attempt < max_retries - 1:
+                logger.warning(
+                    f"Network error (attempt {attempt + 1}/{max_retries}): {type(e).__name__}. "
+                    f"Retrying in {delay:.1f}s..."
+                )
+                time.sleep(delay)
+                delay = min(delay * 2, max_delay)
+            else:
+                logger.error(
+                    f"Network error (attempt {attempt + 1}/{max_retries}): {type(e).__name__}. "
+                    f"No more retries remaining."
+                )
+    
+    raise last_exception
+
+
 STAGE_DRAFTS = "Stage 1 (Drafts)"
 STAGE_RELATIONS = "Stage 2 (Relations)"
 STAGE_POLISH = "Stage 3 (Polishing)"
@@ -587,7 +635,24 @@ def poll_batch_jobs(generator, jobs: dict, poll_interval: int, timeout: int, sta
             )
 
         for label, job_id in list(pending.items()):
-            status = generator.get_batch_status(job_id)
+            # Wrap the get_batch_status call with retry logic
+            def get_status():
+                return generator.get_batch_status(job_id)
+            
+            try:
+                status = retry_with_backoff(
+                    get_status,
+                    max_retries=5,
+                    initial_delay=2.0,
+                    max_delay=30.0,
+                    retryable_exceptions=(Exception,)
+                )
+            except Exception as e:
+                logger.error(f"Failed to get status for {label} (job_id: {job_id}): {e}")
+                results[label] = "failed"
+                del pending[label]
+                continue
+                
             if status == "completed":
                 logger.info(f"\u2705 {stage_name} batch job completed: {label}")
                 results[label] = status
