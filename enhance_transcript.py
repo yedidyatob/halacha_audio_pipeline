@@ -213,12 +213,11 @@ def main() -> None:
     # 5. Enhance and save
     # ------------------------------------------------------------------ #
     try:
-        history_path = enhancer.enhance_and_save(
+        enhancer.enhance_and_save(
             transcript_text=transcript_text,
             output_dir=output_dir,
             base_name=base_name,
         )
-        logger.info(f"Enhanced transcript saved to: {history_path}")
     except Exception as e:
         logger.error(f"Enhancement failed: {e}")
         sys.exit(1)

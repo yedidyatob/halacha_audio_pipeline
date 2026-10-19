@@ -106,5 +106,6 @@ class ElevenLabsEnhancer:
             extension="txt",
             content=enhanced_text,
             logger=logger,
+            label="Enhanced transcript",
         )
         return history_path

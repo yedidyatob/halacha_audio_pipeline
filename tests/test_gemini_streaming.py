@@ -45,6 +45,17 @@ def test_thoughts_never_leak_into_answer_even_when_interleaved(tmp_path):
     assert len(_thinking_files(tmp_path)) == 2  # timestamped history copy + latest copy
 
 
+def test_thinking_file_path_logged_once(tmp_path, caplog):
+    gen, client = make_gemini_generator(tmp_path)
+    client.models.generate_content_stream.return_value = answer_stream("A", thought="why")
+    with caplog.at_level("INFO"):
+        gen.generate_siman_script(94, "ctx", "sys", thinking_name="N")
+    lines = [r.getMessage() for r in caplog.records if " saved: " in r.getMessage()]
+    assert len(lines) == 1
+    assert lines[0].startswith(f"Thinking summary of Gemini script generation for Siman 94 saved: "
+                               f"{tmp_path / 'N_thinking.txt'} (history copy: {tmp_path / 'N_thinking_'}")
+
+
 def test_no_thinking_file_without_name_or_without_thoughts(tmp_path):
     gen, client = make_gemini_generator(tmp_path / "th")
     client.models.generate_content_stream.return_value = answer_stream("a", thought="t")

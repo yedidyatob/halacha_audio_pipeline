@@ -304,7 +304,20 @@ def save_draft(siman: int, draft_text: str, config, model_suffix: str) -> None:
         base_name=draft_base_name(config, siman, model_suffix),
         extension="txt",
         content=draft_text,
-        logger=logger
+        logger=logger,
+        label=f"{STAGE_DRAFTS} output for Siman {siman}"
+    )
+
+
+def save_polish(siman: int, polished_text: str, config, model_suffix: str) -> None:
+    """Stage 3 output (before the nikkud stages); polish_simanim saves each text as soon as it is ready."""
+    save_output_file(
+        directory=config.output_dir,
+        base_name=f"{lesson_base_name(config, siman, model_suffix)}_polish",
+        extension="txt",
+        content=polished_text,
+        logger=logger,
+        label=f"{STAGE_POLISH} output for Siman {siman}"
     )
 
 
@@ -398,6 +411,7 @@ def polish_simanim(drafts: dict, relations_text: str, generator, config, args, s
             ),
             fetch=lambda siman, draft, job_id: generator.get_batch_result(job_id),
         ),
+        on_result=lambda siman, polished_text: save_polish(siman, polished_text, config, model_suffix),
     )
 
 
@@ -557,7 +571,7 @@ def format_run_plan(plan: RunPlan, args, config, generator, vocalizer, model_suf
     ]
     for siman in plan.target_simanim:
         base = os.path.join(config.output_dir, lesson_base_name(config, siman, model_suffix))
-        lines.append(f"    Siman {siman}: {base}_transcript.txt"
+        lines.append(f"    Siman {siman}: {base}_polish.txt, {base}_transcript.txt"
                      + ("" if args.skip_tts else f", {base}.{AUDIO_EXTENSION}"))
     lines.append("(Each saved file also gets a timestamped history copy.)")
     return "\n".join(lines)
@@ -575,14 +589,16 @@ def save_transcript(siman: int, text: str, changes, config, model_suffix: str) -
             base_name=f"{base_name}_pronunciation_changes",
             extension="txt",
             content=format_changes(changes),
-            logger=logger
+            logger=logger,
+            label=f"{STAGE_PRONUNCIATION} changes for Siman {siman}"
         )
     save_output_file(
         directory=config.output_dir,
         base_name=f"{base_name}_transcript",
         extension="txt",
         content=text,
-        logger=logger
+        logger=logger,
+        label=f"{STAGE_TRANSCRIPT} output for Siman {siman}"
     )
 
 
@@ -592,7 +608,7 @@ def synthesize_siman_audio(siman: int, text: str, config, model_suffix: str) -> 
 
     # Synthesize directly to the audio files using a write_callback
     def tts_callback(path: str) -> None:
-        logger.info(f"Synthesizing script for Siman {siman} to: {path}...")
+        logger.info(f"Synthesizing script for Siman {siman}...")
         tts_engine.synthesize(text=text, output_path=path)
 
     save_output_file(
@@ -601,6 +617,7 @@ def synthesize_siman_audio(siman: int, text: str, config, model_suffix: str) -> 
         extension=AUDIO_EXTENSION,
         content=None,
         logger=logger,
+        label=f"{STAGE_TTS} output for Siman {siman}",
         write_callback=tts_callback
     )
 
@@ -851,7 +868,8 @@ def main():
             base_name=relations_name,
             extension="txt",
             content=relations_text,
-            logger=logger
+            logger=logger,
+            label=f"{STAGE_RELATIONS} output for Simanim {plan.context_simanim}"
         )
 
     # 9. Stage 3+: polish, dictionary nikkud, pronunciation nikkud, transcript, TTS (per-siman failures do not stop the run)

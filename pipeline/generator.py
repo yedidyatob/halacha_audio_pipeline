@@ -191,7 +191,8 @@ class GeminiScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
         response, thoughts = _collect_stream(stream)
         if thoughts and thinking_name:
             save_output_file(directory=self.thinking_dir, base_name=f"{thinking_name}_thinking",
-                             extension="txt", content=thoughts, logger=logger)
+                             extension="txt", content=thoughts, logger=logger,
+                             label=f"Thinking summary of {source}")
         log_gemini_usage(logger, response, self.model_name, self.pricing)
         return _gemini_response_text(response, source)
 

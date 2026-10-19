@@ -9,6 +9,7 @@ def save_output_file(
     extension: str,
     content: Optional[Union[str, bytes]],
     logger,
+    label: str,
     write_callback: Optional[Callable[[str], None]] = None
 ) -> str:
     """
@@ -18,6 +19,11 @@ def save_output_file(
     
     If write_callback is provided, it is invoked with the history path as its sole argument
     to write the file (e.g. for TTS synthesis). Otherwise, 'content' is written.
+    
+    Logs one INFO line naming what was saved (label, e.g. "Stage 3 (Polishing) output for Siman 87")
+    and every path written: "<label> saved: <latest path> (history copy: <history path>)", or just
+    the history path if the latest copy could not be updated (that also logs a warning).
+    This is the one place output paths are logged; callers do not log them again.
     
     Returns the path to the history file.
     """
@@ -39,7 +45,6 @@ def save_output_file(
             encoding = None if isinstance(content, bytes) else "utf-8"
             with open(history_path, mode, encoding=encoding) as f:
                 f.write(content)
-        logger.info(f"Saved history copy: {history_path}")
     except Exception as e:
         logger.error(f"Failed to save history copy to '{history_path}': {e}")
         raise
@@ -47,13 +52,14 @@ def save_output_file(
     # 2. Attempt to update latest copy
     try:
         shutil.copyfile(history_path, latest_path)
-        logger.info(f"Updated latest copy at: {latest_path}")
     except Exception as err:
         logger.warning(
             f"Could not overwrite latest copy at '{latest_path}' (it may be locked by another application): {err}. "
             f"The generated content remains fully saved in: '{history_path}'."
         )
-        
+        logger.info(f"{label} saved: {history_path}")
+    else:
+        logger.info(f"{label} saved: {latest_path} (history copy: {history_path})")
     return history_path
 
 
