@@ -289,6 +289,11 @@ def lesson_base_name(config, siman: int, model_suffix: str) -> str:
     return f"{config.section_slug}_Siman_{siman}_{model_suffix}"
 
 
+def polish_base_name(config, siman: int, model_suffix: str) -> str:
+    """Stage 3 output in output_dir; also its cache (a later run loads it instead of polishing again)."""
+    return f"{lesson_base_name(config, siman, model_suffix)}_polish"
+
+
 def draft_base_name(config, siman: int, model_suffix: str) -> str:
     return f"{config.section_slug}_Siman_{siman}_{model_suffix}_draft"
 
@@ -313,7 +318,7 @@ def save_polish(siman: int, polished_text: str, config, model_suffix: str) -> No
     """Stage 3 output (before the nikkud stages); polish_simanim saves each text as soon as it is ready."""
     save_output_file(
         directory=config.output_dir,
-        base_name=f"{lesson_base_name(config, siman, model_suffix)}_polish",
+        base_name=polish_base_name(config, siman, model_suffix),
         extension="txt",
         content=polished_text,
         logger=logger,
@@ -398,7 +403,7 @@ def polish_simanim(drafts: dict, relations_text: str, generator, config, args, s
         summary, drafts, STAGE_POLISH,
         call=lambda siman, draft: generator.polish_siman_script(
             draft, relations_text, config.polishing_instruction,
-            thinking_name=lesson_base_name(config, siman, model_suffix) + "_polish"),
+            thinking_name=polish_base_name(config, siman, model_suffix)),
         max_retries=config.generator_max_retries, args=args,
         batch=BatchCalls(
             generator,
@@ -456,10 +461,17 @@ class RunPlan:
     draft_paths: dict             # {siman: cache path} for every draft needed
     drafts: dict                  # {siman: text} loaded from cache
     missing_drafts: list          # simanim whose Stage 1 draft will be generated
+    polish_paths: dict            # {siman: Stage 3 polish path} for every target siman
+    polished: dict                # {siman: text} Stage 3 polish loaded from cache
 
     @property
     def drafts_needed(self) -> list:
         return list(self.draft_paths)
+
+    @property
+    def missing_polish(self) -> list:
+        """Target simanim whose Stage 3 polish will be generated."""
+        return [siman for siman in self.target_simanim if siman not in self.polished]
 
 
 def _read_text(path: str) -> str:
@@ -469,8 +481,9 @@ def _read_text(path: str) -> str:
 
 def resolve_run_plan(args, config, simanim_list: list, context_list: list, model_suffix: str) -> RunPlan:
     """
-    Resolves the relations map (--relations-file, cache unless --overwrite-cache, or generate)
-    and the Stage 1 drafts it needs (cached vs to generate), reading only local files.
+    Resolves the relations map (--relations-file, cache unless --overwrite-cache, or generate),
+    the Stage 1 drafts it needs and the target simanim's Stage 3 polish (cached vs to generate),
+    reading only local files.
     Raises PlanError if the run cannot start.
     """
     relations_text, relations_source = "", "generate"
@@ -524,10 +537,26 @@ def resolve_run_plan(args, config, simanim_list: list, context_list: list, model
                 logger.warning(f"Failed to read cached draft at '{draft_path}': {e}. Will regenerate.")
         missing.append(siman)
 
+    polish_paths, polished = {}, {}
+    for siman in target_simanim:
+        polish_path = os.path.join(config.output_dir, polish_base_name(config, siman, model_suffix) + ".txt")
+        polish_paths[siman] = polish_path
+        if os.path.exists(polish_path) and not args.overwrite_cache:
+            try:
+                text = _read_text(polish_path)
+            except Exception as e:
+                logger.warning(f"Failed to read cached Stage 3 polish at '{polish_path}': {e}. Will regenerate.")
+                continue
+            if not text.strip():
+                logger.warning(f"Cached Stage 3 polish for Siman {siman} is empty: {polish_path}. Will regenerate.")
+                continue
+            polished[siman] = text
+            logger.info(f"Loaded cached Stage 3 polish for Siman {siman}: {polish_path} ({len(text)} chars).")
+
     return RunPlan(context_simanim=context_list, target_simanim=target_simanim,
                    relations_source=relations_source, relations_path=relations_path,
                    relations_text=relations_text, draft_paths=draft_paths, drafts=drafts,
-                   missing_drafts=missing)
+                   missing_drafts=missing, polish_paths=polish_paths, polished=polished)
 
 
 def format_run_plan(plan: RunPlan, args, config, generator, vocalizer, model_suffix: str) -> str:
@@ -564,14 +593,20 @@ def format_run_plan(plan: RunPlan, args, config, generator, vocalizer, model_suf
         return "\n".join(lines)
     pronunciation = (f"{config.pronunciation_engine} {vocalizer.generator.model_name}" if vocalizer is not None
                      else "disabled (pronunciation.enabled: false)")
+    cached_polish = [s for s in plan.target_simanim if s in plan.polished]
+    lines.append(f"Stage 3 polish -> 3.4 dictionary nikkud -> 3.5 pronunciation nikkud: {plan.target_simanim}")
+    lines.append(f"  Stage 3 polish from cache ({len(cached_polish)}): {cached_polish or 'none'}")
+    lines += [f"    Siman {s}: {plan.polish_paths[s]}" for s in cached_polish]
+    lines.append(f"  Stage 3 polish to be GENERATED ({len(plan.missing_polish)}, as {calls}): "
+                 f"{plan.missing_polish or 'none'}")
+    lines += [f"    Siman {s} -> {plan.polish_paths[s]}" for s in plan.missing_polish]
     lines += [
-        f"Stage 3 polish ({calls}) -> 3.4 dictionary nikkud -> 3.5 pronunciation nikkud: {plan.target_simanim}",
         f"  Stage 3.5 pronunciation: {pronunciation}",
         f"Transcripts / TTS (tts.engine {config.tts_engine}{', skipped: --skip-tts' if args.skip_tts else ''}):",
     ]
     for siman in plan.target_simanim:
         base = os.path.join(config.output_dir, lesson_base_name(config, siman, model_suffix))
-        lines.append(f"    Siman {siman}: {base}_polish.txt, {base}_transcript.txt"
+        lines.append(f"    Siman {siman}: {base}_transcript.txt"
                      + ("" if args.skip_tts else f", {base}.{AUDIO_EXTENSION}"))
     lines.append("(Each saved file also gets a timestamped history copy.)")
     return "\n".join(lines)
@@ -631,23 +666,32 @@ def finish_siman(siman: int, text: str, changes, config, args, model_suffix: str
     run_siman_stage(siman, STAGE_TTS, lambda: synthesize_siman_audio(siman, text, config, model_suffix))
 
 
-def run_lesson_stages(target_simanim: list, drafts: dict, relations_text: str, generator, vocalizer,
-                      config, args, model_suffix: str) -> RunSummary:
+def run_lesson_stages(target_simanim: list, drafts: dict, cached_polish: dict, relations_text: str, generator,
+                      vocalizer, config, args, model_suffix: str) -> RunSummary:
     """
     Stage 3 onwards for every target siman, one stage at a time (sync or batch):
     polish -> dictionary nikkud -> pronunciation nikkud (LLM) -> transcript save -> TTS.
+    A siman in cached_polish ({siman: text}, see resolve_run_plan) skips the polish call.
     A failure removes only that siman from the later stages.
     """
     summary = RunSummary()
     available = {}
     for siman in target_simanim:
+        if siman in cached_polish:
+            continue
         if siman in drafts:
             available[siman] = drafts[siman]
         else:
             logger.error(f"Cannot polish Siman {siman}: Stage 1 draft is missing.")
             summary.failure(siman, STAGE_POLISH, "Stage 1 draft is missing")
 
-    polished = polish_simanim(available, relations_text, generator, config, args, summary, model_suffix)
+    if available:
+        new_polish = polish_simanim(available, relations_text, generator, config, args, summary, model_suffix)
+    else:
+        new_polish = {}
+        logger.info(f"{STAGE_POLISH}: no calls needed; every target siman's polish was loaded from cache.")
+    ready = {**cached_polish, **new_polish}
+    polished = {siman: ready[siman] for siman in target_simanim if siman in ready}
     vocalized = vocalize_simanim(apply_dictionary_nikkud(polished, summary), vocalizer, config, args, summary)
     finished = run_per_siman(
         summary, vocalized, STAGE_TRANSCRIPT,
@@ -710,7 +754,8 @@ def parse_arguments():
     parser.add_argument(
         "--overwrite-cache",
         action="store_true",
-        help="Force regeneration of Stage 1 drafts and Stage 2 relations maps, overwriting any cached files."
+        help="Force regeneration of Stage 1 drafts, Stage 2 relations maps and Stage 3 polish outputs, "
+             "overwriting any cached files."
     )
     parser.add_argument(
         "--relations-file",
@@ -721,8 +766,8 @@ def parse_arguments():
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print the run plan (relations map and drafts loaded from cache vs generated, simanim going through "
-             "Stage 3/3.5/TTS, file paths) and exit without any API, LLM, TTS or Sefaria call."
+        help="Print the run plan (relations map, drafts and Stage 3 polish loaded from cache vs generated, simanim "
+             "going through Stage 3/3.5/TTS, file paths) and exit without any API, LLM, TTS or Sefaria call."
     )
     parser.add_argument(
         "--stage-1-only",
@@ -794,7 +839,7 @@ def main():
     if args.batch:
         logger.info("Batch mode enabled. All stages will use the Batch API with polling.")
         
-    # 5. Resolve the run plan: relations map and Stage 1 drafts from cache, file or to be generated
+    # 5. Resolve the run plan: relations map, Stage 1 drafts and Stage 3 polish from cache, file or to be generated
     try:
         plan = resolve_run_plan(args, config, simanim_list, context_list, model_suffix)
     except PlanError as e:
@@ -873,8 +918,8 @@ def main():
         )
 
     # 9. Stage 3+: polish, dictionary nikkud, pronunciation nikkud, transcript, TTS (per-siman failures do not stop the run)
-    summary = run_lesson_stages(target_generation_simanim, drafts, relations_text, generator, vocalizer,
-                                config, args, model_suffix)
+    summary = run_lesson_stages(target_generation_simanim, drafts, plan.polished, relations_text, generator,
+                                vocalizer, config, args, model_suffix)
 
     summary.log()
     if summary.has_failures:

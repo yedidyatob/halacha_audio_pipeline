@@ -61,8 +61,8 @@ def _args(batch):
 DRAFTS = {94: "טית 94", 95: "טית 95", 96: "טית 96", 97: "טית 97"}
 
 
-def _run(tmp_path, generator, vocalizer, batch, drafts=DRAFTS, targets=None):
-    return main_mod.run_lesson_stages(targets or list(drafts), drafts, "rel", generator, vocalizer,
+def _run(tmp_path, generator, vocalizer, batch, drafts=DRAFTS, targets=None, cached_polish=None):
+    return main_mod.run_lesson_stages(targets or list(drafts), drafts, cached_polish or {}, "rel", generator, vocalizer,
                                       _config(tmp_path), _args(batch), "m")
 
 
