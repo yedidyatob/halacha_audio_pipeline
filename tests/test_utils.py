@@ -16,7 +16,8 @@ def test_save_output_file_text_success(tmp_path):
         base_name="Yoreh_Deah_Siman_94_gpt-5_draft",
         extension="txt",
         content=content,
-        logger=logger
+        logger=logger,
+        label="Stage 1 (Drafts) output for Siman 94"
     )
     
     # Verify both copies exist
@@ -31,8 +32,10 @@ def test_save_output_file_text_success(tmp_path):
     with open(history_path, "r", encoding="utf-8") as f:
         assert f.read() == content
         
-    logger.info.assert_any_call(f"Saved history copy: {history_path}")
-    logger.info.assert_any_call(f"Updated latest copy at: {latest_path}")
+    # one INFO line naming what was saved and both paths written
+    logger.info.assert_called_once_with(
+        f"Stage 1 (Drafts) output for Siman 94 saved: {latest_path} (history copy: {history_path})"
+    )
 
 def test_save_output_file_callback_success(tmp_path):
     output_dir = tmp_path / "output"
@@ -47,6 +50,7 @@ def test_save_output_file_callback_success(tmp_path):
         extension="mp3",
         content=None,
         logger=logger,
+        label="TTS output for Siman 94",
         write_callback=mock_callback
     )
     
@@ -71,6 +75,7 @@ def test_save_output_file_callback_with_actual_file(tmp_path):
         extension="mp3",
         content=None,
         logger=logger,
+        label="TTS output for Siman 94",
         write_callback=dummy_writer
     )
     
@@ -95,7 +100,8 @@ def test_save_output_file_lock_handles_gracefully(mock_copyfile, tmp_path):
         base_name="Yoreh_Deah_Siman_94_gpt-5_draft",
         extension="txt",
         content=content,
-        logger=logger
+        logger=logger,
+        label="Stage 1 (Drafts) output for Siman 94"
     )
     
     # History copy should still be written (since open(history_path) doesn't use copyfile)
@@ -107,6 +113,8 @@ def test_save_output_file_lock_handles_gracefully(mock_copyfile, tmp_path):
     latest_path = os.path.join(str(output_dir), "Yoreh_Deah_Siman_94_gpt-5_draft.txt")
     logger.warning.assert_called_once()
     assert "Could not overwrite latest copy at" in logger.warning.call_args[0][0]
+    # the saved line names only the file that was actually written
+    logger.info.assert_called_once_with(f"Stage 1 (Drafts) output for Siman 94 saved: {history_path}")
     
     # Function should still return history_path successfully
     assert history_path is not None

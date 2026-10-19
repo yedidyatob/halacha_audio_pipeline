@@ -298,6 +298,7 @@ has no `next_text`, and a single-chunk text sends neither.
 
 ```
 output/
+├── {section}_Siman_{N}_{model}_polish.txt          # Stage 3 polished text (before nikkud)
 ├── {section}_Siman_{N}_{model}_transcript.txt      # Latest transcript
 ├── {section}_Siman_{N}_{model}_transcript_YYYYMMDD_HHMMSS.txt  # Timestamped history
 ├── {section}_Siman_{N}_{model}_pronunciation_changes.txt  # original<TAB>vocalized per word the LLM changed (incl. ו/י respellings), if enabled
@@ -310,6 +311,7 @@ output/
 
 - **Latest files**: Overwritten on each run
 - **Timestamped files**: Preserve version history
+- Every saved file is logged at INFO, one line per file: `<stage> output for Siman <N> saved: <latest path> (history copy: <timestamped path>)`
 
 ---
 

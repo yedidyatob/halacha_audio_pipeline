@@ -100,7 +100,8 @@ def test_main_dry_run_prints_plan_and_calls_nothing(cache, monkeypatch, caplog):
     assert "to be GENERATED (1, as batch jobs, after a Sefaria fetch each): [95]" in out
     assert f"Siman 95 -> {cache / 'drafts' / 'YD_Siman_95_m_draft.txt'}" in out
     assert "3.5 pronunciation nikkud: [94]" in out and "disabled" in out
-    assert f"Siman 94: {cache / 'out' / 'YD_Siman_94_m'}_transcript.txt, {cache / 'out' / 'YD_Siman_94_m'}.mp3" in out
+    base = cache / 'out' / 'YD_Siman_94_m'
+    assert f"Siman 94: {base}_polish.txt, {base}_transcript.txt, {base}.mp3" in out
 
 
 def test_main_dry_run_stage_1_only_and_skip_tts(cache, monkeypatch, caplog):

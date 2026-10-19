@@ -256,6 +256,9 @@ def test_stage1_failed_requests_resubmitted_in_one_batch_round(tmp_path, caplog)
                              "stage1_siman_95", "stage1_siman_97"]
     assert gen.sync_calls == []
     assert _saved(tmp_path) == [94, 95, 96, 97]
+    for siman in (94, 95, 96, 97):  # one saved line per draft, naming the stage, the siman and the path
+        assert caplog.text.count(f"Stage 1 (Drafts) output for Siman {siman} saved: "
+                                 f"{tmp_path / f'YD_Siman_{siman}_m_draft.txt'} (history copy: ") == 1
     assert ("Siman 95 Stage 1 (Drafts) attempt 1/2 failed: Gemini batch request failed (job stage1_siman_95): "
             "error code 1 (CANCELLED): The operation was cancelled.; retrying.") in caplog.text
     assert "Stage 1 (Drafts): retry round 1/1 for 2 item(s) as new batch jobs." in caplog.text
@@ -329,11 +332,14 @@ def test_stage2_batch_failure_resubmitted_then_aborts(tmp_path):
         main_mod.generate_relations({94: "d"}, gen, _cfg(tmp_path, 1), _args())
 
 
-def test_stage3_polish_batch_retry_budget_then_fails_that_siman(tmp_path):
+def test_stage3_polish_batch_retry_budget_then_fails_that_siman(tmp_path, monkeypatch):
+    saved = []
+    monkeypatch.setattr(main_mod, "save_polish", lambda siman, text, config, model_suffix: saved.append(siman))
     gen = FakeGenerator(batch=cancelled("stage3_siman_95", rounds=(1, 2, 3)))
     summary = main_mod.RunSummary()
-    polished = main_mod.polish_simanim({94: "d94", 95: "d95"}, "rel", gen, _cfg(tmp_path, 2), _args(), summary)
+    polished = main_mod.polish_simanim({94: "d94", 95: "d95"}, "rel", gen, _cfg(tmp_path, 2), _args(), summary, "m")
     assert polished == {94: "draft stage3_siman_94 #1"}
     assert gen.submitted == ["stage3_siman_94"] + ["stage3_siman_95"] * 3   # max_retries = 2 rounds
+    assert saved == [94]  # only the polished siman is saved
     assert gen.sync_calls == []
     assert summary.failed[95] == (main_mod.STAGE_POLISH, CANCELLED.format("stage3_siman_95") + " (after 3 attempt(s))")
