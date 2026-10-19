@@ -8,7 +8,9 @@ Usage (from the repo root):
 
 Writes:
   <output>                  the vocalized script (default: <input stem>_vocalized.txt next to the input)
-  <output stem>_changes.txt   one 'original<TAB>vocalized' line per word the LLM changed
+  <output stem>_changes.txt   the review list of words the LLM changed (pipeline.pronunciation.format_changes:
+                              one tab-separated line per distinct original/vocalized pair, with count,
+                              first line and a context sample; words vocalized more than one way first)
 Runs regardless of pronunciation.enabled (calling the script is the explicit request).
 A failed attempt (LLM error, or output rejected by validation) is retried up to
 pronunciation.max_retries times; if every attempt fails nothing is written and the script

@@ -579,8 +579,8 @@ def format_run_plan(plan: RunPlan, args, config, generator, vocalizer, model_suf
 
 def save_transcript(siman: int, text: str, changes, config, model_suffix: str) -> None:
     """
-    Stage 3.6: saves the final transcript and, if the pronunciation stage ran, the list of
-    words it vocalized (original TAB vocalized) for review.
+    Stage 3.6: saves the final transcript and, if the pronunciation stage ran, the review list
+    of the words it vocalized (pronunciation.format_changes).
     """
     base_name = lesson_base_name(config, siman, model_suffix)
     if changes is not None:

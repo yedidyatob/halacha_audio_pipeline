@@ -8,14 +8,22 @@ from pipeline.generator import BatchResultError
 from pipeline.pronunciation import (
     strip_nikkud, has_nikkud, find_markup, validate_vocalized_output, changed_words,
     vocalize_pronunciation, format_changes, parse_vocalized_response,
-    PronunciationVocalizer, create_pronunciation_vocalizer, PronunciationError,
+    PronunciationVocalizer, create_pronunciation_vocalizer, PronunciationError, Change, CHANGES_HEADER,
 )
 from pipeline.apply_nikkud import apply_nikkud_to_abbreviations
 
 # Input after the dictionary nikkud stage: השַׁךְ is already vocalized.
 ORIG = "סימן טית עוסק בדין פת.\nזו טעות סופר בדברי השַׁךְ.\n"
 VOCALIZED = "סימן טֵית עוסק בדין פַּת.\nזו טעות סוֹפֵר בדברי השַׁךְ.\n"
-CHANGES = [("טית", "טֵית"), ("פת", "פַּת"), ("סופר", "סוֹפֵר")]
+CHANGES = [
+    Change("טית", "טֵית", 1, "סימן [טֵית] עוסק בדין פַּת."),
+    Change("פת", "פַּת", 1, "סימן טֵית עוסק בדין [פַּת]."),   # trailing punctuation outside the brackets
+    Change("סופר", "סוֹפֵר", 2, "זו טעות [סוֹפֵר] בדברי השַׁךְ."),
+]
+
+
+def _pairs(changes):
+    return [(c.original, c.vocalized) for c in changes]
 
 
 # --- nikkud helpers -----------------------------------------------------------
@@ -26,9 +34,45 @@ def test_strip_nikkud_keeps_letters_and_punctuation():
     assert has_nikkud("טֵית") and not has_nikkud("טית")
 
 
+def test_changed_words_line_numbers_and_context():
+    words = " ".join(f"w{i}" for i in range(12))
+    original = f"\n\nאחד שתיים\n{words} כחל {words}\n"
+    vocalized = f"\n\nאחד שתיים\n{words} כְּחָל {words}\n"
+    [change] = changed_words(original, vocalized)
+    assert change.line == 4  # leading blank lines counted, as in the saved file
+    assert change.context == "...w7 w8 w9 w10 w11 [כְּחָל] w0 w1 w2 w3 w4..."
+    [change] = changed_words("(כחל), x", "(כְּחָל), x")
+    assert change == Change("כחל", "כְּחָל", 1, "([כְּחָל]), x")
+
+
+def test_format_changes_groups_flags_variants_and_sorts():
+    original = ("מה דינו של כחל של בהמה, ופת.\n"
+                "אם כחל נאסר ופת אחרת.\n"
+                "ואכל פת ובשר כחל, ופת.\n"
+                "וכותח שלם.")
+    vocalized = ("מה דינו של כְּחָל של בהמה, ופַת.\n"
+                 "אם כֹּחַל נאסר ופַת אחרת.\n"
+                 "ואכל פַּת ובשר כְּחָל, ופַת.\n"
+                 "וכּוּתָח שלם.")
+    assert format_changes(changed_words(original, vocalized)).splitlines() == [
+        "varies\toriginal\tvocalized\tcount\tfirst_line\tcontext",
+        # כחל got two readings: first, each variant on its own line, the more frequent first
+        "yes\tכחל\tכְּחָל\t2\t1\tמה דינו של [כְּחָל] של בהמה, ופַת.",
+        "yes\tכחל\tכֹּחַל\t1\t2\tאם [כֹּחַל] נאסר ופַת אחרת.",
+        # then the rest by count (ties: first line)
+        "no\tופת\tופַת\t3\t1\t...דינו של כְּחָל של בהמה, [ופַת].",   # 5 words each side, "..." when cut
+        "no\tפת\tפַּת\t1\t3\tואכל [פַּת] ובשר כְּחָל, ופַת.",
+        "no\tוכותח\tוכּוּתָח\t1\t4\t[וכּוּתָח] שלם.",
+    ]
+
+
+def test_format_changes_without_changes_is_the_header():
+    assert format_changes([]) == CHANGES_HEADER + "\n"
+
+
 def test_changed_words_and_format():
     assert changed_words(ORIG, VOCALIZED) == CHANGES  # trailing punctuation trimmed
-    assert format_changes(CHANGES).splitlines()[0] == "טית\tטֵית"
+    assert format_changes(CHANGES).splitlines()[:2] == [CHANGES_HEADER, "no\tטית\tטֵית\t1\t1\tסימן [טֵית] עוסק בדין פַּת."]
 
 
 # --- validation (failures raise) -------------------------------------------------
@@ -73,14 +117,13 @@ def test_matres_change_mid_word_accepted(word, respelled):
     out = MATRES_ORIG.replace(word, respelled)
     text, changes = vocalize_pronunciation(MATRES_ORIG, lambda t: out)
     assert text == out
-    assert changes == [(word.strip(","), respelled.strip(","))]
+    assert _pairs(changes) == [(word.strip(","), respelled.strip(","))]
 
 
 def test_respelled_words_listed_in_changes():
     out = "אסור לאכול עֻבָּר בהמה, ויש שֶׁהֵקֵלּוּ.\n"
     _, changes = vocalize_pronunciation(MATRES_ORIG, lambda t: out)
-    assert changes == [("עובר", "עֻבָּר"), ("שהקילו", "שֶׁהֵקֵלּוּ")]
-    assert format_changes(changes) == "עובר\tעֻבָּר\nשהקילו\tשֶׁהֵקֵלּוּ\n"
+    assert _pairs(changes) == [("עובר", "עֻבָּר"), ("שהקילו", "שֶׁהֵקֵלּוּ")]
 
 
 @pytest.mark.parametrize("word, bad", [
@@ -308,6 +351,44 @@ pronunciation:
         cfg.pronunciation_instruction
 
 
+KAHAL = '{word: "כחל", readings: [{nikkud: "כְּחָל", meaning: "עטין של בהמה"}, {nikkud: "כֹּחַל", meaning: "צבע איפור"}]}'
+
+
+def test_always_vocalize_mixes_plain_words_and_readings():
+    single = '{word: "עובר", readings: [{nikkud: "עֻבָּר", meaning: "ולד בבטן"}]}'   # one reading: a hint
+    cfg = _placeholder_config(f'["כותח", {KAHAL}, {single}]', '["דרבנן"]')
+    assert cfg.pronunciation_always_vocalize == [
+        "כותח", "כחל (כְּחָל = עטין של בהמה; כֹּחַל = צבע איפור)", "עובר (עֻבָּר = ולד בבטן)"]
+    assert cfg.pronunciation_instruction.startswith(
+        "תמיד: כותח, כחל (כְּחָל = עטין של בהמה; כֹּחַל = צבע איפור), עובר (עֻבָּר = ולד בבטן) | לעולם: דרבנן | ")
+
+
+def test_reading_may_add_matres_like_the_validator():
+    cfg = _placeholder_config('[{word: "הקילו", readings: [{nikkud: "הֵקֵלּוּ", meaning: "הקלו"}]}]', "[]")
+    assert cfg.pronunciation_always_vocalize == ["הקילו (הֵקֵלּוּ = הקלו)"]
+
+
+@pytest.mark.parametrize("entry, message", [
+    ('{readings: [{nikkud: "כְּחָל", meaning: "m"}]}', "'word' and 'readings'"),
+    ('{word: "כחל", readings: [{nikkud: "כְּחָל", meaning: "m"}], note: "x"}', "'word' and 'readings'"),
+    ('{word: "", readings: [{nikkud: "כְּחָל", meaning: "m"}]}', "non-empty word without nikkud"),
+    ('{word: "כְּחָל", readings: [{nikkud: "כְּחָל", meaning: "m"}]}', "non-empty word without nikkud"),
+    ('{word: "כחל", readings: []}', "non-empty list"),
+    ('{word: "כחל", readings: "כְּחָל"}', "non-empty list"),
+    ('{word: "כחל", readings: [{nikkud: "כְּחָל"}]}', "'nikkud' and 'meaning'"),
+    ('{word: "כחל", readings: [{nikkud: "כְּחָל", meaning: " "}]}', "non-empty 'meaning'"),
+    ('{word: "כחל", readings: [{nikkud: "", meaning: "m"}]}', "must be the vocalized word"),
+    ('{word: "כחל", readings: [{nikkud: "כחל", meaning: "m"}]}', "must be the vocalized word"),
+    ('{word: "כחל", readings: [{nikkud: "כְּחָלִים", meaning: "m"}]}', "letters changed"),          # typo
+    ('{word: "כחל", readings: [{nikkud: "וְכְּחָל", meaning: "m"}]}', "at the start of the word"),
+    ('{word: "ולד", readings: [{nikkud: "לָד", meaning: "m"}]}', "at the start of the word"),     # first letter
+])
+def test_always_vocalize_reading_errors(entry, message):
+    cfg = _placeholder_config(f"[{entry}]", "[]")
+    with pytest.raises(ValueError, match=message):
+        cfg.pronunciation_instruction
+
+
 @pytest.mark.parametrize("bad", ['"כותח"', '[1, 2]', '[""]'])
 def test_instruction_invalid_list_errors(bad):
     cfg = _placeholder_config(bad, "[]")
@@ -323,7 +404,8 @@ def test_real_config_yaml_has_pronunciation():
     instruction = cfg.pronunciation_instruction
     assert "ניקוד" in instruction and "phoneme" not in instruction and "IPA" not in instruction
     assert "{always_vocalize}" not in instruction and "{never_vocalize}" not in instruction
-    assert "תמיד לנקד: עובר בהמה, כותח" in instruction
+    assert "תמיד לנקד (כשמופיעות קריאות בסוגריים, בחר לפי ההקשר): עובר בהמה, כותח" in instruction
+    assert "כחל (כְּחָל = עטין של בהמה; כֹּחַל = צבע איפור)" in instruction
     assert "לעולם לא לנקד: דאורייתא, דרבנן" in instruction
 
 
@@ -676,7 +758,7 @@ def test_vocalize_script_applies_dictionary_nikkud_first(tmp_path, monkeypatch):
     script.main([str(src)])
     assert gen.generate_text.call_args.args[1] == "סימן הֵי והשַׁךְ"
     assert (tmp_path / "x_vocalized.txt").read_text(encoding="utf-8") == "סימן הֵי והשַׁךְ"
-    assert (tmp_path / "x_vocalized_changes.txt").read_text(encoding="utf-8") == ""
+    assert (tmp_path / "x_vocalized_changes.txt").read_text(encoding="utf-8") == CHANGES_HEADER + "\n"
 
 
 # --- scripts ----------------------------------------------------------------

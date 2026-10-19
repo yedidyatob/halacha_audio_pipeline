@@ -3,6 +3,7 @@ import yaml
 from typing import Dict, Any
 from pipeline.logger import get_logger
 from pipeline.domain import SECTIONS_METADATA
+from pipeline.pronunciation import has_nikkud, word_vocalization_error
 from pipeline.tts import (
     validate_gap_ms, validate_chunk_size, validate_context_chars,
     GOOGLE_TTS_MAX_INPUT_BYTES, GOOGLE_TTS_ASSUMED_BYTES_PER_CHAR,
@@ -17,6 +18,46 @@ def _max_retries(value, key: str) -> int:
 
 
 THINKING_LEVELS = ("low", "medium", "high")
+
+
+def _non_empty_str(value) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _always_vocalize_entry(entry, key: str) -> str:
+    """
+    One pronunciation.always_vocalize entry, rendered for the prompt: a plain word as is, or
+    {word, readings: [{nikkud, meaning}, ...]} as 'word (nikkud = meaning; ...)'. Each reading's
+    nikkud must be a valid vocalization of the word by the stage's own rule (same letters, ו / י
+    may be added or removed except as the first letter), so a typo is caught at startup.
+    """
+    if isinstance(entry, str):
+        if not entry.strip():
+            raise ValueError(f"'{key}' entries must be non-empty, got {entry!r}.")
+        return entry.strip()
+    if not isinstance(entry, dict) or set(entry) != {"word", "readings"}:
+        raise ValueError(f"'{key}' entries must be a word or a mapping with 'word' and 'readings', got {entry!r}.")
+    word, readings = entry["word"], entry["readings"]
+    if not _non_empty_str(word) or has_nikkud(word):
+        raise ValueError(f"'{key}' entry 'word' must be a non-empty word without nikkud, got {word!r}.")
+    word = word.strip()
+    if not isinstance(readings, list) or not readings:
+        raise ValueError(f"'{key}' entry {word!r}: 'readings' must be a non-empty list, got {readings!r}.")
+    rendered = []
+    for reading in readings:
+        if not isinstance(reading, dict) or set(reading) != {"nikkud", "meaning"}:
+            raise ValueError(f"'{key}' entry {word!r}: each reading must be a mapping with 'nikkud' and "
+                             f"'meaning', got {reading!r}.")
+        nikkud, meaning = reading["nikkud"], reading["meaning"]
+        if not _non_empty_str(meaning):
+            raise ValueError(f"'{key}' entry {word!r}: reading {nikkud!r} needs a non-empty 'meaning'.")
+        if not _non_empty_str(nikkud) or not has_nikkud(nikkud):
+            raise ValueError(f"'{key}' entry {word!r}: reading 'nikkud' must be the vocalized word, got {nikkud!r}.")
+        error = word_vocalization_error(word, nikkud.strip())
+        if error:
+            raise ValueError(f"'{key}' entry {word!r}: reading {nikkud!r} is not a vocalization of the word ({error}).")
+        rendered.append(f"{nikkud.strip()} = {meaning.strip()}")
+    return f"{word} ({'; '.join(rendered)})"
 
 
 def _rates(entry: dict, key: str) -> dict:
@@ -313,19 +354,20 @@ class PipelineConfig:
         """Extra LLM calls after a failed pronunciation attempt (LLM error or rejected output)."""
         return _max_retries(self._pronunciation_value("max_retries"), "pronunciation.max_retries")
 
-    def _pronunciation_word_list(self, key: str) -> list:
-        value = self._pronunciation_value(key)
-        if not isinstance(value, list) or not all(isinstance(w, str) and w.strip() for w in value):
-            raise ValueError(f"'pronunciation.{key}' must be a list of non-empty strings, got {value!r}.")
-        return [w.strip() for w in value]
-
     @property
     def pronunciation_always_vocalize(self) -> list:
-        return self._pronunciation_word_list("always_vocalize")
+        """The always_vocalize entries as rendered in the prompt (see _always_vocalize_entry)."""
+        value = self._pronunciation_value("always_vocalize")
+        if not isinstance(value, list):
+            raise ValueError(f"'pronunciation.always_vocalize' must be a list, got {value!r}.")
+        return [_always_vocalize_entry(entry, "pronunciation.always_vocalize") for entry in value]
 
     @property
     def pronunciation_never_vocalize(self) -> list:
-        return self._pronunciation_word_list("never_vocalize")
+        value = self._pronunciation_value("never_vocalize")
+        if not isinstance(value, list) or not all(_non_empty_str(w) for w in value):
+            raise ValueError(f"'pronunciation.never_vocalize' must be a list of non-empty strings, got {value!r}.")
+        return [w.strip() for w in value]
 
     @staticmethod
     def _render_word_list(words: list) -> str:

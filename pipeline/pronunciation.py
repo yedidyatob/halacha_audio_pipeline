@@ -25,7 +25,8 @@ from __future__ import annotations
 
 import difflib
 import re
-from typing import Callable, Optional
+from collections import Counter
+from typing import Callable, NamedTuple, Optional
 
 from pipeline.logger import get_logger
 from pipeline.retry import call_with_retries
@@ -48,7 +49,16 @@ _ANY_VAV_YOD_RE = re.compile("[\u05D5\u05D9]")
 # Punctuation trimmed from the ends of a word in the review list of changed words.
 _EDGE_PUNCT = ".,;:!?()[]{}-\u05BE\u2013\u2014"
 
-Change = tuple[str, str]  # (original word, vocalized word)
+# Words of context on each side of a changed word in the review list of changed words.
+CONTEXT_WORDS = 5
+
+
+class Change(NamedTuple):
+    """One word the stage changed (vocalized, and possibly respelled with ו / י)."""
+    original: str   # input word, edge punctuation trimmed
+    vocalized: str  # output word, edge punctuation trimmed
+    line: int       # 1-based line of the word in the vocalized text
+    context: str    # up to CONTEXT_WORDS output words on each side (same line), the word in [brackets]
 
 
 class PronunciationError(RuntimeError):
@@ -90,7 +100,7 @@ def _layout(text: str) -> list[str]:
     return re.split(r"\S+", text)
 
 
-def _word_pairs(original: str, vocalized: str) -> list[Change]:
+def _word_pairs(original: str, vocalized: str) -> list[tuple[str, str]]:
     """
     Aligned (input word, output word) pairs. Only valid once both texts are known to have the
     same layout, so whitespace splitting yields the same number of words.
@@ -98,7 +108,7 @@ def _word_pairs(original: str, vocalized: str) -> list[Change]:
     return list(zip(_normalize(original).split(), _normalize(vocalized).split()))
 
 
-def _word_error(original: str, output: str) -> Optional[str]:
+def word_vocalization_error(original: str, output: str) -> Optional[str]:
     """Why `output` is not a valid rendering of the input word `original`, or None if it is."""
     if has_nikkud(original):
         return None if output == original else "already vocalized, must stay identical"
@@ -124,7 +134,7 @@ def validate_vocalized_output(original: str, vocalized: str) -> Optional[str]:
     rejected = [
         f"{a} -> {b} ({error})"
         for a, b in _word_pairs(original, vocalized)
-        if (error := _word_error(a, b))
+        if (error := word_vocalization_error(a, b))
     ]
     if rejected:
         more = f" ... (+{len(rejected) - 5} more)" if len(rejected) > 5 else ""
@@ -132,21 +142,64 @@ def validate_vocalized_output(original: str, vocalized: str) -> Optional[str]:
     return None
 
 
+def _marked_context(words: list[str], index: int) -> str:
+    """words[index] in [brackets] (edge punctuation outside) with CONTEXT_WORDS words on each side."""
+    word = words[index]
+    core = word.strip(_EDGE_PUNCT)
+    lead = word[:len(word) - len(word.lstrip(_EDGE_PUNCT))]
+    trail = word[len(lead) + len(core):]
+    start, end = max(0, index - CONTEXT_WORDS), index + 1 + CONTEXT_WORDS
+    parts = words[start:index] + [f"{lead}[{core}]{trail}"] + words[index + 1:end]
+    return ("..." if start > 0 else "") + " ".join(parts) + ("..." if end < len(words) else "")
+
+
 def changed_words(original: str, vocalized: str) -> list[Change]:
     """
-    (original, vocalized) for every word the stage changed (vocalized, and possibly respelled
-    with ו / י), in order, edge punctuation trimmed.
+    Every word the stage changed, in order (see Change). Only valid once the texts are known to
+    have the same layout (validate_vocalized_output).
     """
-    return [
-        (a.strip(_EDGE_PUNCT), b.strip(_EDGE_PUNCT))
-        for a, b in _word_pairs(original, vocalized)
-        if a != b
-    ]
+    raw_lines = vocalized.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    # _normalize drops leading blank lines; line numbers refer to the vocalized text as written
+    first_line = next((n for n, line in enumerate(raw_lines, 1) if line.strip()), 1)
+    changes = []
+    lines = zip(_normalize(original).split("\n"), _normalize(vocalized).split("\n"))
+    for line_no, (original_line, vocalized_line) in enumerate(lines, first_line):
+        output_words = vocalized_line.split()
+        for i, (a, b) in enumerate(zip(original_line.split(), output_words)):
+            if a != b:
+                changes.append(Change(a.strip(_EDGE_PUNCT), b.strip(_EDGE_PUNCT), line_no,
+                                      _marked_context(output_words, i)))
+    return changes
+
+
+CHANGES_HEADER = "varies\toriginal\tvocalized\tcount\tfirst_line\tcontext"
 
 
 def format_changes(changes: list[Change]) -> str:
-    """'original<TAB>vocalized' per line."""
-    return "".join(f"{original}\t{vocalized}\n" for original, vocalized in changes)
+    """
+    The review list of changed words: a CHANGES_HEADER line, then one tab-separated line per
+    distinct (original, vocalized) pair with its count, first line and the context of its first
+    occurrence. varies is "yes" when the same original word got more than one vocalization; those
+    words come first (each variant on its own line, kept together), then the rest by count.
+    """
+    pairs: dict[tuple[str, str], list] = {}  # (original, vocalized) -> [count, first Change]
+    for change in changes:
+        pairs.setdefault((change.original, change.vocalized), [0, change])[0] += 1
+    variants = Counter(original for original, _ in pairs)
+    totals = Counter(change.original for change in changes)
+    first_lines = {}
+    for change in changes:
+        first_lines.setdefault(change.original, change.line)
+
+    def order(item):
+        (original, _), (count, first) = item
+        return (variants[original] == 1, -totals[original], first_lines[original], -count, first.line)
+
+    rows = [CHANGES_HEADER]
+    for (original, vocalized), (count, first) in sorted(pairs.items(), key=order):
+        varies = "yes" if variants[original] > 1 else "no"
+        rows.append(f"{varies}\t{original}\t{vocalized}\t{count}\t{first.line}\t{first.context}")
+    return "\n".join(rows) + "\n"
 
 
 def parse_vocalized_response(script_text: str, vocalized: str) -> tuple[str, list[Change]]:
@@ -159,7 +212,7 @@ def parse_vocalized_response(script_text: str, vocalized: str) -> tuple[str, lis
         raise PronunciationError(f"pronunciation output rejected: {reason}")
     vocalized = vocalized.replace("\r\n", "\n")
     changes = changed_words(script_text, vocalized)
-    respelled = sum(strip_nikkud(b) != a for a, b in changes)
+    respelled = sum(strip_nikkud(c.vocalized) != c.original for c in changes)
     logger.info(f"Pronunciation stage: {len(changes)} word(s) vocalized ({respelled} respelled with ו/י).")
     return vocalized, changes
 

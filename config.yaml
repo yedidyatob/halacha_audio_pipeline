@@ -164,7 +164,20 @@ pronunciation:
   max_retries: 1
   # Filled into {always_vocalize} / {never_vocalize} in pronunciation_instruction (joined with ", ";
   # an empty list renders as "אין").
-  always_vocalize: ["עובר בהמה", "כותח", "נבילה", "למה", "שה"]
+  # An always_vocalize entry is a word, or a word with its readings (one or more), rendered as
+  # 'כחל (כְּחָל = עטין של בהמה; כֹּחַל = צבע איפור)'. Each reading needs a nikkud and a meaning; the
+  # nikkud must be the word's letters (ו / י may be added or removed, except as the first letter),
+  # checked at startup.
+  always_vocalize:
+    - "עובר בהמה"
+    - "כותח"
+    - "נבילה"
+    - "למה"
+    - "שה"
+    - word: "כחל"
+      readings:
+        - {nikkud: "כְּחָל", meaning: "עטין של בהמה"}
+        - {nikkud: "כֹּחַל", meaning: "צבע איפור"}
   never_vocalize: ["דאורייתא", "דרבנן"]
 
 pronunciation_instruction: |
@@ -180,7 +193,7 @@ pronunciation_instruction: |
     אל תנקד מילה רק בגלל שהיא ארמית או תורנית, אם יש לה קריאה מקובלת אחת (דאורייתא, דרבנן, מותר, אסור, בדיעבד).
     אם אינך בטוח, אל תנקד.
 
-    תמיד לנקד: {always_vocalize}
+    תמיד לנקד (כשמופיעות קריאות בסוגריים, בחר לפי ההקשר): {always_vocalize}
     לעולם לא לנקד: {never_vocalize}
 
     נקד רק את המילה הדו-משמעית עצמה (כולל אותיות השימוש הצמודות לה), בניקוד מלא ומדויק לפי ההקשר, ואל תנקד את שאר המשפט.
