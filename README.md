@@ -94,8 +94,9 @@ evaluator uses them to know which se'ifim have a Rama gloss.
 Configured in `config.yaml` (`pronunciation:` section + `pronunciation_instruction`; no code defaults).
 `pronunciation.thinking_level` (`low`/`medium`/`high`) sets the Gemini thinking level for this call
 only; it is required when `pronunciation.engine` is `gemini` and ignored for `openai`.
-`pronunciation.max_retries` is the number of extra calls after a failed attempt (LLM error, empty or
-rejected output; 0 = no retry); each failed attempt is logged as a warning with its reason.
+`pronunciation.max_retries` is the number of retries after a failed attempt (LLM error, empty or
+rejected output; 0 = no retry; batch mode retries as new batch jobs, see Batch Mode); each failed
+attempt is logged as a warning with its reason.
 `pronunciation.always_vocalize` / `pronunciation.never_vocalize` are word lists filled into the
 `{always_vocalize}` / `{never_vocalize}` placeholders of the instruction (joined with ", "; an empty
 list renders as "אין").
@@ -202,12 +203,23 @@ python main.py 94 --retrieve-batch <batch_id>
 
 With `--batch`, every LLM stage runs as batch jobs with polling, including pronunciation nikkud
 (Stage 3.5): one job per siman that polished successfully, using the `pronunciation:` engine,
-model, temperature and `thinking_level` (which may differ from the generator engine). Each result
-goes through the same validation as sync mode. An unavailable, empty or rejected batch result is retried with
-synchronous calls (same request, up to `pronunciation.max_retries`), so a rare bad output does not
-need another batch round; a failed job, or a result still invalid after the retries, fails only
-that siman (stage "Stage 3.5 (Pronunciation nikkud)" in the run summary). The run stops at
+model, temperature and `thinking_level` (which may differ from the generator engine). The run stops at
 startup if `pronunciation.engine` does not support batch.
+
+Failures and retries work the same way in every LLM stage. A failed attempt is a failed call in sync
+mode; in batch mode a failed submit, a failed job, or a failed request inside a succeeded job (logged
+with the API's error code and message, e.g. `error code 1 (CANCELLED): The operation was cancelled.`,
+or a blocked / cut-off / empty response named by its block or finish reason). Every failed attempt is
+logged as a warning. Retries run in rounds: each round retries all the items of the stage that have
+failed so far, in sync mode as new sync calls and in batch mode as new batch jobs that are polled
+again (batch mode never falls back to sync calls). Stages 1-3 allow up to `generator.max_retries`
+rounds and Stage 3.5 up to `pronunciation.max_retries`; Stage 3.5 results also go through the same
+validation as sync mode.
+When an item still fails after its retries:
+- Stage 1 (drafts): every successful draft is already saved to the cache (each one as soon as it
+  arrives). The run then aborts, and a rerun only regenerates the missing drafts.
+- Stage 2 (relations map): the run aborts.
+- Stages 3 / 3.5: only that siman fails, and it appears in the end-of-run summary.
 
 ---
 
@@ -228,6 +240,10 @@ generator:
     temperature: 1.0
     service_tier: "auto"
 ```
+
+`generator.max_retries` is the number of retries after a failed attempt in Stages 1-3 (API error,
+failed batch job or request, empty, blocked or cut-off response; 0 = no retry): new calls in sync
+mode, new batch jobs in batch mode.
 
 ### TTS Engine
 

@@ -9,7 +9,7 @@ from pipeline.generator import GeminiScriptGenerator
 
 def _cfg(tmp_path):
     return MagicMock(section_slug="YD", drafts_dir=str(tmp_path / "drafts"), relations_dir=str(tmp_path / "rel"),
-                     output_dir=str(tmp_path / "out"), generator_engine="gemini", tts_engine="gemini",
+                     output_dir=str(tmp_path / "out"), generator_max_retries=1, generator_engine="gemini", tts_engine="gemini",
                      pronunciation_enabled=False)
 
 
@@ -93,6 +93,7 @@ def test_main_dry_run_prints_plan_and_calls_nothing(cache, monkeypatch, caplog):
     _main_dry_run(cache, monkeypatch, ["94", "--context-range", "94-96", "--batch"])
     out = caplog.text
     assert "Dry run: plan" in out
+    assert "Failed LLM calls are retried as new batch jobs: Stages 1-3 up to 1 time(s)\n" in out
     assert f"Stage 2 relations map: will be GENERATED (a batch job) from the drafts of [94, 95, 96] " \
            f"and saved to {_rel(cache)}" in out
     assert "from cache (2): [94, 96]" in out
