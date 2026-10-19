@@ -32,8 +32,14 @@ def test_gemini_batch_result_text_without_thought_parts():
 
 
 def test_gemini_batch_request_error_is_surfaced():
-    gen = _gemini_with(types.InlinedResponse(error=types.JobError(code=13, message="Internal error encountered.")))
-    with pytest.raises(ValueError, match=r"batch request failed \(job batches/1\): error code 13: Internal error encountered\."):
+    # what the API returned for 3 of 11 Stage 1 requests inside a SUCCEEDED job
+    gen = _gemini_with(types.InlinedResponse(error=types.JobError(code=1, message="The operation was cancelled.")))
+    with pytest.raises(ValueError) as exc:
+        gen.get_batch_result("batches/1")
+    assert str(exc.value) == ("Gemini batch request failed (job batches/1): "
+                              "error code 1 (CANCELLED): The operation was cancelled.")
+    gen = _gemini_with(types.InlinedResponse(error=types.JobError(code=99, message="x", details=["d1"])))
+    with pytest.raises(ValueError, match=r"error code 99: x \(details: d1\)$"):
         gen.get_batch_result("batches/1")
 
 
@@ -96,24 +102,20 @@ def test_openai_batch_result_failures_name_the_reason(output, error, reason):
 
 # --- retry helper ------------------------------------------------------------------
 
-def test_call_with_retries_first_attempt_then_calls(caplog):
-    calls = []
+def test_call_with_retries(caplog):
+    answers = iter([ValueError("again"), "ok"])
     def call():
-        calls.append(1)
-        if len(calls) < 2:
-            raise ValueError("again")
-        return "ok"
-    def batch():
-        raise ValueError("request failed")
-    assert call_with_retries(call, 2, "Siman 94 X", first_attempt=batch) == "ok"
-    assert len(calls) == 2
-    assert "Siman 94 X attempt 1/3 failed: request failed; retrying" in caplog.text
+        answer = next(answers)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    assert call_with_retries(call, 2, "Siman 94 X") == "ok"
+    assert "Siman 94 X attempt 1/3 failed: again; retrying" in caplog.text
 
 
 def test_call_with_retries_raises_last_reason():
     with pytest.raises(RuntimeError, match=r"^last \(after 2 attempt\(s\)\)$"):
-        call_with_retries(MagicMock(side_effect=ValueError("last")), 1, "x",
-                          first_attempt=MagicMock(side_effect=ValueError("first")))
+        call_with_retries(MagicMock(side_effect=[ValueError("first"), ValueError("last")]), 1, "x")
 
 
 # --- config ------------------------------------------------------------------------
@@ -163,10 +165,14 @@ def test_real_config_generator_max_retries():
 # --- Stage 1 / 2 / 3 in main.py -----------------------------------------------------
 
 class FakeGenerator(BatchCapableGenerator):
-    """Batch jobs answer via batch(custom_id); sync calls via sync(kind, key) (an Exception is raised)."""
+    """
+    Batch results come from batch(custom_id, n), n = how many times that custom_id was submitted;
+    sync calls from sync(kind, key). A returned Exception is raised.
+    """
 
-    def __init__(self, batch=lambda cid: f"draft {cid}", sync=lambda kind, key: f"sync {kind} {key}"):
-        self.batch, self.sync = batch, sync
+    def __init__(self, batch=lambda cid, n: f"draft {cid}", sync=lambda kind, key: f"sync {kind} {key}",
+                 failed_jobs=()):
+        self.batch, self.sync, self.failed_jobs = batch, sync, set(failed_jobs)
         self.model_name, self.temperature = "m", 0.2
         self.sync_calls, self.submitted = [], []
 
@@ -178,13 +184,14 @@ class FakeGenerator(BatchCapableGenerator):
     def submit_batch(self, system_instruction, user_prompt, temperature, custom_id, cache_dir="./cache",
                      thinking_level=None):
         self.submitted.append(custom_id)
-        return custom_id
+        return f"{custom_id}#{self.submitted.count(custom_id)}"
 
     def get_batch_status(self, job_id):
-        return "completed"
+        return "failed" if job_id in self.failed_jobs else "completed"
 
     def get_batch_result(self, job_id):
-        return self._answer(self.batch(job_id))
+        custom_id, n = job_id.split("#")
+        return self._answer(self.batch(custom_id, int(n)))
 
     def _sync(self, kind, key):
         self.sync_calls.append((kind, key))
@@ -209,7 +216,12 @@ class FakeGenerator(BatchCapableGenerator):
         return draft
 
 
-REQUEST_ERROR = ValueError("Gemini batch request failed (job stage1_siman_95): error code 13: Internal error")
+CANCELLED = "Gemini batch request failed (job {}): error code 1 (CANCELLED): The operation was cancelled."
+
+
+def cancelled(cid, rounds=(1,)):
+    """batch() answer: the request is CANCELLED in the given submission rounds, else a draft."""
+    return lambda c, n: ValueError(CANCELLED.format(c)) if c == cid and n in rounds else f"draft {c} #{n}"
 
 
 def _cfg(tmp_path, retries):
@@ -229,28 +241,62 @@ def _extractor():
     return MagicMock(compile_simanim_context=lambda simanim, target_simanim: f"context {simanim[0]}")
 
 
-def test_stage1_batch_request_error_retried_synchronously(tmp_path):
-    gen = FakeGenerator(batch=lambda cid: REQUEST_ERROR if cid.endswith("_95") else f"draft {cid}")
-    drafts = main_mod.generate_drafts([94, 95, 96], _extractor(), gen, _cfg(tmp_path, 1), _args(), "m")
-    assert drafts == {94: "draft stage1_siman_94", 95: "sync draft 95", 96: "draft stage1_siman_96"}
-    assert gen.sync_calls == [("draft", 95)]          # only the failed siman, one sync retry
-    assert _saved(tmp_path) == [94, 95, 96]
+def test_stage1_failed_requests_resubmitted_in_one_batch_round(tmp_path, caplog):
+    def batch(cid, n):
+        if cid in ("stage1_siman_95", "stage1_siman_97") and n == 1:
+            return ValueError(CANCELLED.format(cid))
+        return f"draft {cid} #{n}"
+    gen = FakeGenerator(batch=batch)
+    drafts = main_mod.generate_drafts([94, 95, 96, 97], _extractor(), gen, _cfg(tmp_path, 1), _args(), "m")
+    assert drafts == {94: "draft stage1_siman_94 #1", 95: "draft stage1_siman_95 #2",
+                      96: "draft stage1_siman_96 #1", 97: "draft stage1_siman_97 #2"}
+    assert list(drafts) == [94, 95, 96, 97]           # siman order kept
+    # round 2 resubmits both failed simanim together; batch mode never calls sync
+    assert gen.submitted == ["stage1_siman_94", "stage1_siman_95", "stage1_siman_96", "stage1_siman_97",
+                             "stage1_siman_95", "stage1_siman_97"]
+    assert gen.sync_calls == []
+    assert _saved(tmp_path) == [94, 95, 96, 97]
+    assert ("Siman 95 Stage 1 (Drafts) attempt 1/2 failed: Gemini batch request failed (job stage1_siman_95): "
+            "error code 1 (CANCELLED): The operation was cancelled.; retrying.") in caplog.text
+    assert "Stage 1 (Drafts): retry round 1/1 for 2 item(s) as new batch jobs." in caplog.text
 
 
 def test_stage1_failure_saves_the_others_then_aborts(tmp_path, caplog):
-    gen = FakeGenerator(batch=lambda cid: REQUEST_ERROR if cid.endswith("_95") else f"draft {cid}",
-                        sync=lambda kind, key: RuntimeError("503 overloaded"))
+    gen = FakeGenerator(batch=cancelled("stage1_siman_95", rounds=(1, 2)))
     with pytest.raises(SystemExit) as exc:
         main_mod.generate_drafts([94, 95, 96, 97], _extractor(), gen, _cfg(tmp_path, 1), _args(), "m")
     assert exc.value.code == 1
     assert _saved(tmp_path) == [94, 96, 97]           # a failure no longer loses the later results
-    assert (tmp_path / "YD_Siman_96_m_draft.txt").read_text(encoding="utf-8") == "draft stage1_siman_96"
-    assert "error code 13: Internal error" in caplog.text
-    assert "Siman 95 | stage: Stage 1 (Drafts) | reason: 503 overloaded (after 2 attempt(s))" in caplog.text
-    assert "3 result(s) were saved to the cache" in caplog.text
+    assert (tmp_path / "YD_Siman_96_m_draft.txt").read_text(encoding="utf-8") == "draft stage1_siman_96 #1"
+    assert gen.submitted.count("stage1_siman_95") == 2 and gen.sync_calls == []
+    assert ("Siman 95 | stage: Stage 1 (Drafts) | reason: Gemini batch request failed (job stage1_siman_95): "
+            "error code 1 (CANCELLED): The operation was cancelled. (after 2 attempt(s))") in caplog.text
+    assert "3 draft(s) were saved to the cache; a rerun only regenerates the missing ones." in caplog.text
 
 
-def test_stage1_sync_mode_retries_too(tmp_path):
+def test_stage1_no_retry_round_with_zero_budget(tmp_path):
+    gen = FakeGenerator(batch=cancelled("stage1_siman_95"))
+    with pytest.raises(SystemExit):
+        main_mod.generate_drafts([94, 95], _extractor(), gen, _cfg(tmp_path, 0), _args(), "m")
+    assert gen.submitted == ["stage1_siman_94", "stage1_siman_95"] and _saved(tmp_path) == [94]
+
+
+def test_stage1_failed_job_and_submit_error_are_resubmitted(tmp_path):
+    gen = FakeGenerator(failed_jobs={"stage1_siman_94#1"})
+    submit = gen.submit_batch
+    calls = []
+    def flaky_submit(**kwargs):
+        calls.append(kwargs["custom_id"])
+        if calls.count("stage1_siman_95") == 1 and kwargs["custom_id"] == "stage1_siman_95":
+            raise RuntimeError("429 quota")
+        return submit(**kwargs)
+    gen.submit_batch = flaky_submit
+    drafts = main_mod.generate_drafts([94, 95], _extractor(), gen, _cfg(tmp_path, 1), _args(), "m")
+    assert drafts == {94: "draft stage1_siman_94", 95: "draft stage1_siman_95"}
+    assert calls == ["stage1_siman_94", "stage1_siman_95", "stage1_siman_94", "stage1_siman_95"]
+
+
+def test_stage1_sync_mode_retries_with_sync_calls(tmp_path):
     answers = iter([RuntimeError("deadline"), "draft"])
     gen = FakeGenerator(sync=lambda kind, key: next(answers))
     assert main_mod.generate_drafts([94], _extractor(), gen, _cfg(tmp_path, 1), _args(batch=False), "m") == {94: "draft"}
@@ -267,19 +313,27 @@ def test_stage1_context_failure_aborts_after_other_drafts(tmp_path):
     assert gen.submitted == ["stage1_siman_94"] and _saved(tmp_path) == [94]
 
 
-def test_stage2_batch_failure_retried_then_aborts(tmp_path):
-    gen = FakeGenerator(batch=lambda cid: ValueError("no candidates"))
-    assert main_mod.generate_relations({94: "d"}, gen, _cfg(tmp_path, 1), _args()) == "sync relations (94,)"
-    gen = FakeGenerator(batch=lambda cid: ValueError("no candidates"), sync=lambda kind, key: RuntimeError("down"))
+def test_stage1_save_error_fails_siman_without_resubmission(tmp_path):
+    gen = FakeGenerator()
+    with patch.object(main_mod, "save_draft", side_effect=OSError("disk full")), pytest.raises(SystemExit):
+        main_mod.generate_drafts([94], _extractor(), gen, _cfg(tmp_path, 2), _args(), "m")
+    assert gen.submitted == ["stage1_siman_94"]
+
+
+def test_stage2_batch_failure_resubmitted_then_aborts(tmp_path):
+    gen = FakeGenerator(batch=lambda cid, n: ValueError("no candidates") if n == 1 else "relations")
+    assert main_mod.generate_relations({94: "d"}, gen, _cfg(tmp_path, 1), _args()) == "relations"
+    assert gen.submitted == ["stage2_relations"] * 2 and gen.sync_calls == []
+    gen = FakeGenerator(batch=lambda cid, n: ValueError("no candidates"))
     with pytest.raises(SystemExit):
         main_mod.generate_relations({94: "d"}, gen, _cfg(tmp_path, 1), _args())
 
 
-def test_stage3_polish_batch_error_retried_and_counted(tmp_path):
-    gen = FakeGenerator(batch=lambda cid: REQUEST_ERROR if cid.endswith("_95") else f"polished {cid}",
-                        sync=lambda kind, key: RuntimeError("still failing"))
+def test_stage3_polish_batch_retry_budget_then_fails_that_siman(tmp_path):
+    gen = FakeGenerator(batch=cancelled("stage3_siman_95", rounds=(1, 2, 3)))
     summary = main_mod.RunSummary()
     polished = main_mod.polish_simanim({94: "d94", 95: "d95"}, "rel", gen, _cfg(tmp_path, 2), _args(), summary)
-    assert polished == {94: "polished stage3_siman_94"}
-    assert gen.sync_calls == [("polish", "d95")] * 2   # max_retries = 2
-    assert summary.failed[95] == (main_mod.STAGE_POLISH, "still failing (after 3 attempt(s))")
+    assert polished == {94: "draft stage3_siman_94 #1"}
+    assert gen.submitted == ["stage3_siman_94"] + ["stage3_siman_95"] * 3   # max_retries = 2 rounds
+    assert gen.sync_calls == []
+    assert summary.failed[95] == (main_mod.STAGE_POLISH, CANCELLED.format("stage3_siman_95") + " (after 3 attempt(s))")

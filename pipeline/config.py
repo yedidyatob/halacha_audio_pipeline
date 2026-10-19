@@ -192,8 +192,9 @@ class PipelineConfig:
     @property
     def generator_max_retries(self) -> int:
         """
-        Extra synchronous calls after a failed generator attempt in Stages 1-3 (API error, failed
-        batch job or request, empty / blocked / cut-off response). Required: no code default.
+        Retry rounds after a failed generator attempt in Stages 1-3 (API error, failed batch job or
+        request, empty / blocked / cut-off response): new sync calls, or new batch jobs in batch
+        mode. Required: no code default.
         """
         value = (self.config_data.get("generator") or {}).get("max_retries")
         if value is None:

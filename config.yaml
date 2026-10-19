@@ -13,9 +13,10 @@ sefaria:
 # Script Generator Engine Selection and Settings
 generator:
   engine: "gemini"  # "gemini" or "openai"
-  # Extra synchronous calls after a failed attempt in Stages 1-3 (drafts, relations, polish):
-  # API error, failed batch job / request, empty, blocked or cut-off response. 0 = no retry.
-  # In batch mode the batch job is the first attempt. (Stage 3.5 uses pronunciation.max_retries.)
+  # Retry rounds after a failed attempt in Stages 1-3 (drafts, relations, polish): API error,
+  # failed batch job / request, empty, blocked or cut-off response. 0 = no retry. Sync mode retries
+  # with new calls; batch mode resubmits the failed items as new batch jobs.
+  # (Stage 3.5 uses pronunciation.max_retries.)
   max_retries: 1
   
   gemini:
@@ -154,8 +155,8 @@ pronunciation:
   # Gemini thinking level for the pronunciation call (required for engine gemini; ignored for openai).
   # Gemini 3.1 Pro accepts low/medium/high; try low to compare cost vs quality.
   thinking_level: "high"
-  # Extra LLM calls after a failed attempt (LLM error / rejected output); 0 = no retry.
-  # In batch mode the batch job is the first attempt and retries are synchronous calls.
+  # Retries after a failed attempt (LLM error / rejected output); 0 = no retry.
+  # Sync mode retries with new calls; batch mode resubmits the failed simanim as new batch jobs.
   max_retries: 1
   # Filled into {always_vocalize} / {never_vocalize} in pronunciation_instruction (joined with ", ";
   # an empty list renders as "אין").

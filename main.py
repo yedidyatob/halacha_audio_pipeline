@@ -27,7 +27,6 @@ from pipeline.factory import create_generator_engine, create_tts_engine
 from pipeline.gematria import int_to_gematria
 from pipeline.apply_nikkud import apply_nikkud_to_abbreviations
 from pipeline.pronunciation import create_pronunciation_vocalizer, format_changes
-from pipeline.retry import call_with_retries
 
 logger = get_logger("halacha_pipeline_cli")
 
@@ -124,61 +123,97 @@ class BatchCalls:
     fetch: Callable[[Any, Any, str], Any]
 
 
-def _batch_first_attempts(batch: BatchCalls, items: dict, stage: str, args) -> dict:
-    """
-    Submits one batch job per item and polls them all. Returns {key: first_attempt}: fetching
-    the job's result, or raising the submit error / job failure.
-    """
-    def failed(reason: str):
-        def attempt():
-            raise RuntimeError(reason)
-        return attempt
+def _sync_round(call, items: dict, accept) -> dict:
+    """One synchronous call(key, value) per item; accept(key, result) on success. Returns {key: error}."""
+    errors = {}
+    for key, value in items.items():
+        try:
+            result = call(key, value)
+        except Exception as e:
+            errors[key] = e
+        else:
+            accept(key, result)
+    return errors
 
-    attempts, jobs = {}, {}
+
+def _batch_round(batch: BatchCalls, items: dict, stage: str, args, accept) -> dict:
+    """
+    One batch job per item, all polled together; accept(key, result) as each result is fetched.
+    Returns {key: error} for failed submits, failed jobs and failed results.
+    """
+    errors, jobs = {}, {}
     for key, value in items.items():
         try:
             jobs[key] = batch.submit(key, value)
         except Exception as e:
-            logger.error(f"{item_label(key)}: {stage} batch submit failed: {e}")
-            attempts[key] = failed(f"batch submit failed: {e}")
+            errors[key] = RuntimeError(f"batch submit failed: {e}")
+        else:
+            logger.info(f"Submitted {stage} batch job for {item_label(key)}. Job ID: {jobs[key]}")
     if jobs:
         statuses = poll_batch_jobs(batch.generator, jobs, args.batch_poll_interval, args.batch_timeout, stage)
         for key, job_id in jobs.items():
             if statuses[key] == "failed":
-                attempts[key] = failed(f"batch job failed (job_id: {job_id})")
+                errors[key] = RuntimeError(f"batch job failed (job_id: {job_id})")
+                continue
+            try:
+                result = batch.fetch(key, items[key], job_id)
+            except Exception as e:
+                errors[key] = e
             else:
-                attempts[key] = lambda key=key, job_id=job_id: batch.fetch(key, items[key], job_id)
-    return attempts
+                accept(key, result)
+    return errors
 
 
 def run_llm_stage(summary: RunSummary, items: dict, stage: str, call, max_retries: int, args,
                   batch: BatchCalls, on_result: Optional[Callable[[Any, Any], None]] = None) -> dict:
     """
-    Runs an LLM stage over {key: value}, sync or batch (args.batch). Each item gets a first
-    attempt - call(key, value), or in batch mode its batch job's result - and up to max_retries
-    synchronous call(key, value) retries (pipeline.retry). on_result(key, result) runs as soon
-    as an item succeeds (e.g. to save it). Returns {key: result} for the items that succeeded;
-    the others are recorded in the summary with the last reason.
+    Runs an LLM stage over {key: value} in rounds: the first round covers every item, and each of
+    up to max_retries further rounds covers the items that failed so far. Sync mode (call(key, value))
+    retries with new sync calls; batch mode (args.batch) resubmits them all as new batch jobs and
+    polls again. Each failed attempt is logged as a warning with its reason. on_result(key, result)
+    runs as soon as an item succeeds (e.g. to save it); its own failure fails the item without a retry.
+    Returns {key: result} for the items that succeeded; the others are recorded in the summary.
     """
-    first_attempts = _batch_first_attempts(batch, items, stage, args) if args.batch else {}
+    results = {}
 
-    def attempt(key, value):
-        result = call_with_retries(lambda: call(key, value), max_retries, f"{item_label(key)} {stage}",
-                                   first_attempt=first_attempts.get(key))
-        if on_result is not None:
-            on_result(key, result)
-        return result
+    def accept(key, result):
+        try:
+            if on_result is not None:
+                run_siman_stage(key, stage, lambda: on_result(key, result))
+            results[key] = result
+        except SimanStageError as e:
+            summary.failure(key, e.stage, e.reason)
 
-    return run_per_siman(summary, items, stage, attempt)
+    attempts = max_retries + 1
+    pending = dict(items)
+    for number in range(1, attempts + 1):
+        if number > 1:
+            logger.info(f"{stage}: retry round {number - 1}/{max_retries} for {len(pending)} item(s)"
+                        + (" as new batch jobs." if args.batch else "."))
+        if args.batch:
+            errors = _batch_round(batch, pending, stage, args, accept)
+        else:
+            errors = _sync_round(call, pending, accept)
+        errors = {key: errors[key] for key in items if key in errors}  # item order
+        for key, error in errors.items():
+            logger.warning(f"{item_label(key)} {stage} attempt {number}/{attempts} failed: {error}"
+                           + ("; retrying." if number < attempts else ""))
+        pending = {key: items[key] for key in errors}
+        if not pending:
+            break
+    for key, error in errors.items():
+        reason = f"{error} (after {attempts} attempt(s))"
+        logger.error(f"{item_label(key)} failed at {stage}: {reason}")
+        summary.failure(key, stage, reason)
+    return {key: results[key] for key in items if key in results}
 
 
-def abort_if_failed(summary: RunSummary, stage: str, saved: dict) -> None:
+def abort_if_failed(summary: RunSummary, stage: str, note: str = "") -> None:
     """Stages 1 and 2 are needed by every siman: any failure ends the run (after saving the rest)."""
     if not summary.has_failures:
         return
     summary.log()
-    logger.error(f"{stage} failed; aborting the run. {len(saved)} result(s) were saved to the cache "
-                 f"and are reused on a rerun.")
+    logger.error(f"{stage} failed; aborting the run." + (f" {note}" if note else ""))
     sys.exit(1)
 
 
@@ -224,7 +259,8 @@ def generate_drafts(simanim: list, extractor, generator, config, args, model_suf
         ),
         on_result=lambda siman, draft: save_draft(siman, draft, config, model_suffix),
     )
-    abort_if_failed(summary, STAGE_DRAFTS, drafts)
+    abort_if_failed(summary, STAGE_DRAFTS,
+                    f"{len(drafts)} draft(s) were saved to the cache; a rerun only regenerates the missing ones.")
     return drafts
 
 
@@ -250,7 +286,7 @@ def generate_relations(drafts: dict, generator, config, args) -> str:
             fetch=lambda _, drafts, job_id: generator.get_batch_result(job_id),
         ),
     )
-    abort_if_failed(summary, STAGE_RELATIONS, result)
+    abort_if_failed(summary, STAGE_RELATIONS)
     return result[RELATIONS_KEY]
 
 

@@ -14,9 +14,10 @@ Validation (strict), word by word:
     added or removed (standard voweled spelling, e.g. עובר -> עֻבָּר, הקילו -> הֵקֵלּוּ) anywhere
     but at the start of the word;
   - no markup, no empty output.
-A violation or an LLM call failure fails the attempt; it is retried with a new synchronous
-call up to pronunciation.max_retries times (pipeline.retry; each failure is logged), then
-PronunciationError is raised with the last reason. There is no fallback: the caller decides what
+A violation or an LLM call failure fails the attempt; it is retried up to
+pronunciation.max_retries times (each failure is logged), then PronunciationError is raised
+with the last reason: by the pipeline (main.run_llm_stage: new sync calls, or new batch jobs in
+batch mode) or by vocalize (pipeline.retry). There is no fallback: the caller decides what
 to do (the pipeline fails that siman).
 """
 
@@ -180,7 +181,8 @@ class PronunciationVocalizer:
     The pronunciation stage, bound to its own generator (model, temperature), instruction,
     thinking_level and max_retries from config.yaml. The same request and the same validation
     are used for a synchronous call and for a batch job. vocalize_once and batch_result are
-    single attempts; the pipeline retries them (main.run_llm_stage), vocalize does it itself.
+    single attempts; the pipeline retries them (main.run_llm_stage: new calls in sync mode, new
+    batch jobs in batch mode), vocalize retries itself.
     """
 
     def __init__(self, generator, instruction: str, thinking_level: Optional[str], max_retries: int):

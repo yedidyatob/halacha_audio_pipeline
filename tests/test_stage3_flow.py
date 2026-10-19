@@ -39,7 +39,7 @@ class FakeBatchGenerator(BatchCapableGenerator):
     def get_batch_result(self, job_id):
         return self.respond(*self._results[job_id])
 
-    # pronunciation retries are synchronous calls (custom_id "sync")
+    # synchronous pronunciation calls (custom_id "sync")
     def generate_text(self, system_instruction, user_prompt, thinking_level=None):
         self.sync_prompts.append(user_prompt)
         return self.respond("sync", user_prompt)
@@ -111,12 +111,14 @@ def test_batch_pronunciation_validation_failure_and_empty_result(tmp_path):
     assert _transcripts(tmp_path) == [94, 97]
 
 
-def test_batch_pronunciation_rejected_result_retried_synchronously(tmp_path, caplog):
+def test_batch_pronunciation_rejected_results_resubmitted_as_batch(tmp_path, caplog):
+    submissions = {}
     def respond(cid, prompt):
-        if cid.endswith("_95"):
-            return prompt.replace("95", "99")  # batch output rejected
-        if cid.endswith("_96") or (cid == "sync" and "96" in prompt):
-            return prompt.replace("96", "99")  # rejected in batch and on retry
+        submissions[cid] = submissions.get(cid, 0) + 1
+        if cid.endswith("_95") and submissions[cid] == 1:
+            return prompt.replace("95", "99")  # rejected in round 1 only
+        if cid.endswith("_96"):
+            return prompt.replace("96", "99")  # rejected in both rounds
         return vocalized(prompt)
     voc_gen = FakeBatchGenerator(respond)
     polish_gen = FakeBatchGenerator(lambda cid, prompt: prompt)
@@ -124,10 +126,11 @@ def test_batch_pronunciation_rejected_result_retried_synchronously(tmp_path, cap
     assert summary.succeeded == [94, 95, 97]
     stage, reason = summary.failed[96]
     assert stage == main_mod.STAGE_PRONUNCIATION and "96 -> 99" in reason and "(after 2 attempt(s))" in reason
-    assert voc_gen.sync_prompts == ["טית 95", "טית 96"]  # only rejected simanim retried
-    assert len(voc_gen.submitted) == 4  # no second batch round
+    assert [r["custom_id"] for r in voc_gen.submitted] == (
+        [f"stage3_5_siman_{s}" for s in DRAFTS] + ["stage3_5_siman_95", "stage3_5_siman_96"])
+    assert voc_gen.sync_prompts == []  # batch mode never falls back to sync calls
     assert TET in (tmp_path / "YD_Siman_95_m_transcript.txt").read_text(encoding="utf-8")
-    assert "Siman 95 Stage 3.5 (Pronunciation nikkud) attempt 1/2 failed" in caplog.text and "retrying" in caplog.text
+    assert "Siman 95 Stage 3.5 (Pronunciation nikkud) attempt 1/2 failed" in caplog.text
 
 
 def test_batch_mixed_simanim_summary(tmp_path, caplog):
