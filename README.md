@@ -109,8 +109,9 @@ word, except that ו / י may be added or removed for standard voweled spelling 
 byte-identical; and no markup (`<...>`) may appear. There is no fallback: if every attempt fails,
 that siman fails with the last reason (no transcript, no TTS) and the run continues with the next
 siman.
-Letter names whose spelling must change (הא → הֵי) are handled by the dictionary stage
-(`NO_PREFIX_NIKKUD_DICT`), not by the LLM.
+Letter names whose spelling must change (הא / הי → הֵי, and the wrong vocalization הֵא → הֵי) are
+handled by the dictionary stage (`NO_PREFIX_NIKKUD_DICT`, `LETTER_NAME_MISVOCALIZATIONS`), not by
+the LLM; the polish writes letter names without nikkud.
 
 Standalone (Windows PowerShell, from the repo root):
 

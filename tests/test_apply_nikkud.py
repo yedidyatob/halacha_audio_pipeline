@@ -4,6 +4,7 @@ import pytest
 from pipeline import apply_nikkud as an
 from pipeline.apply_nikkud import (
     DEFAULT_PREFIXES,
+    LETTER_NAME_MISVOCALIZATIONS,
     NO_PREFIX_NIKKUD_DICT,
     RABBINIC_NIKKUD_DICT,
     additional_nikkud_corrections,
@@ -315,7 +316,8 @@ def test_entries_starting_with_prefix_letters_are_not_double_prefixed():
 
 
 # ---------------------------------------------------------------------------
-# Letter entries (הא / פא / צדי): standalone only, no prefixes, letter-name context only
+# Letter entries (הא / הי / וו / פא / צדי, and the wrong form הֵא): standalone only, no prefixes,
+# letter-name context only
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("text, expected", [
@@ -354,7 +356,7 @@ def test_entries_starting_with_prefix_letters_are_not_double_prefixed():
     ("הא ריש", "הֵי ריש"),
     ("פא זין", "פֵּא זין"),
     ("קוף הא", "קוף הֵי"),
-    ("הא\tוו", "הֵי\tוו"),
+    ("הא\tוו", "הֵי\tוָו"),
     ("סימן פא הא", "סימן פֵּא הֵי"),
     # next to punctuation / start / end / newline, with context
     ("שורה\nסימן הא", "שורה\nסימן הֵי"),
@@ -421,6 +423,50 @@ def test_siman_numbers_spoken_as_letter_names():
     assert apply("סימן פא זין") == f"סימן {NO_PREFIX_NIKKUD_DICT['פא']} זין"
 
 
+HEI = NO_PREFIX_NIKKUD_DICT["הא"]
+
+
+@pytest.mark.parametrize("text, expected", [
+    # the letter ה written as הי, or wrongly vocalized הֵא (e.g. by the polish), is respelled הֵי
+    ("סעיף הי", "סעיף הֵי"),
+    ("דף הי עמוד בית", "דף הֵי עמוד בית"),
+    ("סימן יוד הי", "סימן יוד הֵי"),
+    ("סעיף הֵא", "סעיף הֵי"),
+    ("סעיף הֵא.", "סעיף הֵי."),
+    # the polish output that showed the bug: a wrongly vocalized neighbour still gives context
+    ("צדי אלף עד צדי הֵא", "צָדִי אלף עד צָדִי הֵי"),
+    ("בדף למד הֵא עמוד בית", "בדף למד הֵי עמוד בית"),
+    ("סימן קוף הֵא", "סימן קוף הֵי"),
+    # וו as a letter name
+    ("סעיף וו", "סעיף וָו"),
+    ("דף קוף טית וו", "דף קוף טית וָו"),
+])
+def test_he_and_vav_letter_names(text, expected):
+    assert apply(text) == expected
+    assert apply(expected) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "הי מינייהו", "הי ניהו", "הֵא לך", "הֵא", "וו", "ווי העמודים", "סימן ווי",
+    "בהי", "בהֵא", "סימן בהֵא", "סימן והי",   # never with a prefix
+    "סעיף הֵא'", "סעיף הי'",                  # a trailing geresh is an ordinal
+    "סעיף הֵי",                                # already correct
+])
+def test_he_and_vav_untouched_outside_letter_name_context(text):
+    assert apply(text) == text
+
+
+def test_misvocalizations_repair_to_their_letter_name_entry():
+    assert an._letter_name_repairs() == [("הֵא", HEI)]
+
+
+@pytest.mark.parametrize("wrong", ["הא", "בֵּית", "הֵי"])  # not vocalized / not an entry / correct form
+def test_invalid_misvocalization_entry_rejected(monkeypatch, wrong):
+    monkeypatch.setattr(an, "LETTER_NAME_MISVOCALIZATIONS", (wrong,))
+    with pytest.raises(ValueError, match="LETTER_NAME_MISVOCALIZATIONS"):
+        an._letter_name_repairs()
+
+
 def test_letter_name_context_is_linear_on_long_lines():
     import time
     text = "הא דתניא " * 40000          # one 360K-char line, no context anywhere
@@ -440,7 +486,7 @@ def test_empty_and_plain_text():
 
 def test_idempotent_on_every_entry():
     entries = (
-        list(RABBINIC_NIKKUD_DICT) + list(NO_PREFIX_NIKKUD_DICT)
+        list(RABBINIC_NIKKUD_DICT) + list(NO_PREFIX_NIKKUD_DICT) + list(LETTER_NAME_MISVOCALIZATIONS)
         + [p for p, _ in additional_nikkud_corrections]
     )
     text = "\n".join(f"הנה סימן {key} כאן, ו{key}." for key in entries)
