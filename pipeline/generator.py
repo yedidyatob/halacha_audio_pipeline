@@ -10,6 +10,14 @@ from pipeline.utils import log_gemini_usage
 
 logger = get_logger(__name__)
 
+
+class BatchResultError(ValueError):
+    """
+    A finished batch job has no usable result: its request failed, or the response is blocked,
+    cut off or empty. Fetching again will not help; a new batch job may. (A network / API error
+    while fetching is not a BatchResultError: the result may still be there.)
+    """
+
 class BaseScriptGenerator(ABC):
     """
     Abstract Base Class for Halacha Script Generators.
@@ -131,7 +139,10 @@ class BatchCapableGenerator(ABC):
 
     @abstractmethod
     def get_batch_result(self, job_id: str) -> str:
-        """Retrieve the text content from a completed batch job."""
+        """
+        The text of a completed batch job. Raises BatchResultError if the job has no usable
+        result; any other exception means the fetch itself failed (the result may still be there).
+        """
         pass
 
 
@@ -306,11 +317,11 @@ class GeminiScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
         return batch_job.name
 
     def get_batch_status(self, job_id: str) -> str:
-        job = self.client.batches.get(name=job_id)
-        state_str = str(job.state)
-        if "SUCCEEDED" in state_str:
+        state = self.client.batches.get(name=job_id).state
+        state = getattr(state, "name", str(state))
+        if state in ("JOB_STATE_SUCCEEDED", "JOB_STATE_PARTIALLY_SUCCEEDED"):
             return "completed"
-        elif "FAILED" in state_str or "CANCELLED" in state_str:
+        if state in ("JOB_STATE_FAILED", "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED"):
             return "failed"
         return "pending"
 
@@ -318,17 +329,17 @@ class GeminiScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
         """
         Text of the job's single inlined response. A job can SUCCEED while its request failed:
         the InlinedResponse then carries `error` (code / message) instead of `response`.
-        Raises ValueError with the API's reason for any failed, blocked or empty result.
+        Raises BatchResultError with the API's reason for any failed, blocked or empty result.
         """
         job = self.client.batches.get(name=job_id)
         responses = (job.dest.inlined_responses if job.dest else None) or []
         if not responses:
-            raise ValueError(f"Gemini batch job {job_id} has no inlined response.")
+            raise BatchResultError(f"Gemini batch job {job_id} has no inlined response.")
         inlined = responses[0]
         if inlined.error is not None:
-            raise ValueError(f"Gemini batch request failed (job {job_id}): {_format_job_error(inlined.error)}")
+            raise BatchResultError(f"Gemini batch request failed (job {job_id}): {_format_job_error(inlined.error)}")
         if inlined.response is None:
-            raise ValueError(f"Gemini batch job {job_id} returned neither a response nor an error.")
+            raise BatchResultError(f"Gemini batch job {job_id} returned neither a response nor an error.")
         return _gemini_response_text(inlined.response, f"Gemini batch job {job_id}")
 
 
@@ -354,23 +365,23 @@ def _enum_name(value):
 
 
 def _gemini_response_text(response: types.GenerateContentResponse, source: str) -> str:
-    """The answer text (thought parts excluded); ValueError naming the block / finish reason otherwise."""
+    """The answer text (thought parts excluded); BatchResultError naming the block / finish reason otherwise."""
     feedback = response.prompt_feedback
     if feedback and feedback.block_reason:
         message = f": {feedback.block_reason_message}" if feedback.block_reason_message else ""
-        raise ValueError(f"{source}: prompt blocked ({_enum_name(feedback.block_reason)}){message}")
+        raise BatchResultError(f"{source}: prompt blocked ({_enum_name(feedback.block_reason)}){message}")
     if not response.candidates:
-        raise ValueError(f"{source}: response has no candidates.")
+        raise BatchResultError(f"{source}: response has no candidates.")
     candidate = response.candidates[0]
     finish = _enum_name(candidate.finish_reason)
     parts = (candidate.content.parts if candidate.content else None) or []
     text = "".join(part.text for part in parts if part.text and not part.thought)
     if finish not in (None, types.FinishReason.STOP.name, types.FinishReason.FINISH_REASON_UNSPECIFIED.name):
         message = f": {candidate.finish_message}" if candidate.finish_message else ""
-        raise ValueError(f"{source}: generation stopped early (finish_reason {finish}){message}"
+        raise BatchResultError(f"{source}: generation stopped early (finish_reason {finish}){message}"
                          + (f"; {len(text)} chars of partial text discarded" if text else ""))
     if not text:
-        raise ValueError(f"{source}: response has no text (finish_reason {finish}).")
+        raise BatchResultError(f"{source}: response has no text (finish_reason {finish}).")
     return text
 
 
@@ -604,7 +615,7 @@ class OpenAIScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
     def get_batch_result(self, job_id: str) -> str:
         """
         Text of the batch's single request. A completed batch can hold a failed request: it is
-        then in the error file (or carries `error` / a non-200 response). Raises ValueError with
+        then in the error file (or carries `error` / a non-200 response). Raises BatchResultError with
         the API's reason for any failed, cut-off or empty result.
         """
         logger.info(f"Retrieving OpenAI batch result for {job_id}...")
@@ -615,24 +626,24 @@ class OpenAIScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
                 content = self.client.files.content(file_id).text
                 records.extend(json.loads(line) for line in content.splitlines() if line.strip())
         if not records:
-            raise ValueError(f"OpenAI batch {job_id} completed without an output or error file.")
+            raise BatchResultError(f"OpenAI batch {job_id} completed without an output or error file.")
         record = records[0]
         source = f"OpenAI batch {job_id}"
         error = record.get("error")
         if error:
-            raise ValueError(f"{source}: request failed (error code {error.get('code')}: {error.get('message')})")
+            raise BatchResultError(f"{source}: request failed (error code {error.get('code')}: {error.get('message')})")
         response = record.get("response") or {}
         body = response.get("body") or {}
         if response.get("status_code") != 200:
             message = (body.get("error") or {}).get("message", "no message")
-            raise ValueError(f"{source}: request failed (HTTP {response.get('status_code')}: {message})")
+            raise BatchResultError(f"{source}: request failed (HTTP {response.get('status_code')}: {message})")
         choices = body.get("choices") or []
         if not choices:
-            raise ValueError(f"{source}: response has no choices.")
+            raise BatchResultError(f"{source}: response has no choices.")
         finish = choices[0].get("finish_reason")
         text = (choices[0].get("message") or {}).get("content")
         if finish not in (None, "stop"):
-            raise ValueError(f"{source}: generation stopped early (finish_reason {finish})")
+            raise BatchResultError(f"{source}: generation stopped early (finish_reason {finish})")
         if not text:
-            raise ValueError(f"{source}: response has no text (finish_reason {finish}).")
+            raise BatchResultError(f"{source}: response has no text (finish_reason {finish}).")
         return text

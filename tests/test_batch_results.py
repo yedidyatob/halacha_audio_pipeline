@@ -6,7 +6,7 @@ import pytest
 from google.genai import types
 
 import main as main_mod
-from pipeline.generator import BatchCapableGenerator, GeminiScriptGenerator, OpenAIScriptGenerator
+from pipeline.generator import BatchCapableGenerator, BatchResultError, GeminiScriptGenerator, OpenAIScriptGenerator
 from pipeline.retry import call_with_retries
 
 
@@ -34,12 +34,12 @@ def test_gemini_batch_result_text_without_thought_parts():
 def test_gemini_batch_request_error_is_surfaced():
     # what the API returned for 3 of 11 Stage 1 requests inside a SUCCEEDED job
     gen = _gemini_with(types.InlinedResponse(error=types.JobError(code=1, message="The operation was cancelled.")))
-    with pytest.raises(ValueError) as exc:
+    with pytest.raises(BatchResultError) as exc:
         gen.get_batch_result("batches/1")
     assert str(exc.value) == ("Gemini batch request failed (job batches/1): "
                               "error code 1 (CANCELLED): The operation was cancelled.")
     gen = _gemini_with(types.InlinedResponse(error=types.JobError(code=99, message="x", details=["d1"])))
-    with pytest.raises(ValueError, match=r"error code 99: x \(details: d1\)$"):
+    with pytest.raises(BatchResultError, match=r"error code 99: x \(details: d1\)$"):
         gen.get_batch_result("batches/1")
 
 
@@ -55,12 +55,12 @@ def test_gemini_batch_request_error_is_surfaced():
     (types.InlinedResponse(response=_response(types.Part(text=""))), r"no text \(finish_reason STOP\)"),
 ])
 def test_gemini_batch_result_failures_name_the_reason(inlined, reason):
-    with pytest.raises(ValueError, match=reason):
+    with pytest.raises(BatchResultError, match=reason):
         _gemini_with(inlined).get_batch_result("batches/1")
 
 
 def test_gemini_batch_job_without_responses():
-    with pytest.raises(ValueError, match="has no inlined response"):
+    with pytest.raises(BatchResultError, match="has no inlined response"):
         _gemini_with().get_batch_result("batches/1")
 
 
@@ -96,7 +96,7 @@ def test_openai_batch_result_success():
     (None, None, "without an output or error file"),
 ])
 def test_openai_batch_result_failures_name_the_reason(output, error, reason):
-    with pytest.raises(ValueError, match=reason):
+    with pytest.raises(BatchResultError, match=reason):
         _openai_with(output=output, error=error).get_batch_result("b")
 
 
@@ -175,6 +175,7 @@ class FakeGenerator(BatchCapableGenerator):
         self.batch, self.sync, self.failed_jobs = batch, sync, set(failed_jobs)
         self.model_name, self.temperature = "m", 0.2
         self.sync_calls, self.submitted = [], []
+        self.status_errors, self.fetch_errors = {}, {}  # job_id -> exceptions raised by consecutive calls
 
     def _answer(self, value):
         if isinstance(value, Exception):
@@ -187,9 +188,13 @@ class FakeGenerator(BatchCapableGenerator):
         return f"{custom_id}#{self.submitted.count(custom_id)}"
 
     def get_batch_status(self, job_id):
+        if self.status_errors.get(job_id):
+            raise self.status_errors[job_id].pop(0)
         return "failed" if job_id in self.failed_jobs else "completed"
 
     def get_batch_result(self, job_id):
+        if self.fetch_errors.get(job_id):
+            raise self.fetch_errors[job_id].pop(0)
         custom_id, n = job_id.split("#")
         return self._answer(self.batch(custom_id, int(n)))
 
@@ -221,7 +226,7 @@ CANCELLED = "Gemini batch request failed (job {}): error code 1 (CANCELLED): The
 
 def cancelled(cid, rounds=(1,)):
     """batch() answer: the request is CANCELLED in the given submission rounds, else a draft."""
-    return lambda c, n: ValueError(CANCELLED.format(c)) if c == cid and n in rounds else f"draft {c} #{n}"
+    return lambda c, n: BatchResultError(CANCELLED.format(c)) if c == cid and n in rounds else f"draft {c} #{n}"
 
 
 def _cfg(tmp_path, retries):
@@ -229,8 +234,8 @@ def _cfg(tmp_path, retries):
                      generator_max_retries=retries, section_metadata={"prompt_commentators_desc": "d"})
 
 
-def _args(batch=True):
-    return MagicMock(batch=batch, batch_poll_interval=0, batch_timeout=60)
+def _args(batch=True, timeout=60):
+    return MagicMock(batch=batch, batch_poll_interval=0, batch_timeout=timeout)
 
 
 def _saved(tmp_path):
@@ -244,7 +249,7 @@ def _extractor():
 def test_stage1_failed_requests_resubmitted_in_one_batch_round(tmp_path, caplog):
     def batch(cid, n):
         if cid in ("stage1_siman_95", "stage1_siman_97") and n == 1:
-            return ValueError(CANCELLED.format(cid))
+            return BatchResultError(CANCELLED.format(cid))
         return f"draft {cid} #{n}"
     gen = FakeGenerator(batch=batch)
     drafts = main_mod.generate_drafts([94, 95, 96, 97], _extractor(), gen, _cfg(tmp_path, 1), _args(), "m")
@@ -321,10 +326,10 @@ def test_stage1_save_error_fails_siman_without_resubmission(tmp_path):
 
 
 def test_stage2_batch_failure_resubmitted_then_aborts(tmp_path):
-    gen = FakeGenerator(batch=lambda cid, n: ValueError("no candidates") if n == 1 else "relations")
+    gen = FakeGenerator(batch=lambda cid, n: BatchResultError("no candidates") if n == 1 else "relations")
     assert main_mod.generate_relations({94: "d"}, gen, _cfg(tmp_path, 1), _args()) == "relations"
     assert gen.submitted == ["stage2_relations"] * 2 and gen.sync_calls == []
-    gen = FakeGenerator(batch=lambda cid, n: ValueError("no candidates"))
+    gen = FakeGenerator(batch=lambda cid, n: BatchResultError("no candidates"))
     with pytest.raises(SystemExit):
         main_mod.generate_relations({94: "d"}, gen, _cfg(tmp_path, 1), _args())
 
@@ -337,3 +342,57 @@ def test_stage3_polish_batch_retry_budget_then_fails_that_siman(tmp_path):
     assert gen.submitted == ["stage3_siman_94"] + ["stage3_siman_95"] * 3   # max_retries = 2 rounds
     assert gen.sync_calls == []
     assert summary.failed[95] == (main_mod.STAGE_POLISH, CANCELLED.format("stage3_siman_95") + " (after 3 attempt(s))")
+
+
+# --- a failed status check / result fetch says nothing about the job: never resubmitted -------
+
+def test_status_check_error_keeps_polling_without_resubmitting(tmp_path, caplog):
+    gen = FakeGenerator()
+    gen.status_errors["stage1_siman_95#1"] = [ConnectionError("Connection reset by peer")] * 2
+    drafts = main_mod.generate_drafts([94, 95], _extractor(), gen, _cfg(tmp_path, 1), _args(), "m")
+    assert drafts == {94: "draft stage1_siman_94", 95: "draft stage1_siman_95"}
+    assert gen.submitted == ["stage1_siman_94", "stage1_siman_95"]
+    assert ("Stage 1 (Drafts) batch job for Siman 95 (job_id: stage1_siman_95#1): status check failed: "
+            "Connection reset by peer; status unknown, checking again at the next poll.") in caplog.text
+    assert "attempt 1/2 failed" not in caplog.text
+
+
+def test_result_fetch_error_is_fetched_again_not_resubmitted(tmp_path, caplog):
+    gen = FakeGenerator()
+    gen.fetch_errors["stage1_siman_94#1"] = [ConnectionError("read timeout")]
+    drafts = main_mod.generate_drafts([94], _extractor(), gen, _cfg(tmp_path, 1), _args(), "m")
+    assert drafts == {94: "draft stage1_siman_94"} and gen.submitted == ["stage1_siman_94"]
+    assert "completed, but fetching its result failed: read timeout; fetching again at the next poll." in caplog.text
+
+
+def test_batch_timeout_lists_unresolved_jobs_and_keeps_saved_drafts(tmp_path):
+    gen = FakeGenerator()
+    gen.status_errors["stage1_siman_95#1"] = [ConnectionError("DNS failure")] * 5
+    gen.fetch_errors["stage1_siman_96#1"] = [ConnectionError("read timeout")] * 5
+    with pytest.raises(main_mod.BatchTimeoutError) as exc:
+        main_mod.generate_drafts([94, 95, 96], _extractor(), gen, _cfg(tmp_path, 3), _args(timeout=0), "m")
+    assert str(exc.value) == (
+        "Stage 1 (Drafts): --batch-timeout (0s) expired with 2 unresolved batch job(s); fetch them later by "
+        "job id: Siman 95: job_id stage1_siman_95#1 (status check failed: DNS failure); "
+        "Siman 96: job_id stage1_siman_96#1 (completed, result fetch failed: read timeout)")
+    assert gen.submitted == ["stage1_siman_94", "stage1_siman_95", "stage1_siman_96"]   # nothing resubmitted
+    assert _saved(tmp_path) == [94]                                                     # fetched draft kept
+
+
+def test_batch_timeout_with_job_still_running(tmp_path):
+    gen = FakeGenerator()
+    gen.get_batch_status = lambda job_id: "pending"
+    summary = main_mod.RunSummary()
+    with pytest.raises(main_mod.BatchTimeoutError, match=r"Siman 94: job_id stage3_siman_94#1 \(still pending\)$"):
+        main_mod.polish_simanim({94: "d"}, "rel", gen, _cfg(tmp_path, 1), _args(timeout=0), summary)
+
+
+@pytest.mark.parametrize("state, status", [
+    ("JOB_STATE_SUCCEEDED", "completed"), ("JOB_STATE_PARTIALLY_SUCCEEDED", "completed"),
+    ("JOB_STATE_FAILED", "failed"), ("JOB_STATE_CANCELLED", "failed"), ("JOB_STATE_EXPIRED", "failed"),
+    ("JOB_STATE_CANCELLING", "pending"), ("JOB_STATE_RUNNING", "pending"), ("JOB_STATE_QUEUED", "pending"),
+])
+def test_gemini_batch_status(state, status):
+    gen = _gemini_with()
+    gen.client.batches.get.return_value = types.BatchJob(name="batches/1", state=state)
+    assert gen.get_batch_status("batches/1") == status

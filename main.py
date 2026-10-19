@@ -24,6 +24,7 @@ from pipeline.extractor import SefariaExtractor
 from pipeline.logger import get_logger
 from pipeline.utils import save_output_file
 from pipeline.factory import create_generator_engine, create_tts_engine
+from pipeline.generator import BatchResultError
 from pipeline.gematria import int_to_gematria
 from pipeline.apply_nikkud import apply_nikkud_to_abbreviations
 from pipeline.pronunciation import create_pronunciation_vocalizer, format_changes
@@ -136,10 +137,15 @@ def _sync_round(call, items: dict, accept) -> dict:
     return errors
 
 
+class BatchTimeoutError(TimeoutError):
+    """--batch-timeout expired with jobs still unresolved; the message lists their job ids."""
+
+
 def _batch_round(batch: BatchCalls, items: dict, stage: str, args, accept) -> dict:
     """
     One batch job per item, all polled together; accept(key, result) as each result is fetched.
-    Returns {key: error} for failed submits, failed jobs and failed results.
+    Returns {key: error} for failed submits, jobs the API reports as failed, and finished jobs
+    without a usable result (BatchResultError) - the attempts a new batch job may fix.
     """
     errors, jobs = {}, {}
     for key, value in items.items():
@@ -150,17 +156,75 @@ def _batch_round(batch: BatchCalls, items: dict, stage: str, args, accept) -> di
         else:
             logger.info(f"Submitted {stage} batch job for {item_label(key)}. Job ID: {jobs[key]}")
     if jobs:
-        statuses = poll_batch_jobs(batch.generator, jobs, args.batch_poll_interval, args.batch_timeout, stage)
-        for key, job_id in jobs.items():
-            if statuses[key] == "failed":
-                errors[key] = RuntimeError(f"batch job failed (job_id: {job_id})")
-                continue
+        errors.update(await_batch_jobs(batch, jobs, items, stage, args, accept))
+    return errors
+
+
+def await_batch_jobs(batch: BatchCalls, jobs: dict, items: dict, stage: str, args, accept) -> dict:
+    """
+    Polls {key: job_id} every --batch-poll-interval seconds; a completed job's result is fetched
+    right away and passed to accept(key, result). Returns {key: error} for jobs the API reports
+    as failed and completed jobs whose result is unusable (BatchResultError).
+    A failed status check or result fetch (network / API error) says nothing about the job: it
+    is logged and retried at the next poll, never resubmitted. Raises BatchTimeoutError listing
+    every unresolved job id when --batch-timeout expires.
+    """
+    poll_interval, timeout = args.batch_poll_interval, args.batch_timeout
+    start_time = time.time()
+    pending = dict(jobs)
+    unknown = {}  # key -> last status-check / fetch error, while it is still unresolved
+    errors = {}
+    logger.info(f"Polling {len(pending)} {stage} batch job(s) (interval: {poll_interval}s, timeout: {timeout}s)...")
+
+    while True:
+        for key, job_id in list(pending.items()):
+            label = f"{stage} batch job for {item_label(key)} (job_id: {job_id})"
             try:
-                result = batch.fetch(key, items[key], job_id)
+                status = batch.generator.get_batch_status(job_id)
             except Exception as e:
-                errors[key] = e
+                unknown[key] = f"status check failed: {e}"
+                logger.warning(f"{label}: status check failed: {e}; status unknown, checking again at the next poll.")
+                continue
+            if status == "pending":
+                unknown.pop(key, None)
+                continue
+            if status == "failed":
+                logger.error(f"\u274c {label} failed.")
+                errors[key] = RuntimeError(f"batch job failed (job_id: {job_id})")
             else:
-                accept(key, result)
+                try:
+                    result = batch.fetch(key, items[key], job_id)
+                except BatchResultError as e:
+                    logger.error(f"\u274c {label} completed without a usable result: {e}")
+                    errors[key] = e
+                except Exception as e:
+                    unknown[key] = f"completed, result fetch failed: {e}"
+                    logger.warning(f"{label}: completed, but fetching its result failed: {e}; "
+                                   f"fetching again at the next poll.")
+                    continue
+                else:
+                    logger.info(f"\u2705 {label} completed.")
+                    accept(key, result)
+            unknown.pop(key, None)
+            del pending[key]
+
+        if not pending:
+            break
+        elapsed = time.time() - start_time
+        if elapsed > timeout:
+            unresolved = "; ".join(f"{item_label(key)}: job_id {job_id}"
+                                   + (f" ({unknown[key]})" if key in unknown else " (still pending)")
+                                   for key, job_id in pending.items())
+            raise BatchTimeoutError(f"{stage}: --batch-timeout ({timeout}s) expired with {len(pending)} "
+                                    f"unresolved batch job(s); fetch them later by job id: {unresolved}")
+        logger.info(f"\u23f3 {stage}: {len(pending)} job(s) still pending, {len(jobs) - len(pending)} done. "
+                    f"Elapsed: {int(elapsed / 60)}m. Polling again in {poll_interval}s...")
+        time.sleep(poll_interval)
+
+    if errors:
+        logger.error(f"{stage}: {len(errors)} of {len(jobs)} batch job(s) failed: {list(errors)}")
+    else:
+        logger.info(f"{stage}: All {len(jobs)} batch job(s) completed successfully.")
     return errors
 
 
@@ -567,52 +631,6 @@ def run_lesson_stages(target_simanim: list, drafts: dict, relations_text: str, g
     return summary
 
 
-def poll_batch_jobs(generator, jobs: dict, poll_interval: int, timeout: int, stage_name: str):
-    """
-    Polls a dict of {label: job_id} until all complete or timeout.
-    Returns {label: "completed" | "failed"}. Raises TimeoutError on timeout.
-    """
-    start_time = time.time()
-    pending = dict(jobs)
-    results = {}
-
-    logger.info(f"Polling {len(pending)} {stage_name} batch job(s) (interval: {poll_interval}s, timeout: {timeout}s)...")
-
-    while pending:
-        elapsed = time.time() - start_time
-        if elapsed > timeout:
-            raise TimeoutError(
-                f"Batch {stage_name} timed out after {int(elapsed)}s. "
-                f"Still pending: {list(pending.keys())}"
-            )
-
-        for label, job_id in list(pending.items()):
-            status = generator.get_batch_status(job_id)
-            if status == "completed":
-                logger.info(f"\u2705 {stage_name} batch job completed: {label}")
-                results[label] = status
-                del pending[label]
-            elif status == "failed":
-                logger.error(f"\u274c {stage_name} batch job failed: {label} (job_id: {job_id})")
-                results[label] = status
-                del pending[label]
-
-        if pending:
-            elapsed_min = int((time.time() - start_time) / 60)
-            logger.info(
-                f"\u23f3 {stage_name}: {len(pending)} job(s) still pending, "
-                f"{len(results)} completed. Elapsed: {elapsed_min}m. "
-                f"Polling again in {poll_interval}s..."
-            )
-            time.sleep(poll_interval)
-
-    failed = [label for label, status in results.items() if status == "failed"]
-    if failed:
-        logger.error(f"{stage_name}: {len(failed)} of {len(results)} batch job(s) failed: {failed}")
-    else:
-        logger.info(f"{stage_name}: All {len(results)} batch job(s) completed successfully.")
-    return results
-
 def parse_arguments():
     parser = argparse.ArgumentParser(
         description="Halacha Audio Lesson Generation Pipeline - End to End."
@@ -836,4 +854,8 @@ def main():
     logger.info("Pipeline execution completed successfully.")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except BatchTimeoutError as e:
+        logger.error(str(e))
+        sys.exit(1)
