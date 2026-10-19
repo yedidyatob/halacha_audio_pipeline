@@ -238,7 +238,7 @@ def cancelled(cid, rounds=(1,)):
 
 
 def _cfg(tmp_path, retries):
-    return MagicMock(drafts_dir=str(tmp_path), cache_dir=str(tmp_path), section_slug="YD",
+    return MagicMock(drafts_dir=str(tmp_path), output_dir=str(tmp_path), cache_dir=str(tmp_path), section_slug="YD",
                      generator_max_retries=retries, section_metadata={"prompt_commentators_desc": "d"},
                      draft_thinking_level="medium")
 
@@ -346,15 +346,13 @@ def test_stage2_batch_failure_resubmitted_then_aborts(tmp_path):
         main_mod.generate_relations({94: "d"}, gen, _cfg(tmp_path, 1), _args(), "YD_Relations_94_m")
 
 
-def test_stage3_polish_batch_retry_budget_then_fails_that_siman(tmp_path, monkeypatch):
-    saved = []
-    monkeypatch.setattr(main_mod, "save_polish", lambda siman, text, config, model_suffix: saved.append(siman))
+def test_stage3_polish_batch_retry_budget_then_fails_that_siman(tmp_path):
     gen = FakeGenerator(batch=cancelled("stage3_siman_95", rounds=(1, 2, 3)))
     summary = main_mod.RunSummary()
     polished = main_mod.polish_simanim({94: "d94", 95: "d95"}, "rel", gen, _cfg(tmp_path, 2), _args(), summary, "m")
     assert polished == {94: "draft stage3_siman_94 #1"}
     assert gen.submitted == ["stage3_siman_94"] + ["stage3_siman_95"] * 3   # max_retries = 2 rounds
-    assert saved == [94]  # only the polished siman is saved
+    assert [p.name for p in tmp_path.glob("*_polish.txt")] == ["YD_Siman_94_m_polish.txt"]  # only the polished siman
     assert gen.sync_calls == []
     assert summary.failed[95] == (main_mod.STAGE_POLISH, CANCELLED.format("stage3_siman_95") + " (after 3 attempt(s))")
 

@@ -360,7 +360,8 @@ output/
 
 - **Latest files**: Overwritten on each run
 - **Timestamped files**: Preserve version history
-- Every saved file is logged at INFO, one line per file: `<stage> output for Siman <N> saved: <latest path> (history copy: <timestamped path>)`
+- Every saved file is logged at INFO, one line per file: `<stage> output for Siman <N> saved: <latest path> (history copy: <timestamped path>)`;
+  thinking files as `Thinking summary of <call, e.g. Gemini script generation for Siman N> saved: …`
 
 ---
 
