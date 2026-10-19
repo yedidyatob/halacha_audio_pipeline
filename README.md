@@ -126,6 +126,17 @@ Standalone (Windows PowerShell, from the repo root):
 `scripts/vocalize_pronunciation.py` retries like the pipeline (`pronunciation.max_retries`), then
 writes nothing and exits with code 1 if every attempt fails.
 
+### Stage 3 polish cache
+
+The Stage 3 polish (`{section}_Siman_{N}_{model}_polish.txt` in `output_dir`) is also a cache, in
+sync and batch mode: when it exists for a target siman, the run loads it instead of calling the LLM
+(logged as `Loaded cached Stage 3 polish for Siman N: <path> (<n> chars).`) and Stages 3.4 / 3.5 /
+transcript / TTS run as usual; in batch mode only the other simanim get polish jobs, and none are
+submitted when every polish is cached. An empty (whitespace-only) cached polish counts as missing
+and is regenerated, with a warning. `--overwrite-cache` regenerates it. For example, after editing
+`pronunciation.always_vocalize`, `python main.py 87 --context-range 87-111 --skip-tts` calls the LLM
+only for Stage 3.5 (the drafts and the relations map are cached too).
+
 ### Run summary and exit code
 
 A failure in Stage 3 for one siman (polishing, dictionary nikkud, pronunciation nikkud, transcript save, TTS)
@@ -172,7 +183,7 @@ python main.py 94 --context-range 87-111
 | `--stage-1-only` | Extract only (skip Stages 2-3) |
 | `--skip-tts` | Generate transcripts only, no audio |
 | `--limit-lessons N` | Process only first N simanim (debug mode) |
-| `--overwrite-cache` | Regenerate cached drafts and relations |
+| `--overwrite-cache` | Regenerate cached drafts, relations and Stage 3 polish |
 | `--relations-file PATH` | Use pre-existing relations map |
 | `--dry-run` | Print the run plan and exit (no API / LLM / TTS / Sefaria calls) |
 
@@ -187,6 +198,7 @@ path, `resolve_run_plan`, honouring `--overwrite-cache`, `--relations-file`, `--
 `--limit-lessons`, `--batch`, `--skip-tts` and `--stage-1-only`). It prints:
 - whether the relations map is loaded (from `--relations-file` or the cache) or generated, and its path
 - which Stage 1 drafts load from the cache and which are requested, with their paths
+- per target siman, whether its Stage 3 polish loads from the cache or is generated, with its path
 - which simanim go through Stage 3 / 3.5 / TTS, with the transcript and audio paths
 
 It then exits with code 0. Nothing is written and no API, LLM, TTS or Sefaria call is made;
