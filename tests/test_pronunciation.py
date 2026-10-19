@@ -403,22 +403,24 @@ def test_no_retry_when_max_retries_zero():
     gen.generate_text.assert_called_once()
 
 
-def test_batch_result_retried_synchronously():
+def test_batch_result_is_one_attempt():
+    # retries after a batch result are run by the pipeline (main.run_llm_stage, see test_stage3_flow)
     vocalizer, gen = _retrying_vocalizer(1)
     gen.get_batch_result.return_value = REJECTED
-    gen.generate_text.return_value = VOCALIZED
-    assert vocalizer.batch_result(ORIG, "job") == (VOCALIZED, CHANGES)
-    gen.get_batch_result.assert_called_once_with("job")
-    gen.generate_text.assert_called_once_with("INSTR", ORIG, thinking_level="low")
-    gen.submit_batch.assert_not_called()
-
-
-def test_batch_result_unavailable_then_retry_fails_with_last_reason():
-    vocalizer, gen = _retrying_vocalizer(1)
-    gen.get_batch_result.side_effect = ValueError("Gemini batch returned empty text response.")
-    gen.generate_text.return_value = REJECTED
-    with pytest.raises(PronunciationError, match=r"עוסק -> דן .*\(after 2 attempt\(s\)\)"):
+    with pytest.raises(PronunciationError, match="עוסק -> דן"):
         vocalizer.batch_result(ORIG, "job")
+    gen.get_batch_result.side_effect = ValueError("Gemini batch request failed (job j): error code 13: Internal")
+    with pytest.raises(PronunciationError, match="batch result unavailable: .*error code 13"):
+        vocalizer.batch_result(ORIG, "job")
+    gen.generate_text.assert_not_called()
+
+
+def test_vocalize_once_is_one_attempt():
+    vocalizer, gen = _retrying_vocalizer(3)
+    gen.generate_text.return_value = REJECTED
+    with pytest.raises(PronunciationError, match="עוסק -> דן"):
+        vocalizer.vocalize_once(ORIG)
+    gen.generate_text.assert_called_once()
 
 
 def test_parse_vocalized_response_shared_validation():
@@ -586,7 +588,7 @@ def test_run_summary_format():
 def _run_main_sync(tmp_path, monkeypatch, polish):
     """Runs main.main() in sync mode for simanim 94,95 with cached drafts and relations."""
     import main as main_mod
-    cfg = MagicMock(section_slug="YD", drafts_dir=str(tmp_path), relations_dir=str(tmp_path),
+    cfg = MagicMock(section_slug="YD", generator_max_retries=0, drafts_dir=str(tmp_path), relations_dir=str(tmp_path),
                     output_dir=str(tmp_path), pronunciation_enabled=False)
     for s in (94, 95):
         (tmp_path / f"YD_Siman_{s}_m_draft.txt").write_text(f"draft {s}", encoding="utf-8")
