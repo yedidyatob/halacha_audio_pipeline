@@ -207,7 +207,8 @@ model, temperature and `thinking_level` (which may differ from the generator eng
 startup if `pronunciation.engine` does not support batch.
 
 Failures and retries work the same way in every LLM stage. A failed attempt is a failed call in sync
-mode; in batch mode a failed submit, a failed job, or a failed request inside a succeeded job (logged
+mode; in batch mode a failed submit, a job the API reports as failed / cancelled / expired, or a failed
+request inside a succeeded job, including a Stage 3.5 output rejected by validation (logged
 with the API's error code and message, e.g. `error code 1 (CANCELLED): The operation was cancelled.`,
 or a blocked / cut-off / empty response named by its block or finish reason). Every failed attempt is
 logged as a warning. Retries run in rounds: each round retries all the items of the stage that have
@@ -220,6 +221,14 @@ When an item still fails after its retries:
   arrives). The run then aborts, and a rerun only regenerates the missing drafts.
 - Stage 2 (relations map): the run aborts.
 - Stages 3 / 3.5: only that siman fails, and it appears in the end-of-run summary.
+
+A failed status check or result fetch while polling (network / API error) says nothing about the
+job, which may still be running or already done. It is logged as a warning and simply tried again
+at the next poll (`--batch-poll-interval`); the job is never marked failed or resubmitted for it.
+Each result is fetched (and a Stage 1 draft saved) as soon as its job completes. If
+`--batch-timeout` expires first, the run stops with an error listing every unresolved job id per
+siman and why it is unresolved (still pending, status check failed, or result fetch failed), so the
+results can be fetched later.
 
 ---
 
@@ -244,6 +253,44 @@ generator:
 `generator.max_retries` is the number of retries after a failed attempt in Stages 1-3 (API error,
 failed batch job or request, empty, blocked or cut-off response; 0 = no retry): new calls in sync
 mode, new batch jobs in batch mode.
+
+`generator.draft_thinking_level` (`low`/`medium`/`high`, required for engine `gemini`, ignored for
+`openai`) is the Gemini thinking level of the Stage 1 draft calls, sent in both sync and batch mode.
+
+### Gemini calls: streaming and thinking files
+
+Every synchronous Gemini text call (Stages 1-3, pronunciation nikkud in sync mode, and
+`enhance_transcript.py`) goes through one path, `GeminiScriptGenerator._generate`: it streams the
+response (`generate_content_stream`) with `thinking_config.include_thoughts` on, so bytes keep
+arriving while the model thinks. A long non-streaming call sends nothing until it finishes, and an
+idle connection can be cut by a proxy or front end (`Server disconnected without sending a
+response` after a few minutes of thinking). Block / finish-reason checks are the same as for batch
+results; usage is read from the final chunk.
+
+Only the answer text is returned, saved and passed on. The thought summaries of the Stage 1-3 calls
+(and of `enhance_transcript.py`) are written to `directories.thinking_dir`, one file per call named
+after that call's output plus `_thinking` (e.g. `{section}_Siman_{N}_{model}_draft_thinking.txt`,
+`{section}_Relations_{range}_{model}_thinking.txt`, `{section}_Siman_{N}_{model}_polish_thinking.txt`),
+with the usual timestamped history copy. They are for reading only and never feed a later stage.
+Batch mode is unchanged: batch requests do not ask for thoughts, and any thought part in a batch
+response is dropped.
+
+### Cost tracker
+
+Each synchronous Gemini call logs its tokens (input, output, thinking) and estimated cost. Thinking
+tokens are billed as output. Prices come from the `gemini_pricing:` section of `config.yaml` (USD per
+1M tokens, paid tier, standard / non-batch, from https://ai.google.dev/gemini-api/docs/pricing); an
+optional `long_context` tier applies to the whole request when the prompt exceeds
+`threshold_tokens`. Every Gemini model used for a text call (generator, pronunciation,
+`enhance_transcript.py --model`) needs an entry; a missing one is a startup error.
+
+```yaml
+gemini_pricing:
+  gemini-3.1-pro-preview:
+    input_per_million: 2.00
+    output_per_million: 12.00
+    long_context: {threshold_tokens: 200000, input_per_million: 4.00, output_per_million: 18.00}
+```
 
 ### TTS Engine
 
@@ -305,8 +352,10 @@ output/
 ├── {section}_Siman_{N}_{model}.mp3               # Audio file
 ├── drafts/                                         # Stage 1 cached drafts
 │   └── {section}_Siman_{N}_{model}_draft.txt
-└── relations/                                      # Stage 2 cached relations
-    └── {section}_Relations_{range}_{model}.txt
+├── relations/                                      # Stage 2 cached relations
+│   └── {section}_Relations_{range}_{model}.txt
+└── thinking/                                       # directories.thinking_dir: thought summaries (read-only)
+    └── {output base name}_thinking.txt
 ```
 
 - **Latest files**: Overwritten on each run

@@ -3,6 +3,8 @@ from unittest.mock import MagicMock, patch, mock_open
 
 import pytest
 
+from pipeline.generator import BatchResultError
+
 from pipeline.pronunciation import (
     strip_nikkud, has_nikkud, find_markup, validate_vocalized_output, changed_words,
     vocalize_pronunciation, format_changes, parse_vocalized_response,
@@ -157,6 +159,8 @@ def test_dictionary_nikkud_leaves_llm_vocalized_words_alone():
 
 BASE_YAML = """
 halachic_section: "Yoreh De'ah"
+directories:
+  thinking_dir: "./output/thinking"
 generator:
   engine: "gemini"
 tts:
@@ -354,10 +358,8 @@ def test_vocalizer_batch_result_validated_like_sync():
     gen.get_batch_result.return_value = VOCALIZED
     assert vocalizer.batch_result(ORIG, "job") == (VOCALIZED, CHANGES)
     gen.get_batch_result.return_value = VOCALIZED.replace("עוסק", "דן")
-    with pytest.raises(PronunciationError, match="עוסק -> דן"):
-        vocalizer.batch_result(ORIG, "job")
-    gen.get_batch_result.side_effect = ValueError("Gemini batch returned empty text response.")
-    with pytest.raises(PronunciationError, match="batch result unavailable: Gemini batch returned empty"):
+    # a rejected output is an unusable result: the pipeline resubmits it as a new batch job
+    with pytest.raises(BatchResultError, match="pronunciation output rejected: .*עוסק -> דן"):
         vocalizer.batch_result(ORIG, "job")
 
 
@@ -407,10 +409,14 @@ def test_batch_result_is_one_attempt():
     # retries after a batch result are run by the pipeline (main.run_llm_stage, see test_stage3_flow)
     vocalizer, gen = _retrying_vocalizer(1)
     gen.get_batch_result.return_value = REJECTED
-    with pytest.raises(PronunciationError, match="עוסק -> דן"):
+    with pytest.raises(BatchResultError, match="עוסק -> דן"):
         vocalizer.batch_result(ORIG, "job")
-    gen.get_batch_result.side_effect = ValueError("Gemini batch request failed (job j): error code 13: Internal")
-    with pytest.raises(PronunciationError, match="batch result unavailable: .*error code 13"):
+    # the generator's BatchResultError and fetch (network) errors pass through unchanged
+    gen.get_batch_result.side_effect = BatchResultError("Gemini batch request failed (job j): error code 13: Internal")
+    with pytest.raises(BatchResultError, match="error code 13"):
+        vocalizer.batch_result(ORIG, "job")
+    gen.get_batch_result.side_effect = ConnectionError("reset")
+    with pytest.raises(ConnectionError):
         vocalizer.batch_result(ORIG, "job")
     gen.generate_text.assert_not_called()
 
@@ -439,10 +445,12 @@ def test_factory_creates_pronunciation_generator():
     from pipeline.factory import create_pronunciation_generator
     cfg = MagicMock(pronunciation_engine="gemini", pronunciation_model_name="pm",
                     pronunciation_temperature=0.2, gemini_api_key="k", ssl_verify=True,
-                    pronunciation_thinking_level="low")
+                    pronunciation_thinking_level="low", thinking_dir="th")
     with patch("pipeline.factory.GeminiScriptGenerator") as gem:
         create_pronunciation_generator(cfg)
-    gem.assert_called_once_with(api_key="k", model_name="pm", temperature=0.2, ssl_verify=True)
+    cfg.gemini_price.assert_called_once_with("pm")
+    gem.assert_called_once_with(api_key="k", model_name="pm", temperature=0.2, ssl_verify=True,
+                                pricing=cfg.gemini_price.return_value, thinking_dir="th")
 
 
 def test_factory_openai_pronunciation_ignores_thinking_level():
@@ -494,10 +502,9 @@ def test_real_config_thinking_level_high():
 
 def _gemini_gen():
     from pipeline.generator import GeminiScriptGenerator
-    with patch("pipeline.generator.genai.Client") as client_cls:
-        gen = GeminiScriptGenerator(api_key="k", model_name="m", temperature=0.2)
-    client = client_cls.return_value
-    client.models.generate_content.return_value = MagicMock(text="out", usage_metadata=None)
+    from tests.gemini_fakes import make_gemini_generator, answer_stream
+    gen, client = make_gemini_generator("unused", model_name="m", temperature=0.2)
+    client.models.generate_content_stream.side_effect = lambda **_: answer_stream("out", thought="")
     return gen, client
 
 
@@ -506,17 +513,18 @@ def test_gemini_generate_text_passes_thinking_level():
     gen, client = _gemini_gen()
     with patch("pipeline.generator.log_gemini_usage"):
         assert gen.generate_text("sys", "user", thinking_level="low") == "out"
-    config = client.models.generate_content.call_args.kwargs["config"]
+    config = client.models.generate_content_stream.call_args.kwargs["config"]
     assert isinstance(config.thinking_config, types.ThinkingConfig)
     assert config.thinking_config.thinking_level.value.lower() == "low"
     assert config.temperature == 0.2 and config.system_instruction == "sys"
 
 
-def test_gemini_generate_text_without_level_has_no_thinking_config():
+def test_gemini_generate_text_without_level_sends_no_thinking_level():
     gen, client = _gemini_gen()
     with patch("pipeline.generator.log_gemini_usage"):
         gen.generate_text("sys", "user")
-    assert client.models.generate_content.call_args.kwargs["config"].thinking_config is None
+    thinking = client.models.generate_content_stream.call_args.kwargs["config"].thinking_config
+    assert thinking.thinking_level is None and thinking.include_thoughts is True
 
 
 def test_gemini_batch_request_carries_thinking_level():
@@ -535,9 +543,9 @@ def test_gemini_other_calls_unaffected_by_thinking_level():
     gen, client = _gemini_gen()
     with patch("pipeline.generator.log_gemini_usage"):
         gen.polish_siman_script("draft", "rel", "instr")
-    assert client.models.generate_content.call_count == 1
-    for call in client.models.generate_content.call_args_list:
-        assert getattr(call.kwargs.get("config"), "thinking_config", None) is None
+    assert client.models.generate_content_stream.call_count == 1
+    for call in client.models.generate_content_stream.call_args_list:
+        assert call.kwargs["config"].thinking_config.thinking_level is None
 
 
 def test_main_save_transcript_without_pronunciation_stage(tmp_path):
@@ -604,7 +612,7 @@ def _run_main_sync(tmp_path, monkeypatch, polish):
 
 
 def test_main_continues_after_siman_failure_and_exits_nonzero(tmp_path, monkeypatch, caplog):
-    def polish(draft, rel, instr):
+    def polish(draft, rel, instr, thinking_name):
         if draft == "draft 94":
             raise RuntimeError("LLM down")
         return "polished"
@@ -618,7 +626,7 @@ def test_main_continues_after_siman_failure_and_exits_nonzero(tmp_path, monkeypa
 
 
 def test_main_all_succeed_exits_zero(tmp_path, monkeypatch, caplog):
-    _run_main_sync(tmp_path, monkeypatch, lambda d, r, i: "polished")
+    _run_main_sync(tmp_path, monkeypatch, lambda d, r, i, thinking_name: "polished")
     assert "Succeeded (2/2): 94, 95" in caplog.text
 
 

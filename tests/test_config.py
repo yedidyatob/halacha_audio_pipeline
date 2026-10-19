@@ -7,6 +7,8 @@ def test_pipeline_config_ssl_verify_default():
     # Mock yaml data with ssl_verify missing
     yaml_content = """
 halachic_section: "Yoreh De'ah"
+directories:
+  thinking_dir: "./output/thinking"
 api_keys:
   gemini_api_key: "fake-gemini"
 sefaria:
@@ -30,6 +32,8 @@ def test_pipeline_config_ssl_verify_false():
     # Mock yaml data with ssl_verify set to false
     yaml_content = """
 halachic_section: "Yoreh De'ah"
+directories:
+  thinking_dir: "./output/thinking"
 api_keys:
   gemini_api_key: "fake-gemini"
 sefaria:
@@ -55,6 +59,8 @@ def test_pipeline_config_prompt_formatting():
     # Mock yaml data with the instruction templates
     yaml_content = """
 halachic_section: "{section}"
+directories:
+  thinking_dir: "./output/thinking"
 system_instruction: "Including {{commentators_list_hebrew}} and {{prompt_commentators_desc}}"
 polishing_instruction: "Including {{commentators_list_short}} and {{tts_abbreviations}}"
 relations_instruction: "In {{hebrew_name}} with {{prompt_commentators_desc}}"
