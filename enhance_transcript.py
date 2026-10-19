@@ -39,7 +39,9 @@ dotenv_path = current_dir.parent / ".env"
 load_dotenv(dotenv_path=dotenv_path)
 
 from pipeline.logger import get_logger
+from pipeline.config import PipelineConfig
 from pipeline.enhancer import ElevenLabsEnhancer
+from pipeline.generator import GeminiScriptGenerator
 
 logger = get_logger("enhance_transcript")
 
@@ -135,6 +137,12 @@ def parse_arguments() -> argparse.Namespace:
         help="Gemini model to use for enhancement (default: gemini-3.1-flash-lite).",
     )
     parser.add_argument(
+        "--config",
+        type=str,
+        default="config.yaml",
+        help="Pipeline config (ssl_verify, thinking_dir, gemini_pricing; default: config.yaml).",
+    )
+    parser.add_argument(
         "--temperature",
         type=float,
         default=0.2,
@@ -185,17 +193,18 @@ def main() -> None:
     # ------------------------------------------------------------------ #
     # 4. Initialise enhancer
     # ------------------------------------------------------------------ #
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        logger.error("GEMINI_API_KEY environment variable is not set.")
-        sys.exit(1)
-
     try:
-        enhancer = ElevenLabsEnhancer(
-            api_key=api_key,
+        config = PipelineConfig(args.config)
+        if not config.gemini_api_key:
+            raise ValueError("No Gemini API key (api_keys.gemini_api_key in config.yaml or GEMINI_API_KEY).")
+        enhancer = ElevenLabsEnhancer(GeminiScriptGenerator(
+            api_key=config.gemini_api_key,
             model_name=args.model,
             temperature=args.temperature,
-        )
+            ssl_verify=config.ssl_verify,
+            pricing=config.gemini_price(args.model),
+            thinking_dir=config.thinking_dir,
+        ))
     except Exception as e:
         logger.error(f"Failed to initialise enhancer: {e}")
         sys.exit(1)

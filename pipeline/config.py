@@ -16,6 +16,19 @@ def _max_retries(value, key: str) -> int:
     return value
 
 
+THINKING_LEVELS = ("low", "medium", "high")
+
+
+def _rates(entry: dict, key: str) -> dict:
+    rates = {}
+    for name in ("input_per_million", "output_per_million"):
+        value = entry.get(name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            raise ValueError(f"'{key}.{name}' must be a non-negative number (USD per 1M tokens), got {value!r}.")
+        rates[name] = float(value)
+    return rates
+
+
 class PipelineConfig:
     """
     Loads, parses, and validates the configuration file (config.yaml).
@@ -179,6 +192,9 @@ class PipelineConfig:
         self.output_dir = dirs.get("output_dir", "./output")
         self.cache_dir = dirs.get("cache_dir", "./cache")
         self.drafts_dir = os.path.join(self.output_dir, "drafts")
+        if not dirs.get("thinking_dir"):
+            raise ValueError("Missing required configuration parameter 'thinking_dir' under 'directories' in config.yaml.")
+        self.thinking_dir = dirs["thinking_dir"]
         self.relations_dir = os.path.join(self.output_dir, "relations")
 
         # Create directories if they don't exist
@@ -186,6 +202,7 @@ class PipelineConfig:
         os.makedirs(self.cache_dir, exist_ok=True)
         os.makedirs(self.drafts_dir, exist_ok=True)
         os.makedirs(self.relations_dir, exist_ok=True)
+        os.makedirs(self.thinking_dir, exist_ok=True)
         
         logger.info("Configuration validated and directories established.")
 
@@ -200,6 +217,45 @@ class PipelineConfig:
         if value is None:
             raise ValueError("Missing required configuration parameter 'max_retries' under 'generator' in config.yaml.")
         return _max_retries(value, "generator.max_retries")
+
+    @property
+    def draft_thinking_level(self) -> str:
+        """Gemini thinking level for the Stage 1 draft calls (sync and batch). Required for engine gemini."""
+        if self.generator_engine != "gemini":
+            return None
+        value = (self.config_data.get("generator") or {}).get("draft_thinking_level")
+        if value is None:
+            raise ValueError("Missing required configuration parameter 'draft_thinking_level' under 'generator' in config.yaml.")
+        if value not in THINKING_LEVELS:
+            raise ValueError(f"'generator.draft_thinking_level' must be one of low, medium, high, got {value!r}.")
+        return value
+
+    def gemini_price(self, model_name: str) -> dict:
+        """
+        The validated gemini_pricing entry for a model (USD per 1M tokens): input_per_million,
+        output_per_million (thinking tokens are billed as output) and an optional long_context tier
+        {threshold_tokens, input_per_million, output_per_million}. A model without an entry is an error.
+        """
+        section = self.config_data.get("gemini_pricing")
+        if not isinstance(section, dict):
+            raise ValueError("Missing required configuration section 'gemini_pricing' in config.yaml.")
+        entry = section.get(model_name)
+        if not isinstance(entry, dict):
+            raise ValueError(f"No price for Gemini model '{model_name}' under 'gemini_pricing' in config.yaml.")
+        key = f"gemini_pricing.{model_name}"
+        price = _rates(entry, key)
+        tier = entry.get("long_context")
+        if tier is not None:
+            if not isinstance(tier, dict):
+                raise ValueError(f"'{key}.long_context' must be a mapping, got {tier!r}.")
+            threshold = tier.get("threshold_tokens")
+            if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold <= 0:
+                raise ValueError(f"'{key}.long_context.threshold_tokens' must be a positive integer, got {threshold!r}.")
+            price["long_context"] = {"threshold_tokens": threshold, **_rates(tier, f"{key}.long_context")}
+        unknown = set(entry) - {"input_per_million", "output_per_million", "long_context"}
+        if unknown:
+            raise ValueError(f"Unknown key(s) under '{key}' in config.yaml: {sorted(unknown)}.")
+        return price
 
     # ------------------------------------------------------------------
     # Pronunciation stage (LLM nikkud for ambiguous words). No defaults: every value
@@ -248,7 +304,7 @@ class PipelineConfig:
         if self.pronunciation_engine != "gemini":
             return None
         value = self._pronunciation_value("thinking_level")
-        if value not in ("low", "medium", "high"):
+        if value not in THINKING_LEVELS:
             raise ValueError(f"'pronunciation.thinking_level' must be one of low, medium, high, got {value!r}.")
         return value
 
