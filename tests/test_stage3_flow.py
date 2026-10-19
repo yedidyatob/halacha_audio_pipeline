@@ -81,7 +81,8 @@ def test_batch_pronunciation_success(tmp_path):
     assert all(r["system_instruction"] == "VOC" and r["temperature"] == 0.35 and r["thinking_level"] == "low"
                for r in voc_gen.submitted)
     assert TET in (tmp_path / "YD_Siman_94_m_transcript.txt").read_text(encoding="utf-8")
-    assert (tmp_path / "YD_Siman_94_m_pronunciation_changes.txt").read_text(encoding="utf-8") == f"טית\t{TET}\n"
+    assert (tmp_path / "YD_Siman_94_m_pronunciation_changes.txt").read_text(encoding="utf-8").splitlines()[1] == \
+        f"no\tטית\t{TET}\t1\t1\t[{TET}] 94"
     assert _transcripts(tmp_path) == [94, 95, 96, 97]
 
 

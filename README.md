@@ -99,7 +99,18 @@ rejected output; 0 = no retry; batch mode retries as new batch jobs, see Batch M
 attempt is logged as a warning with its reason.
 `pronunciation.always_vocalize` / `pronunciation.never_vocalize` are word lists filled into the
 `{always_vocalize}` / `{never_vocalize}` placeholders of the instruction (joined with ", "; an empty
-list renders as "אין").
+list renders as "אין"). An `always_vocalize` entry may also give the word's readings, one or more
+(`word` + `readings: [{nikkud, meaning}, ...]`), rendered as
+`כחל (כְּחָל = עטין של בהמה; כֹּחַל = צבע איפור)`; at startup each reading must have a meaning, and its
+nikkud must be the word's letters (ו / י may be added or removed except as the first letter, as in
+the validation below).
+
+The changes file (`..._pronunciation_changes.txt`) is the review list of what the LLM vocalized: a
+header line, then one tab-separated line per distinct original → vocalized pair:
+`varies`, `original`, `vocalized`, `count`, `first_line` (in the transcript) and `context` (up to 5
+words on each side of the first occurrence, the word in brackets, e.g. `מה דינו של [כְּחָל] של בהמה`).
+Words the LLM vocalized in more than one way (`varies` = `yes`) come first, each variant on its own
+line; then the rest by count.
 
 The stage runs after the dictionary nikkud, and the LLM is told to leave already-vocalized words
 alone. Validation is strict and word by word: words, whitespace and lines must be unchanged (only
@@ -117,7 +128,7 @@ Standalone (Windows PowerShell, from the repo root):
 
 ```powershell
 # Dictionary nikkud + LLM pronunciation nikkud on any text file
-# (writes <input>_vocalized.txt and <input>_vocalized_changes.txt: original<TAB>vocalized per changed word)
+# (writes <input>_vocalized.txt and <input>_vocalized_changes.txt, the changes file described above)
 .venv\Scripts\python scripts\vocalize_pronunciation.py output\<file>.txt
 # Synthesize any text file with the TTS engine configured in config.yaml
 .venv\Scripts\python scripts\tts_from_file.py output\<file>_vocalized.txt
@@ -349,7 +360,7 @@ output/
 ├── {section}_Siman_{N}_{model}_polish.txt          # Stage 3 polished text (before nikkud)
 ├── {section}_Siman_{N}_{model}_transcript.txt      # Latest transcript
 ├── {section}_Siman_{N}_{model}_transcript_YYYYMMDD_HHMMSS.txt  # Timestamped history
-├── {section}_Siman_{N}_{model}_pronunciation_changes.txt  # original<TAB>vocalized per word the LLM changed (incl. ו/י respellings), if enabled
+├── {section}_Siman_{N}_{model}_pronunciation_changes.txt  # review list of the words the LLM changed (see Pronunciation nikkud), if enabled
 ├── {section}_Siman_{N}_{model}.mp3               # Audio file
 ├── drafts/                                         # Stage 1 cached drafts
 │   └── {section}_Siman_{N}_{model}_draft.txt
