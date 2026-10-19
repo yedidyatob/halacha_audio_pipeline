@@ -406,6 +406,8 @@ def test_real_config_yaml_has_pronunciation():
     assert "{always_vocalize}" not in instruction and "{never_vocalize}" not in instruction
     assert "תמיד לנקד (כשמופיעות קריאות בסוגריים, בחר לפי ההקשר): עובר בהמה, כותח" in instruction
     assert "כחל (כְּחָל = עטין של בהמה; כֹּחַל = צבע איפור)" in instruction
+    assert ('למה (לְמָה = אל מה, לאיזו כוונה, כמו "למה התכוון"; לָמָּה = מדוע, כמו "למה צריך"), שה'
+            in instruction)  # readings keep the entry's position
     assert "לעולם לא לנקד: דאורייתא, דרבנן" in instruction
 
 
