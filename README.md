@@ -172,6 +172,23 @@ python main.py 94 --context-range 87-111
 | `--limit-lessons N` | Process only first N simanim (debug mode) |
 | `--overwrite-cache` | Regenerate cached drafts and relations |
 | `--relations-file PATH` | Use pre-existing relations map |
+| `--dry-run` | Print the run plan and exit (no API / LLM / TTS / Sefaria calls) |
+
+### Dry Run
+
+```bash
+python main.py 94 --context-range 87-111 --batch --dry-run
+```
+
+`--dry-run` resolves the run exactly like a real run with the same arguments (the same code
+path, `resolve_run_plan`, honouring `--overwrite-cache`, `--relations-file`, `--context-range`,
+`--limit-lessons`, `--batch`, `--skip-tts` and `--stage-1-only`). It prints:
+- whether the relations map is loaded (from `--relations-file` or the cache) or generated, and its path
+- which Stage 1 drafts load from the cache and which are requested, with their paths
+- which simanim go through Stage 3 / 3.5 / TTS, with the transcript and audio paths
+
+It then exits with code 0. Nothing is written and no API, LLM, TTS or Sefaria call is made;
+only the local cache files are read.
 
 ### Batch Mode (Cost-Saving)
 
