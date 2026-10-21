@@ -74,7 +74,6 @@ def test_full_run_logs_relations_polish_and_transcript_paths(tmp_path, monkeypat
     with patch.object(main_mod, "PipelineConfig", return_value=cfg), \
          patch.object(main_mod, "create_generator_engine", return_value=gen), \
          patch.object(main_mod, "SefariaExtractor"), \
-         patch("pipeline.evaluator.evaluate_draft", return_value={"success": True}), \
          caplog.at_level("INFO"):
         main_mod.main()
     _assert_saved_once(caplog, tmp_path, "Stage 2 (Relations) output for Simanim [94]", "YD_Relations_94_m.txt")

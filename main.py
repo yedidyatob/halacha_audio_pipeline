@@ -589,7 +589,7 @@ def format_run_plan(plan: RunPlan, args, config, generator, vocalizer, model_suf
                  f"{plan.missing_drafts or 'none'}")
     lines += [f"    Siman {s} -> {plan.draft_paths[s]}" for s in plan.missing_drafts]
     if args.stage_1_only:
-        lines.append("--stage-1-only: the run stops after Stage 1 (and the heuristic evaluation).")
+        lines.append("--stage-1-only: the run stops after Stage 1.")
         return "\n".join(lines)
     pronunciation = (f"{config.pronunciation_engine} {vocalizer.generator.model_name}" if vocalizer is not None
                      else "disabled (pronunciation.enabled: false)")
@@ -851,7 +851,6 @@ def main():
         sys.exit(0)
     relations_text = plan.relations_text
     target_generation_simanim = plan.target_simanim
-    drafts_needed = plan.drafts_needed
     drafts = dict(plan.drafts)
     missing_simanim = plan.missing_drafts
 
@@ -872,30 +871,6 @@ def main():
     if missing_simanim:
         logger.info(f"Generating missing Stage 1 drafts for Simanim: {missing_simanim}...")
         drafts.update(generate_drafts(missing_simanim, extractor, generator, config, args, model_suffix))
-
-    # 7.5 Run Heuristic Evaluation for resolved drafts
-    logger.info("Executing Heuristic Evaluation on resolved drafts...")
-    from pipeline.evaluator import evaluate_draft
-    
-    for siman in drafts_needed:
-        if siman in drafts:
-            logger.info(f"Evaluating draft quality for Siman {siman}...")
-            try:
-                eval_res = evaluate_draft(siman, drafts[siman], config_path=args.config)
-                if not eval_res["success"]:
-                    logger.warning(
-                        f"\n"
-                        f"============================================================\n"
-                        f"⚠️⚠️⚠️ HEURISTIC EVALUATION WARNING FOR SIMAN {siman} ⚠️⚠️⚠️\n"
-                        f"============================================================\n"
-                        f"The generated Stage 1 draft failed heuristic coverage checks.\n\n"
-                        f"{eval_res['report']}\n"
-                        f"============================================================\n"
-                    )
-                else:
-                    logger.info(f"Heuristic coverage evaluation for Siman {siman} PASSED.")
-            except Exception as e:
-                logger.error(f"Failed to run heuristic evaluation for Siman {siman}: {e}")
 
     if args.stage_1_only:
         logger.info("Stage 1 completed. Exiting as requested by --stage-1-only.")
