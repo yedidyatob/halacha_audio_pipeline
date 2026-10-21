@@ -7,7 +7,7 @@ Usage (from the repo root):
          [--output out.txt]
 
 The call uses the generator configured for polish (generator.engine / model) and the same
-user prompt the pipeline builds for polish (BaseScriptGenerator.polish). System instruction:
+user prompt and temperature the pipeline uses for polish (polish_siman_script). System instruction:
 
   polishing_instruction
   + experiment_combined_polish_vocalize.addendum_header
@@ -32,9 +32,11 @@ polish and the LLM stage; here there is no separate polish output to run it on).
 touches words the LLM already vocalized.
 
 Writes <output> (default <draft stem>_combined_vocalized.txt next to the draft) and
-<output stem>_changes.txt: 'plain<TAB>vocalized' per word the LLM vocalized (before the
-dictionary pass), comparable with the changes file of scripts/vocalize_pronunciation.py.
-Prints token usage and an estimated cost (prices from experiment_pricing in config.yaml).
+<output stem>_changes.txt: the review list of every word the LLM vocalized (before the
+dictionary pass), plain form -> vocalized form, in the same format as the changes file of
+scripts/vocalize_pronunciation.py (pipeline.pronunciation.format_changes), so they compare.
+Token usage and the estimated cost are logged by the generator ('[Gemini Cost Tracker]' line,
+prices from gemini_pricing in config.yaml).
 """
 import argparse
 import os
@@ -79,14 +81,17 @@ def build_combined_instruction(polishing_instruction: str, addendum_header: str,
 
 
 def validate_combined_output(text: str) -> list:
-    """Returns (plain, vocalized) per vocalized word; raises PronunciationError on empty output or markup."""
-    from pipeline.pronunciation import PronunciationError, find_markup, has_nikkud, strip_nikkud
+    """
+    The words the LLM vocalized (pipeline.pronunciation.Change records: the word without nikkud ->
+    the word as written, with line and context); raises PronunciationError on empty output or markup.
+    """
+    from pipeline.pronunciation import PronunciationError, changed_words, find_markup, strip_nikkud
     if not text or not text.strip():
         raise PronunciationError("combined call returned empty output")
     markup = find_markup(text)
     if markup:
         raise PronunciationError(f"markup in output: {markup[:5]}")
-    return [(strip_nikkud(w), w) for w in text.split() if has_nikkud(w)]
+    return changed_words(strip_nikkud(text), text)
 
 
 def parse_args(argv=None):
@@ -116,7 +121,6 @@ def main(argv=None):
     from pipeline.factory import create_generator_engine
     from pipeline.pronunciation import PronunciationError, format_changes
     from pipeline.apply_nikkud import apply_nikkud_to_abbreviations
-    from pipeline.usage import format_usage_report
     from scripts.vocalize_pronunciation import changes_path_for
 
     draft, relations = read_inputs(args.draft, args.relations)
@@ -124,22 +128,20 @@ def main(argv=None):
     instruction = build_combined_instruction(
         config.polishing_instruction, config.experiment_combined_addendum_header, config.pronunciation_instruction
     )
-    generator = create_generator_engine(config)
-    pricing = config.experiment_pricing(generator.model_name)  # fail before paying for a call
+    generator = create_generator_engine(config)  # a Gemini model without a gemini_pricing entry fails here
     thinking_level = config.pronunciation_thinking_level if generator.supports_thinking_level else None
     print(f"Combined polish + nikkud of {args.draft} via {config.generator_engine} / {generator.model_name} "
           f"(thinking level: {thinking_level or 'model default'})...")
 
-    result = generator.polish(draft, relations, instruction, thinking_level)
-    print(format_usage_report("Combined polish + nikkud", generator.model_name, result.usage, pricing))
+    result = generator.polish_siman_script(draft, relations, instruction, thinking_level=thinking_level)
     try:
-        changes = validate_combined_output(result.text)
+        changes = validate_combined_output(result)
     except PronunciationError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         print("Nothing was written.", file=sys.stderr)
         sys.exit(1)
 
-    text = apply_nikkud_to_abbreviations(result.text.replace("\r\n", "\n"))
+    text = apply_nikkud_to_abbreviations(result.replace("\r\n", "\n"))
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as f:
         f.write(text)

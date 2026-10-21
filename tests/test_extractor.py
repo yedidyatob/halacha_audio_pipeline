@@ -143,3 +143,100 @@ def test_extractor_section_name():
         SefariaExtractor(section_name="Invalid Section")
 
 
+
+
+# --- Rama labels (Shulchan Arukh) -------------------------------------------------
+# Raw se'if HTML from Sefaria; the Rama's glosses are in <small>.
+
+import json
+import os
+import re
+
+from pipeline.extractor import RAMA_OPEN, RAMA_CLOSE
+
+with open(os.path.join(os.path.dirname(__file__), "fixtures", "shulchan_arukh_yd_rama.json"), encoding="utf-8") as f:
+    RAW_SEIFIM = json.load(f)["seifim"]
+
+
+def _labeled(extractor, seif):
+    return extractor.flatten_elements(RAW_SEIFIM[seif], label_rama=True)[0]
+
+
+def _split(text):
+    """(mechaber_segments, rama_segments) of a labeled se'if."""
+    pattern = re.escape(RAMA_OPEN) + r" (.*?) " + re.escape(RAMA_CLOSE)
+    return [p.strip() for p in re.split(pattern, text)[0::2]], re.findall(pattern, text)
+
+
+def test_inline_rama_gloss_is_labeled(extractor):
+    text = _labeled(extractor, "89:3")
+    mechaber, rama = _split(text)
+    assert rama[0] == '(ויש מצריכים נטילה) (שערים והגהות ש"ד)'  # inline gloss, no הגה
+    assert rama[1].startswith("ושומן של בשר דינו כבשר עצמו")      # leading הגה dropped
+    assert mechaber[1].startswith("אבל אם בא לאכול הגבינה עצמה")
+    assert "<" not in text and "הגה ושומן" not in text
+
+
+def test_mechaber_after_gloss_is_unlabeled(extractor):
+    mechaber, rama = _split(_labeled(extractor, "91:5"))
+    assert rama[0].startswith('וי"א דלאחר ששהה במלחו')
+    assert rama[0].endswith("וטוב להחמיר במקו' שאין הפסד מרובה:")
+    assert mechaber[1].startswith("ומליח כעין מליח דבעי לה לארחא")
+
+
+def test_several_glosses_in_one_seif(extractor):
+    mechaber, rama = _split(_labeled(extractor, "92:2"))
+    assert rama[0] == "(ולדידן דאין סומכין אעובדי כוכבים בעינן ששים בחתיכה ואם לאו כולה אסורה)"
+    assert mechaber[1].startswith("ומשערין בכולה")
+    assert rama[1].startswith("וכן אם לא ניער כלל")
+    assert any(m.startswith("וכן אם נפל לתוך המרק") for m in mechaber[2:])
+
+
+def test_seif_with_only_inline_glosses(extractor):
+    text = _labeled(extractor, "94:1")
+    mechaber, rama = _split(text)
+    assert "הגה" not in text.split()  # no הגה word in the raw se'if either
+    assert rama == ['(אם הכף בן יומו דהיינו ששמשו בו בכלי ראשון תוך מעת לעת) (ארוך כלל ל"ז)',
+                    '(וסברא ראשונה עיקר וכן נוהגין) (מרדכי וש"ד והגהותיו וארוך) (וע"ל סי\' צ"ח):']
+    assert mechaber[1] == "ויש מי שאומר שאם הכף של מתכת משערים בכולו משום דחם מקצתו חם כולו"
+
+
+def test_unmarked_parenthetical_stays_unlabeled(extractor):
+    # 96:3: Sefaria did not put this gloss in <small>; the prompt covers it
+    text = _labeled(extractor, "96:3")
+    assert RAMA_OPEN not in text and '(וי"א אפי\' אינו בן יומו)' in text
+
+
+def test_nested_and_unclosed_small(extractor):
+    assert extractor.label_rama_glosses("א <small>ב <small>(טור)</small>.</small> ג") == \
+        f"א  {RAMA_OPEN} ב (טור). {RAMA_CLOSE}  ג"
+    assert extractor.clean_html_text(extractor.label_rama_glosses("א <small>הגה: ב")) == f"א {RAMA_OPEN} ב {RAMA_CLOSE}"
+    assert extractor.label_rama_glosses("א <small> </small>ב") == "א  ב"
+
+
+def test_flatten_without_label_rama_keeps_plain_cleaning(extractor):
+    assert extractor.flatten_elements(["א <small>הגה ב</small>"]) == ["א הגה ב"]
+
+
+def _sefaria_by_ref(url, **kwargs):
+    response = MagicMock(status_code=200)
+    response.json.return_value = {"versions": [{"language": "he", "text": ["מחבר <small>הגה רמא</small> סוף"]}]}
+    return response
+
+
+@patch("requests.get", side_effect=_sefaria_by_ref)
+def test_only_shulchan_arukh_is_labeled(mock_get, extractor):
+    sources = extractor.fetch_siman_sources(94)
+    assert sources["Shulchan Arukh"] == [f"מחבר {RAMA_OPEN} רמא {RAMA_CLOSE} סוף"]
+    for work in ("Tur", "Beit Yosef", "Shach", "Taz"):
+        assert sources[work] == ["מחבר הגה רמא סוף"]
+    context = extractor.compile_simanim_context([94])
+    assert f"[1] מחבר {RAMA_OPEN} רמא {RAMA_CLOSE} סוף" in context
+    assert context.count(RAMA_OPEN) == 1
+
+
+def test_stage1_prompt_describes_the_rama_labels():
+    from pipeline.config import PipelineConfig
+    with patch("os.makedirs"):
+        instruction = PipelineConfig("config.yaml").gemini_system_instruction
+    assert f"{RAMA_OPEN} ... {RAMA_CLOSE}" in instruction

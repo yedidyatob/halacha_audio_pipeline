@@ -3,12 +3,72 @@ import yaml
 from typing import Dict, Any
 from pipeline.logger import get_logger
 from pipeline.domain import SECTIONS_METADATA
+from pipeline.pronunciation import has_nikkud, word_vocalization_error
 from pipeline.tts import (
     validate_gap_ms, validate_chunk_size, validate_context_chars,
     GOOGLE_TTS_MAX_INPUT_BYTES, GOOGLE_TTS_ASSUMED_BYTES_PER_CHAR,
 )
 
 logger = get_logger(__name__)
+
+def _max_retries(value, key: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"'{key}' must be a non-negative integer, got {value!r}.")
+    return value
+
+
+THINKING_LEVELS = ("low", "medium", "high")
+
+
+def _non_empty_str(value) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _always_vocalize_entry(entry, key: str) -> str:
+    """
+    One pronunciation.always_vocalize entry, rendered for the prompt: a plain word as is, or
+    {word, readings: [{nikkud, meaning}, ...]} as 'word (nikkud = meaning; ...)'. Each reading's
+    nikkud must be a valid vocalization of the word by the stage's own rule (same letters, ו / י
+    may be added or removed except as the first letter), so a typo is caught at startup.
+    """
+    if isinstance(entry, str):
+        if not entry.strip():
+            raise ValueError(f"'{key}' entries must be non-empty, got {entry!r}.")
+        return entry.strip()
+    if not isinstance(entry, dict) or set(entry) != {"word", "readings"}:
+        raise ValueError(f"'{key}' entries must be a word or a mapping with 'word' and 'readings', got {entry!r}.")
+    word, readings = entry["word"], entry["readings"]
+    if not _non_empty_str(word) or has_nikkud(word):
+        raise ValueError(f"'{key}' entry 'word' must be a non-empty word without nikkud, got {word!r}.")
+    word = word.strip()
+    if not isinstance(readings, list) or not readings:
+        raise ValueError(f"'{key}' entry {word!r}: 'readings' must be a non-empty list, got {readings!r}.")
+    rendered = []
+    for reading in readings:
+        if not isinstance(reading, dict) or set(reading) != {"nikkud", "meaning"}:
+            raise ValueError(f"'{key}' entry {word!r}: each reading must be a mapping with 'nikkud' and "
+                             f"'meaning', got {reading!r}.")
+        nikkud, meaning = reading["nikkud"], reading["meaning"]
+        if not _non_empty_str(meaning):
+            raise ValueError(f"'{key}' entry {word!r}: reading {nikkud!r} needs a non-empty 'meaning'.")
+        if not _non_empty_str(nikkud) or not has_nikkud(nikkud):
+            raise ValueError(f"'{key}' entry {word!r}: reading 'nikkud' must be the vocalized word, got {nikkud!r}.")
+        error = word_vocalization_error(word, nikkud.strip())
+        if error:
+            raise ValueError(f"'{key}' entry {word!r}: reading {nikkud!r} is not a vocalization of the word ({error}).")
+        rendered.append(f"{nikkud.strip()} = {meaning.strip()}")
+    return f"{word} ({'; '.join(rendered)})"
+
+
+def _rates(entry: dict, key: str) -> dict:
+    rates = {}
+    for name in ("input_per_million", "output_per_million"):
+        value = entry.get(name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            raise ValueError(f"'{key}.{name}' must be a non-negative number (USD per 1M tokens), got {value!r}.")
+        rates[name] = float(value)
+    return rates
+
 
 class PipelineConfig:
     """
@@ -173,6 +233,9 @@ class PipelineConfig:
         self.output_dir = dirs.get("output_dir", "./output")
         self.cache_dir = dirs.get("cache_dir", "./cache")
         self.drafts_dir = os.path.join(self.output_dir, "drafts")
+        if not dirs.get("thinking_dir"):
+            raise ValueError("Missing required configuration parameter 'thinking_dir' under 'directories' in config.yaml.")
+        self.thinking_dir = dirs["thinking_dir"]
         self.relations_dir = os.path.join(self.output_dir, "relations")
 
         # Create directories if they don't exist
@@ -180,8 +243,60 @@ class PipelineConfig:
         os.makedirs(self.cache_dir, exist_ok=True)
         os.makedirs(self.drafts_dir, exist_ok=True)
         os.makedirs(self.relations_dir, exist_ok=True)
+        os.makedirs(self.thinking_dir, exist_ok=True)
         
         logger.info("Configuration validated and directories established.")
+
+    @property
+    def generator_max_retries(self) -> int:
+        """
+        Retry rounds after a failed generator attempt in Stages 1-3 (API error, failed batch job or
+        request, empty / blocked / cut-off response): new sync calls, or new batch jobs in batch
+        mode. Required: no code default.
+        """
+        value = (self.config_data.get("generator") or {}).get("max_retries")
+        if value is None:
+            raise ValueError("Missing required configuration parameter 'max_retries' under 'generator' in config.yaml.")
+        return _max_retries(value, "generator.max_retries")
+
+    @property
+    def draft_thinking_level(self) -> str:
+        """Gemini thinking level for the Stage 1 draft calls (sync and batch). Required for engine gemini."""
+        if self.generator_engine != "gemini":
+            return None
+        value = (self.config_data.get("generator") or {}).get("draft_thinking_level")
+        if value is None:
+            raise ValueError("Missing required configuration parameter 'draft_thinking_level' under 'generator' in config.yaml.")
+        if value not in THINKING_LEVELS:
+            raise ValueError(f"'generator.draft_thinking_level' must be one of low, medium, high, got {value!r}.")
+        return value
+
+    def gemini_price(self, model_name: str) -> dict:
+        """
+        The validated gemini_pricing entry for a model (USD per 1M tokens): input_per_million,
+        output_per_million (thinking tokens are billed as output) and an optional long_context tier
+        {threshold_tokens, input_per_million, output_per_million}. A model without an entry is an error.
+        """
+        section = self.config_data.get("gemini_pricing")
+        if not isinstance(section, dict):
+            raise ValueError("Missing required configuration section 'gemini_pricing' in config.yaml.")
+        entry = section.get(model_name)
+        if not isinstance(entry, dict):
+            raise ValueError(f"No price for Gemini model '{model_name}' under 'gemini_pricing' in config.yaml.")
+        key = f"gemini_pricing.{model_name}"
+        price = _rates(entry, key)
+        tier = entry.get("long_context")
+        if tier is not None:
+            if not isinstance(tier, dict):
+                raise ValueError(f"'{key}.long_context' must be a mapping, got {tier!r}.")
+            threshold = tier.get("threshold_tokens")
+            if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold <= 0:
+                raise ValueError(f"'{key}.long_context.threshold_tokens' must be a positive integer, got {threshold!r}.")
+            price["long_context"] = {"threshold_tokens": threshold, **_rates(tier, f"{key}.long_context")}
+        unknown = set(entry) - {"input_per_million", "output_per_million", "long_context"}
+        if unknown:
+            raise ValueError(f"Unknown key(s) under '{key}' in config.yaml: {sorted(unknown)}.")
+        return price
 
     # ------------------------------------------------------------------
     # Pronunciation stage (LLM nikkud for ambiguous words). No defaults: every value
@@ -230,9 +345,14 @@ class PipelineConfig:
         if self.pronunciation_engine != "gemini":
             return None
         value = self._pronunciation_value("thinking_level")
-        if value not in ("low", "medium", "high"):
+        if value not in THINKING_LEVELS:
             raise ValueError(f"'pronunciation.thinking_level' must be one of low, medium, high, got {value!r}.")
         return value
+
+    @property
+    def pronunciation_max_retries(self) -> int:
+        """Extra LLM calls after a failed pronunciation attempt (LLM error or rejected output)."""
+        return _max_retries(self._pronunciation_value("max_retries"), "pronunciation.max_retries")
 
     @property
     def experiment_combined_addendum_header(self) -> str:
@@ -243,33 +363,20 @@ class PipelineConfig:
             raise ValueError("Missing 'experiment_combined_polish_vocalize.addendum_header' in config.yaml.")
         return value
 
-    def experiment_pricing(self, model_name: str):
-        """Per-1M-token prices for model_name from 'experiment_pricing' in config.yaml (no defaults)."""
-        from pipeline.usage import ModelPricing
-        section = self.config_data.get("experiment_pricing")
-        if not isinstance(section, dict) or not isinstance(section.get(model_name), dict):
-            raise ValueError(f"Missing 'experiment_pricing.{model_name}' in config.yaml.")
-        entry = section[model_name]
-        for key in ("input_per_1m_usd", "output_per_1m_usd", "max_prompt_tokens"):
-            value = entry.get(key)
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
-                raise ValueError(f"'experiment_pricing.{model_name}.{key}' must be a non-negative number, got {value!r}.")
-        return ModelPricing(float(entry["input_per_1m_usd"]), float(entry["output_per_1m_usd"]),
-                            int(entry["max_prompt_tokens"]))
-
-    def _pronunciation_word_list(self, key: str) -> list:
-        value = self._pronunciation_value(key)
-        if not isinstance(value, list) or not all(isinstance(w, str) and w.strip() for w in value):
-            raise ValueError(f"'pronunciation.{key}' must be a list of non-empty strings, got {value!r}.")
-        return [w.strip() for w in value]
-
     @property
     def pronunciation_always_vocalize(self) -> list:
-        return self._pronunciation_word_list("always_vocalize")
+        """The always_vocalize entries as rendered in the prompt (see _always_vocalize_entry)."""
+        value = self._pronunciation_value("always_vocalize")
+        if not isinstance(value, list):
+            raise ValueError(f"'pronunciation.always_vocalize' must be a list, got {value!r}.")
+        return [_always_vocalize_entry(entry, "pronunciation.always_vocalize") for entry in value]
 
     @property
     def pronunciation_never_vocalize(self) -> list:
-        return self._pronunciation_word_list("never_vocalize")
+        value = self._pronunciation_value("never_vocalize")
+        if not isinstance(value, list) or not all(_non_empty_str(w) for w in value):
+            raise ValueError(f"'pronunciation.never_vocalize' must be a list of non-empty strings, got {value!r}.")
+        return [w.strip() for w in value]
 
     @staticmethod
     def _render_word_list(words: list) -> str:

@@ -16,7 +16,7 @@ VOCALIZED_WORD = "טֵית"
 
 
 def _load(tts_yaml: str) -> PipelineConfig:
-    yaml_content = ('halachic_section: "Yoreh De\'ah"\ngenerator:\n  engine: "gemini"\n'
+    yaml_content = ('halachic_section: "Yoreh De\'ah"\ndirectories:\n  thinking_dir: "./output/thinking"\ngenerator:\n  engine: "gemini"\n'
                     'tts:\n  chunk_gap_paragraph_ms: 0\n  chunk_gap_sentence_ms: 0\n' + tts_yaml)
     with patch("builtins.open", mock_open(read_data=yaml_content)), \
          patch("os.path.exists", return_value=True), patch("os.makedirs"):

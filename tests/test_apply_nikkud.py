@@ -4,6 +4,7 @@ import pytest
 from pipeline import apply_nikkud as an
 from pipeline.apply_nikkud import (
     DEFAULT_PREFIXES,
+    LETTER_NAME_MISVOCALIZATIONS,
     NO_PREFIX_NIKKUD_DICT,
     RABBINIC_NIKKUD_DICT,
     additional_nikkud_corrections,
@@ -246,7 +247,7 @@ def test_already_nikkuded_words_are_not_touched():
     ('באבן העזר', "ב" + "אֶבֶן הָעֵזֶר"),
     ('שו"ע', "שׁוּלְחָן עָרוּךְ"),
     ('בשו"ע', "ב" + "שׁוּלְחָן עָרוּךְ"),
-    ('שו"ת', 'שׁוּ"ת'),
+    ('שו"ת', 'שׁוּת'),
 ])
 def test_abbreviations(text, expected):
     assert apply(text) == expected
@@ -315,7 +316,8 @@ def test_entries_starting_with_prefix_letters_are_not_double_prefixed():
 
 
 # ---------------------------------------------------------------------------
-# Letter entries (הא / פא / צדי): standalone only, no prefixes, letter-name context only
+# Letter entries (הא / הי / וו / פא / צדי, and the wrong form הֵא): standalone only, no prefixes,
+# letter-name context only
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("text, expected", [
@@ -354,7 +356,7 @@ def test_entries_starting_with_prefix_letters_are_not_double_prefixed():
     ("הא ריש", "הֵי ריש"),
     ("פא זין", "פֵּא זין"),
     ("קוף הא", "קוף הֵי"),
-    ("הא\tוו", "הֵי\tוו"),
+    ("הא\tוו", "הֵי\tוָו"),
     ("סימן פא הא", "סימן פֵּא הֵי"),
     # next to punctuation / start / end / newline, with context
     ("שורה\nסימן הא", "שורה\nסימן הֵי"),
@@ -421,6 +423,50 @@ def test_siman_numbers_spoken_as_letter_names():
     assert apply("סימן פא זין") == f"סימן {NO_PREFIX_NIKKUD_DICT['פא']} זין"
 
 
+HEI = NO_PREFIX_NIKKUD_DICT["הא"]
+
+
+@pytest.mark.parametrize("text, expected", [
+    # the letter ה written as הי, or wrongly vocalized הֵא (e.g. by the polish), is respelled הֵי
+    ("סעיף הי", "סעיף הֵי"),
+    ("דף הי עמוד בית", "דף הֵי עמוד בית"),
+    ("סימן יוד הי", "סימן יוד הֵי"),
+    ("סעיף הֵא", "סעיף הֵי"),
+    ("סעיף הֵא.", "סעיף הֵי."),
+    # the polish output that showed the bug: a wrongly vocalized neighbour still gives context
+    ("צדי אלף עד צדי הֵא", "צָדִי אלף עד צָדִי הֵי"),
+    ("בדף למד הֵא עמוד בית", "בדף למד הֵי עמוד בית"),
+    ("סימן קוף הֵא", "סימן קוף הֵי"),
+    # וו as a letter name
+    ("סעיף וו", "סעיף וָו"),
+    ("דף קוף טית וו", "דף קוף טית וָו"),
+])
+def test_he_and_vav_letter_names(text, expected):
+    assert apply(text) == expected
+    assert apply(expected) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "הי מינייהו", "הי ניהו", "הֵא לך", "הֵא", "וו", "ווי העמודים", "סימן ווי",
+    "בהי", "בהֵא", "סימן בהֵא", "סימן והי",   # never with a prefix
+    "סעיף הֵא'", "סעיף הי'",                  # a trailing geresh is an ordinal
+    "סעיף הֵי",                                # already correct
+])
+def test_he_and_vav_untouched_outside_letter_name_context(text):
+    assert apply(text) == text
+
+
+def test_misvocalizations_repair_to_their_letter_name_entry():
+    assert an._letter_name_repairs() == [("הֵא", HEI)]
+
+
+@pytest.mark.parametrize("wrong", ["הא", "בֵּית", "הֵי"])  # not vocalized / not an entry / correct form
+def test_invalid_misvocalization_entry_rejected(monkeypatch, wrong):
+    monkeypatch.setattr(an, "LETTER_NAME_MISVOCALIZATIONS", (wrong,))
+    with pytest.raises(ValueError, match="LETTER_NAME_MISVOCALIZATIONS"):
+        an._letter_name_repairs()
+
+
 def test_letter_name_context_is_linear_on_long_lines():
     import time
     text = "הא דתניא " * 40000          # one 360K-char line, no context anywhere
@@ -440,7 +486,7 @@ def test_empty_and_plain_text():
 
 def test_idempotent_on_every_entry():
     entries = (
-        list(RABBINIC_NIKKUD_DICT) + list(NO_PREFIX_NIKKUD_DICT)
+        list(RABBINIC_NIKKUD_DICT) + list(NO_PREFIX_NIKKUD_DICT) + list(LETTER_NAME_MISVOCALIZATIONS)
         + [p for p, _ in additional_nikkud_corrections]
     )
     text = "\n".join(f"הנה סימן {key} כאן, ו{key}." for key in entries)
@@ -649,3 +695,56 @@ def test_context_regexes_and_letter_names_unaffected_by_blank_rule():
     assert an._key_to_regex("סי'") == "סי['\u05F3]"
     assert an._key_to_regex("a b") == f"a{an._BLANK}+b"
     assert an._norm("אבן \t\u00A0 העזר\u05F4") == 'אבן העזר"'
+
+
+# ---------------------------------------------------------------------------
+# Unquoted abbreviations (gershayim dropped by the polish stage)
+# ---------------------------------------------------------------------------
+
+MAHARSHAL = RABBINIC_NIKKUD_DICT['מהרש"ל']
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("מהרשל", MAHARSHAL),
+    ("והמהרשל אומר", f"וה{MAHARSHAL} אומר"),
+    ("כדברי הרמבם.", f"כדברי ה{RAMBAM}."),
+    ("ולדעת הרשבא", "ולדעת ה" + RABBINIC_NIKKUD_DICT['רשב"א']),
+    ("שהמגא כתב", "שה" + RABBINIC_NIKKUD_DICT['מג"א'] + " כתב"),
+    ("מהמהרשא", "מה" + RABBINIC_NIKKUD_DICT['מהרש"א']),
+    ("(הסמע)", "(ה" + RABBINIC_NIKKUD_DICT['סמ"ע'] + ")"),
+])
+def test_unquoted_abbreviation_with_and_without_prefix(text, expected):
+    assert apply(text) == expected
+
+
+def test_unquoted_matches_like_quoted():
+    for key in an.UNQUOTED_ABBREVIATIONS:
+        unquoted = key.replace('"', "")
+        for prefix in ("", "ו", "וה", "כשה", "מ"):
+            assert apply(prefix + unquoted) == apply(prefix + key) == prefix + RABBINIC_NIKKUD_DICT[key]
+
+
+@pytest.mark.parametrize("text", [
+    "ראש השנה", "הוא רזה", "רמה גבוהה", "רמא ליה", "משך הזמן", "מרשי ושרשי הדברים", "הרשי",
+    "הנציב", "גרא", "תשבץ", "סמק", "ריף", "רן", "רת", "טז", "בח", "שבח", "בי", "נט", "עפ",
+    "יוד", "אוח", "חנן", "שוע", "שות", "ושות",
+])
+def test_ambiguous_unquoted_forms_unchanged(text):
+    assert apply(text) == text
+
+
+def test_unquoted_inside_longer_word_or_after_quote_not_matched():
+    assert apply("רמבםים") == "רמבםים"
+    assert apply('ה"רמבם') == 'ה"רמבם'  # quote glued to a previous letter: inside a word
+
+
+def test_unquoted_allowlist_entries_are_quoted_dict_keys(monkeypatch):
+    assert all('"' in k and k in RABBINIC_NIKKUD_DICT for k in an.UNQUOTED_ABBREVIATIONS)
+    monkeypatch.setattr(an, "UNQUOTED_ABBREVIATIONS", ("רמבם",))
+    with pytest.raises(ValueError, match="not a quoted RABBINIC_NIKKUD_DICT key"):
+        an._unquoted_variants()
+
+
+def test_unquoted_output_is_idempotent():
+    out = apply("והמהרשל והרמבם")
+    assert apply(out) == out

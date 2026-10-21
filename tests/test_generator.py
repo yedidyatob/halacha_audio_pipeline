@@ -2,65 +2,57 @@ import pytest
 import os
 from unittest.mock import patch, MagicMock
 from pipeline.generator import GeminiScriptGenerator, OpenAIScriptGenerator
+from tests.gemini_fakes import PRICE, make_gemini_generator, answer_stream
 
-@patch("google.genai.Client")
-def test_generator_initialization(mock_client_cls):
-    # Tests that client is initialized with correct credentials
-    generator = GeminiScriptGenerator(api_key="fake-key", model_name="fake-model", temperature=0.5)
-    mock_client_cls.assert_called_once_with(api_key="fake-key")
+def test_generator_initialization(tmp_path):
+    with patch("pipeline.generator.genai.Client") as client_cls:
+        generator = GeminiScriptGenerator(api_key="fake-key", model_name="fake-model", temperature=0.5,
+                                          ssl_verify=True, pricing=PRICE, thinking_dir=str(tmp_path))
+    client_cls.assert_called_once_with(api_key="fake-key")
     assert generator.model_name == "fake-model"
     assert generator.temperature == 0.5
 
-@patch("google.genai.Client")
-def test_generate_siman_script_success(mock_client_cls):
-    # Setup mock client and mock response
-    mock_client = MagicMock()
-    mock_client_cls.return_value = mock_client
-    
-    mock_response = MagicMock()
-    mock_response.text = "שיעור שמע לדוגמה"
-    mock_client.models.generate_content.return_value = mock_response
 
-    generator = GeminiScriptGenerator(api_key="fake-key")
+def test_generator_initialization_without_ssl_verify(tmp_path):
+    with patch("pipeline.generator.genai.Client") as client_cls:
+        GeminiScriptGenerator(api_key="k", model_name="m", temperature=0.5,
+                              ssl_verify=False, pricing=PRICE, thinking_dir=str(tmp_path))
+    client_cls.assert_called_once_with(api_key="k", http_options={"client_args": {"verify": False}})
+
+
+def test_generate_siman_script_success(tmp_path):
+    generator, client = make_gemini_generator(tmp_path, model_name="gemini-x")
+    client.models.generate_content_stream.return_value = answer_stream("שיעור שמע לדוגמה")
     script = generator.generate_siman_script(
         siman=94,
         master_context="קובץ מקורות כלשהו",
-        system_instruction="הנחיות מערכת"
+        system_instruction="הנחיות מערכת",
+        thinking_level="high",
     )
 
     assert script == "שיעור שמע לדוגמה"
-    # Verify client call structure
-    mock_client.models.generate_content.assert_called_once()
-    call_args, call_kwargs = mock_client.models.generate_content.call_args
-    assert call_kwargs["model"] == "gemini-3.5-flash"
+    client.models.generate_content.assert_not_called()
+    call_kwargs = client.models.generate_content_stream.call_args.kwargs
+    assert call_kwargs["model"] == "gemini-x"
     assert "צ\"ד" in call_kwargs["contents"] # Verifies Siman 94 gematria is in prompt
     assert call_kwargs["config"].temperature == 0.3
     assert call_kwargs["config"].system_instruction == "הנחיות מערכת"
+    assert call_kwargs["config"].thinking_config.include_thoughts is True
+    assert call_kwargs["config"].thinking_config.thinking_level.value.lower() == "high"
 
 
-@patch("google.genai.Client")
-def test_polish_siman_script_success(mock_client_cls):
-    # Setup mock client and mock response
-    mock_client = MagicMock()
-    mock_client_cls.return_value = mock_client
-    
-    mock_response = MagicMock()
-    mock_response.text = "שיעור שמע מוגה ומלוטש"
-    mock_client.models.generate_content.return_value = mock_response
-
-    generator = GeminiScriptGenerator(api_key="fake-key", model_name="fake-model")
+def test_polish_siman_script_success(tmp_path):
+    generator, client = make_gemini_generator(tmp_path)
+    client.models.generate_content_stream.return_value = answer_stream("שיעור שמע מוגה ומלוטש")
     polished = generator.polish_siman_script("טקסט גולמי", "", "עורך לשוני מקצועי")
 
     assert polished == "שיעור שמע מוגה ומלוטש"
-    mock_client.models.generate_content.assert_called_once()
-    call_args, call_kwargs = mock_client.models.generate_content.call_args
+    client.models.generate_content_stream.assert_called_once()
+    call_kwargs = client.models.generate_content_stream.call_args.kwargs
     assert call_kwargs["model"] == "fake-model"
     expected_prompt = generator._get_polishing_user_prompt("טקסט גולמי", "")
     assert call_kwargs["contents"] == expected_prompt
     assert call_kwargs["config"].temperature == 0.1
-    assert call_kwargs["config"].system_instruction.startswith("עורך לשוני מקצועי")
-
-
 
 @patch("pipeline.generator.OpenAI")
 def test_openai_generator_initialization(mock_openai_cls):
@@ -245,10 +237,11 @@ def test_openai_get_batch_result_completed(mock_openai_cls):
     mock_batch = MagicMock()
     mock_batch.status = "completed"
     mock_batch.output_file_id = "output-file-456"
+    mock_batch.error_file_id = None
     mock_client.batches.retrieve.return_value = mock_batch
     
     mock_content_response = MagicMock()
-    mock_content_response.text = '{"custom_id": "siman_94_generation", "response": {"status_code": 200, "body": {"choices": [{"message": {"content": "שיעור הלכה שלם ומפורט"}}]}}}\n'
+    mock_content_response.text = '{"custom_id": "siman_94_generation", "response": {"status_code": 200, "body": {"choices": [{"message": {"content": "שיעור הלכה שלם ומפורט"}, "finish_reason": "stop"}]}}, "error": null}\n'
     mock_client.files.content.return_value = mock_content_response
 
     generator = OpenAIScriptGenerator(api_key="fake-key", model_name="o1")
@@ -275,22 +268,15 @@ def test_openai_get_batch_status(mock_openai_cls):
     mock_client.batches.retrieve.assert_called_once_with("batch-555")
 
 
-@patch("google.genai.Client")
-def test_gemini_analyze_cross_relations_success(mock_client_cls):
-    mock_client = MagicMock()
-    mock_client_cls.return_value = mock_client
-    
-    mock_response = MagicMock()
-    mock_response.text = "ניתוח יחסים בין סימנים"
-    mock_client.models.generate_content.return_value = mock_response
-
-    generator = GeminiScriptGenerator(api_key="fake-key", model_name="fake-model")
+def test_gemini_analyze_cross_relations_success(tmp_path):
+    generator, client = make_gemini_generator(tmp_path)
+    client.models.generate_content_stream.return_value = answer_stream("ניתוח יחסים בין סימנים")
     drafts = {94: "טיוטה 94", 95: "טיוטה 95"}
     relations = generator.analyze_cross_relations(drafts, "הנחיית יחסים")
 
     assert relations == "ניתוח יחסים בין סימנים"
-    mock_client.models.generate_content.assert_called_once()
-    call_args, call_kwargs = mock_client.models.generate_content.call_args
+    client.models.generate_content_stream.assert_called_once()
+    call_kwargs = client.models.generate_content_stream.call_args.kwargs
     assert call_kwargs["model"] == "fake-model"
     assert "=== סימן 94 ===" in call_kwargs["contents"]
     assert "=== סימן 95 ===" in call_kwargs["contents"]

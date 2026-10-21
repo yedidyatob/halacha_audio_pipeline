@@ -8,11 +8,13 @@ Usage (from the repo root):
 
 Writes:
   <output>                  the vocalized script (default: <input stem>_vocalized.txt next to the input)
-  <output stem>_changes.txt   one 'original<TAB>vocalized' line per word the LLM vocalized
+  <output stem>_changes.txt   the review list of words the LLM changed (pipeline.pronunciation.format_changes:
+                              one tab-separated line per distinct original/vocalized pair, with count,
+                              first line and a context sample; words vocalized more than one way first)
 Runs regardless of pronunciation.enabled (calling the script is the explicit request).
-Prints token usage and an estimated cost (prices from experiment_pricing in config.yaml).
-If the stage fails (LLM error, text changed, an already-vocalized word changed) nothing is
-written and the script exits with code 1.
+A failed attempt (LLM error, or output rejected by validation) is retried up to
+pronunciation.max_retries times; if every attempt fails nothing is written and the script
+exits with code 1.
 """
 import argparse
 import os
@@ -54,7 +56,6 @@ def main(argv=None):
 
     from pipeline.config import PipelineConfig
     from pipeline.pronunciation import create_pronunciation_vocalizer, format_changes, PronunciationError
-    from pipeline.usage import format_usage_report
     from pipeline.apply_nikkud import apply_nikkud_to_abbreviations
 
     if not os.path.exists(args.input):
@@ -65,16 +66,14 @@ def main(argv=None):
 
     config = PipelineConfig(args.config)
     vocalizer = create_pronunciation_vocalizer(config)
-    pricing = config.experiment_pricing(vocalizer.generator.model_name)  # fail before paying for a call
     print(f"Vocalizing {args.input} ({len(text)} chars) via {config.pronunciation_engine} / {vocalizer.generator.model_name}...")
 
     try:
-        (vocalized, changes), usage = vocalizer.vocalize_with_usage(text)
+        vocalized, changes = vocalizer.vocalize(text)
     except PronunciationError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         print("Nothing was written.", file=sys.stderr)
         sys.exit(1)
-    print(format_usage_report("Pronunciation nikkud", vocalizer.generator.model_name, usage, pricing))
 
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as f:

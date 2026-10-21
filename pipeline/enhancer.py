@@ -11,10 +11,8 @@ Strictly preserves the original Hebrew text — no words are added or removed.
 """
 
 import os
-from google import genai
-from google.genai import types
 from pipeline.logger import get_logger
-from pipeline.utils import log_gemini_usage, save_output_file
+from pipeline.utils import save_output_file
 
 logger = get_logger(__name__)
 
@@ -41,35 +39,23 @@ ELEVENLABS_ENHANCEMENT_SYSTEM_INSTRUCTION = """אתה עוזר AI המתמחה �
 class ElevenLabsEnhancer:
     """
     Enhances a polished TTS transcript by injecting ElevenLabs audio expression
-    tags using Gemini as the underlying model.
+    tags using Gemini as the underlying model. The Gemini call goes through the
+    pipeline's shared GeminiScriptGenerator (same client construction incl. ssl_verify,
+    streaming, thought filtering and cost tracking).
     """
 
-    def __init__(
-        self,
-        api_key: str = None,
-        model_name: str = "gemini-3.1-flash-lite",
-        temperature: float = 0.2,
-    ):
-        self.model_name = model_name
-        self.temperature = temperature
+    def __init__(self, generator):
+        self.generator = generator
+        self.model_name = generator.model_name
+        logger.info(f"ElevenLabsEnhancer initialized with model: {self.model_name}")
 
-        kwargs = {}
-        if api_key:
-            kwargs["api_key"] = api_key
-
-        try:
-            self.client = genai.Client(**kwargs)
-            logger.info(f"ElevenLabsEnhancer initialized with model: {self.model_name}")
-        except Exception as e:
-            logger.error(f"Failed to initialize Gemini client for enhancer: {e}")
-            raise
-
-    def enhance(self, transcript_text: str) -> str:
+    def enhance(self, transcript_text: str, thinking_name: str = None) -> str:
         """
         Passes the transcript through Gemini to inject ElevenLabs audio tags.
 
         Args:
             transcript_text: The polished Hebrew TTS transcript.
+            thinking_name:   Base name for the call's thinking file (None = not written).
 
         Returns:
             The transcript with ElevenLabs expression tags woven in.
@@ -80,24 +66,9 @@ class ElevenLabsEnhancer:
         )
 
         try:
-            config = types.GenerateContentConfig(
-                system_instruction=ELEVENLABS_ENHANCEMENT_SYSTEM_INSTRUCTION,
-                temperature=self.temperature,
-                top_p=0.95,
+            enhanced_text = self.generator.generate_text(
+                ELEVENLABS_ENHANCEMENT_SYSTEM_INSTRUCTION, transcript_text, thinking_name=thinking_name
             )
-
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=transcript_text,
-                config=config,
-            )
-
-            log_gemini_usage(logger, response, self.model_name)
-
-            enhanced_text = response.text
-            if not enhanced_text:
-                raise ValueError("Gemini returned an empty response during enhancement.")
-
             logger.info(
                 f"Enhancement complete. "
                 f"Input: {len(transcript_text)} chars → Output: {len(enhanced_text)} chars."
@@ -127,7 +98,7 @@ class ElevenLabsEnhancer:
         Returns:
             Path to the timestamped history file that was written.
         """
-        enhanced_text = self.enhance(transcript_text)
+        enhanced_text = self.enhance(transcript_text, thinking_name=base_name)
 
         history_path = save_output_file(
             directory=output_dir,
@@ -135,5 +106,6 @@ class ElevenLabsEnhancer:
             extension="txt",
             content=enhanced_text,
             logger=logger,
+            label="Enhanced transcript",
         )
         return history_path

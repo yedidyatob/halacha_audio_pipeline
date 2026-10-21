@@ -13,10 +13,15 @@ def test_create_generator_engine_gemini(mock_client, tmp_path):
     config.gemini_model_name = "gemini-3.5-flash"
     config.gemini_temperature = 0.3
     config.ssl_verify = True
-    
+    config.thinking_dir = str(tmp_path)
+    config.gemini_price.return_value = {"input_per_million": 1.0, "output_per_million": 2.0}
+
     engine = create_generator_engine(config)
     assert isinstance(engine, GeminiScriptGenerator)
     assert engine.model_name == "gemini-3.5-flash"
+    config.gemini_price.assert_called_once_with("gemini-3.5-flash")
+    assert engine.pricing == {"input_per_million": 1.0, "output_per_million": 2.0}
+    assert engine.thinking_dir == str(tmp_path)
 
 @patch("pipeline.generator.OpenAI")
 def test_create_generator_engine_openai(mock_client, tmp_path):

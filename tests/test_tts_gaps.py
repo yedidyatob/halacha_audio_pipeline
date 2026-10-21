@@ -190,17 +190,17 @@ def test_config_chunk_gap_missing_raises_clear_error(missing):
     del keys[missing]
     lines = "".join(f"  {k}: {v}\n" for k, v in keys.items())
     with pytest.raises(ValueError, match=missing):
-        _load_config('halachic_section: "Yoreh De\'ah"\ntts:\n  engine: "openai"\n' + lines)
+        _load_config('halachic_section: "Yoreh De\'ah"\ndirectories:\n  thinking_dir: "./output/thinking"\ntts:\n  engine: "openai"\n' + lines)
 
 
 def test_config_chunk_gap_missing_tts_section_raises():
     with pytest.raises(ValueError, match="chunk_gap_paragraph_ms"):
-        _load_config('halachic_section: "Yoreh De\'ah"\n')
+        _load_config('halachic_section: "Yoreh De\'ah"\ndirectories:\n  thinking_dir: "./output/thinking"\n')
 
 
 def test_config_chunk_gap_explicit_values():
     config = _load_config(
-        'halachic_section: "Yoreh De\'ah"\n'
+        'halachic_section: "Yoreh De\'ah"\ndirectories:\n  thinking_dir: "./output/thinking"\n'
         'tts:\n  engine: "openai"\n  chunk_gap_paragraph_ms: 1000\n  chunk_gap_sentence_ms: 0\n'
         '  openai:\n    chunk_size: 4000\n'
     )
@@ -211,7 +211,7 @@ def test_config_chunk_gap_explicit_values():
 def test_config_chunk_gap_invalid_raises():
     with pytest.raises(ValueError):
         _load_config(
-            'halachic_section: "Yoreh De\'ah"\ntts:\n  chunk_gap_paragraph_ms: -10\n  chunk_gap_sentence_ms: 0\n'
+            'halachic_section: "Yoreh De\'ah"\ndirectories:\n  thinking_dir: "./output/thinking"\ntts:\n  chunk_gap_paragraph_ms: -10\n  chunk_gap_sentence_ms: 0\n'
         )
 
 

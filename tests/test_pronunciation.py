@@ -3,18 +3,27 @@ from unittest.mock import MagicMock, patch, mock_open
 
 import pytest
 
+from pipeline.generator import BatchResultError
+
 from pipeline.pronunciation import (
     strip_nikkud, has_nikkud, find_markup, validate_vocalized_output, changed_words,
     vocalize_pronunciation, format_changes, parse_vocalized_response,
-    PronunciationVocalizer, create_pronunciation_vocalizer, PronunciationError,
+    PronunciationVocalizer, create_pronunciation_vocalizer, PronunciationError, Change, CHANGES_HEADER,
 )
-from pipeline.usage import TextResult, TokenUsage
 from pipeline.apply_nikkud import apply_nikkud_to_abbreviations
 
 # Input after the dictionary nikkud stage: השַׁךְ is already vocalized.
 ORIG = "סימן טית עוסק בדין פת.\nזו טעות סופר בדברי השַׁךְ.\n"
 VOCALIZED = "סימן טֵית עוסק בדין פַּת.\nזו טעות סוֹפֵר בדברי השַׁךְ.\n"
-CHANGES = [("טית", "טֵית"), ("פת", "פַּת"), ("סופר", "סוֹפֵר")]
+CHANGES = [
+    Change("טית", "טֵית", 1, "סימן [טֵית] עוסק בדין פַּת."),
+    Change("פת", "פַּת", 1, "סימן טֵית עוסק בדין [פַּת]."),   # trailing punctuation outside the brackets
+    Change("סופר", "סוֹפֵר", 2, "זו טעות [סוֹפֵר] בדברי השַׁךְ."),
+]
+
+
+def _pairs(changes):
+    return [(c.original, c.vocalized) for c in changes]
 
 
 # --- nikkud helpers -----------------------------------------------------------
@@ -25,9 +34,45 @@ def test_strip_nikkud_keeps_letters_and_punctuation():
     assert has_nikkud("טֵית") and not has_nikkud("טית")
 
 
+def test_changed_words_line_numbers_and_context():
+    words = " ".join(f"w{i}" for i in range(12))
+    original = f"\n\nאחד שתיים\n{words} כחל {words}\n"
+    vocalized = f"\n\nאחד שתיים\n{words} כְּחָל {words}\n"
+    [change] = changed_words(original, vocalized)
+    assert change.line == 4  # leading blank lines counted, as in the saved file
+    assert change.context == "...w7 w8 w9 w10 w11 [כְּחָל] w0 w1 w2 w3 w4..."
+    [change] = changed_words("(כחל), x", "(כְּחָל), x")
+    assert change == Change("כחל", "כְּחָל", 1, "([כְּחָל]), x")
+
+
+def test_format_changes_groups_flags_variants_and_sorts():
+    original = ("מה דינו של כחל של בהמה, ופת.\n"
+                "אם כחל נאסר ופת אחרת.\n"
+                "ואכל פת ובשר כחל, ופת.\n"
+                "וכותח שלם.")
+    vocalized = ("מה דינו של כְּחָל של בהמה, ופַת.\n"
+                 "אם כֹּחַל נאסר ופַת אחרת.\n"
+                 "ואכל פַּת ובשר כְּחָל, ופַת.\n"
+                 "וכּוּתָח שלם.")
+    assert format_changes(changed_words(original, vocalized)).splitlines() == [
+        "varies\toriginal\tvocalized\tcount\tfirst_line\tcontext",
+        # כחל got two readings: first, each variant on its own line, the more frequent first
+        "yes\tכחל\tכְּחָל\t2\t1\tמה דינו של [כְּחָל] של בהמה, ופַת.",
+        "yes\tכחל\tכֹּחַל\t1\t2\tאם [כֹּחַל] נאסר ופַת אחרת.",
+        # then the rest by count (ties: first line)
+        "no\tופת\tופַת\t3\t1\t...דינו של כְּחָל של בהמה, [ופַת].",   # 5 words each side, "..." when cut
+        "no\tפת\tפַּת\t1\t3\tואכל [פַּת] ובשר כְּחָל, ופַת.",
+        "no\tוכותח\tוכּוּתָח\t1\t4\t[וכּוּתָח] שלם.",
+    ]
+
+
+def test_format_changes_without_changes_is_the_header():
+    assert format_changes([]) == CHANGES_HEADER + "\n"
+
+
 def test_changed_words_and_format():
     assert changed_words(ORIG, VOCALIZED) == CHANGES  # trailing punctuation trimmed
-    assert format_changes(CHANGES).splitlines()[0] == "טית\tטֵית"
+    assert format_changes(CHANGES).splitlines()[:2] == [CHANGES_HEADER, "no\tטית\tטֵית\t1\t1\tסימן [טֵית] עוסק בדין פַּת."]
 
 
 # --- validation (failures raise) -------------------------------------------------
@@ -47,21 +92,76 @@ def test_trivial_whitespace_differences_tolerated():
 
 
 @pytest.mark.parametrize("bad", [
-    VOCALIZED.replace("עוסק", "דן"),          # word replaced
-    VOCALIZED.replace("טֵית", "טֵיית"),        # letter added while vocalizing
     VOCALIZED.replace("סימן ", "סימן  "),      # inner whitespace changed
     VOCALIZED.replace("זו ", ""),              # word dropped
+    VOCALIZED.replace("פַּת.\n", "פַּת. "),     # line joined
 ])
-def test_text_change_raises(bad):
+def test_layout_change_raises(bad):
     with pytest.raises(PronunciationError, match="text changed"):
         vocalize_pronunciation(ORIG, lambda t: bad)
 
 
-def test_already_vocalized_word_must_stay_identical():
-    for bad in (VOCALIZED.replace("השַׁךְ", "הַשַּׁךְ"),   # nikkud added to a vocalized word
-                VOCALIZED.replace("השַׁךְ", "השך")):         # nikkud removed from it
-        with pytest.raises(PronunciationError, match="already-vocalized word"):
-            vocalize_pronunciation(ORIG, lambda t: bad)
+# --- spelling: ו / י may be added or removed, except as a word's first letter ------
+
+MATRES_ORIG = "אסור לאכול עובר בהמה, ויש שהקילו.\n"
+
+
+@pytest.mark.parametrize("word, respelled", [
+    ("עובר", "עֻבָּר"),        # ו removed mid-word
+    ("שהקילו", "שֶׁהֵקֵלּוּ"),  # י removed mid-word
+    ("לאכול", "לֶאֱכוֹל"),     # unchanged letters
+    ("בהמה,", "בְּהֵימָה,"),    # י added mid-word (punctuation kept)
+    ("שהקילו", "שהקלו"),       # respelled without nikkud
+])
+def test_matres_change_mid_word_accepted(word, respelled):
+    out = MATRES_ORIG.replace(word, respelled)
+    text, changes = vocalize_pronunciation(MATRES_ORIG, lambda t: out)
+    assert text == out
+    assert _pairs(changes) == [(word.strip(","), respelled.strip(","))]
+
+
+def test_respelled_words_listed_in_changes():
+    out = "אסור לאכול עֻבָּר בהמה, ויש שֶׁהֵקֵלּוּ.\n"
+    _, changes = vocalize_pronunciation(MATRES_ORIG, lambda t: out)
+    assert _pairs(changes) == [("עובר", "עֻבָּר"), ("שהקילו", "שֶׁהֵקֵלּוּ")]
+
+
+@pytest.mark.parametrize("word, bad", [
+    ("ויש", "יֵשׁ"),           # conjunction ו removed
+    ("עובר", "וְעֻבָּר"),       # ו added at word start
+    ("אסור", "יאסור"),        # י added at word start
+])
+def test_matres_change_at_word_start_rejected(word, bad):
+    with pytest.raises(PronunciationError, match=f"{word} -> {bad} \\(ו/י added or removed at the start"):
+        vocalize_pronunciation(MATRES_ORIG, lambda t: MATRES_ORIG.replace(word, bad))
+
+
+def test_matres_after_maqaf_or_in_abbreviation():
+    orig = 'בית־דין אמר ר"י\n'
+    assert validate_vocalized_output(orig, 'בית־דין אמר ר"יו\n') is None  # after gershayim: not word start
+    assert "at the start" in validate_vocalized_output(orig, 'בית־ודין אמר ר"י\n')  # after maqaf: word start
+
+
+@pytest.mark.parametrize("word, bad", [
+    ("עוסק", "דן"),            # word replaced
+    ("טֵית", "טֵאית"),          # other letter added while vocalizing
+    ("סוֹפֵר", "סוֹפֵרה"),       # other letter added at the end
+    ("סוֹפֵר", "סוֹפֵק"),        # letter substituted
+    ("פַּת.", "פַּת,."),         # punctuation added
+])
+def test_other_letter_change_rejected(word, bad):
+    with pytest.raises(PronunciationError, match="letters changed beyond adding/removing ו/י"):
+        vocalize_pronunciation(ORIG, lambda t: VOCALIZED.replace(word, bad))
+
+
+@pytest.mark.parametrize("bad", [
+    "הַשַּׁךְ",   # nikkud added to a vocalized word
+    "השך",      # nikkud removed from it
+    "השַׁיךְ",   # ו/י added to it (allowed only in unvocalized words)
+])
+def test_already_vocalized_word_must_stay_identical(bad):
+    with pytest.raises(PronunciationError, match=f"השַׁךְ\\. -> {bad}\\. \\(already vocalized, must stay identical\\)"):
+        vocalize_pronunciation(ORIG, lambda t: VOCALIZED.replace("השַׁךְ", bad))
 
 
 def test_markup_rejected():
@@ -102,6 +202,8 @@ def test_dictionary_nikkud_leaves_llm_vocalized_words_alone():
 
 BASE_YAML = """
 halachic_section: "Yoreh De'ah"
+directories:
+  thinking_dir: "./output/thinking"
 generator:
   engine: "gemini"
 tts:
@@ -138,10 +240,47 @@ pronunciation:
     assert cfg.pronunciation_instruction == "prompt"
 
 
+def _max_retries_cfg(line):
+    return _config(f"""
+pronunciation:
+  enabled: true
+{line}""")
+
+
+@pytest.mark.parametrize("value", [0, 1, 3])
+def test_config_max_retries_valid(value):
+    assert _max_retries_cfg(f"  max_retries: {value}\n").pronunciation_max_retries == value
+
+
+def test_config_max_retries_required():
+    with pytest.raises(ValueError, match="max_retries"):
+        _max_retries_cfg("").pronunciation_max_retries
+
+
+@pytest.mark.parametrize("bad", ["-1", "1.5", '"1"', "true"])
+def test_config_max_retries_invalid(bad):
+    with pytest.raises(ValueError, match="non-negative integer"):
+        _max_retries_cfg(f"  max_retries: {bad}\n").pronunciation_max_retries
+
+
+def test_real_config_max_retries():
+    from pipeline.config import PipelineConfig
+    with patch("os.makedirs"):
+        cfg = PipelineConfig("config.yaml")
+    assert cfg.pronunciation_max_retries == 1
+
+
+def test_factory_passes_max_retries():
+    cfg = MagicMock(pronunciation_instruction="I", pronunciation_thinking_level=None, pronunciation_engine="openai",
+                    pronunciation_max_retries=2)
+    vocalizer = create_pronunciation_vocalizer(cfg, generator_factory=lambda c: MagicMock(model_name="m"))
+    assert vocalizer.max_retries == 2
+
+
 def test_config_missing_section_errors():
     cfg = _config()
     for prop in ("pronunciation_enabled", "pronunciation_engine", "pronunciation_model_name",
-                 "pronunciation_temperature", "pronunciation_instruction",
+                 "pronunciation_temperature", "pronunciation_instruction", "pronunciation_max_retries",
                  "pronunciation_always_vocalize", "pronunciation_never_vocalize"):
         with pytest.raises(ValueError, match="pronunciation"):
             getattr(cfg, prop)
@@ -212,6 +351,44 @@ pronunciation:
         cfg.pronunciation_instruction
 
 
+KAHAL = '{word: "כחל", readings: [{nikkud: "כְּחָל", meaning: "עטין של בהמה"}, {nikkud: "כֹּחַל", meaning: "צבע איפור"}]}'
+
+
+def test_always_vocalize_mixes_plain_words_and_readings():
+    single = '{word: "עובר", readings: [{nikkud: "עֻבָּר", meaning: "ולד בבטן"}]}'   # one reading: a hint
+    cfg = _placeholder_config(f'["כותח", {KAHAL}, {single}]', '["דרבנן"]')
+    assert cfg.pronunciation_always_vocalize == [
+        "כותח", "כחל (כְּחָל = עטין של בהמה; כֹּחַל = צבע איפור)", "עובר (עֻבָּר = ולד בבטן)"]
+    assert cfg.pronunciation_instruction.startswith(
+        "תמיד: כותח, כחל (כְּחָל = עטין של בהמה; כֹּחַל = צבע איפור), עובר (עֻבָּר = ולד בבטן) | לעולם: דרבנן | ")
+
+
+def test_reading_may_add_matres_like_the_validator():
+    cfg = _placeholder_config('[{word: "הקילו", readings: [{nikkud: "הֵקֵלּוּ", meaning: "הקלו"}]}]', "[]")
+    assert cfg.pronunciation_always_vocalize == ["הקילו (הֵקֵלּוּ = הקלו)"]
+
+
+@pytest.mark.parametrize("entry, message", [
+    ('{readings: [{nikkud: "כְּחָל", meaning: "m"}]}', "'word' and 'readings'"),
+    ('{word: "כחל", readings: [{nikkud: "כְּחָל", meaning: "m"}], note: "x"}', "'word' and 'readings'"),
+    ('{word: "", readings: [{nikkud: "כְּחָל", meaning: "m"}]}', "non-empty word without nikkud"),
+    ('{word: "כְּחָל", readings: [{nikkud: "כְּחָל", meaning: "m"}]}', "non-empty word without nikkud"),
+    ('{word: "כחל", readings: []}', "non-empty list"),
+    ('{word: "כחל", readings: "כְּחָל"}', "non-empty list"),
+    ('{word: "כחל", readings: [{nikkud: "כְּחָל"}]}', "'nikkud' and 'meaning'"),
+    ('{word: "כחל", readings: [{nikkud: "כְּחָל", meaning: " "}]}', "non-empty 'meaning'"),
+    ('{word: "כחל", readings: [{nikkud: "", meaning: "m"}]}', "must be the vocalized word"),
+    ('{word: "כחל", readings: [{nikkud: "כחל", meaning: "m"}]}', "must be the vocalized word"),
+    ('{word: "כחל", readings: [{nikkud: "כְּחָלִים", meaning: "m"}]}', "letters changed"),          # typo
+    ('{word: "כחל", readings: [{nikkud: "וְכְּחָל", meaning: "m"}]}', "at the start of the word"),
+    ('{word: "ולד", readings: [{nikkud: "לָד", meaning: "m"}]}', "at the start of the word"),     # first letter
+])
+def test_always_vocalize_reading_errors(entry, message):
+    cfg = _placeholder_config(f"[{entry}]", "[]")
+    with pytest.raises(ValueError, match=message):
+        cfg.pronunciation_instruction
+
+
 @pytest.mark.parametrize("bad", ['"כותח"', '[1, 2]', '[""]'])
 def test_instruction_invalid_list_errors(bad):
     cfg = _placeholder_config(bad, "[]")
@@ -227,24 +404,27 @@ def test_real_config_yaml_has_pronunciation():
     instruction = cfg.pronunciation_instruction
     assert "ניקוד" in instruction and "phoneme" not in instruction and "IPA" not in instruction
     assert "{always_vocalize}" not in instruction and "{never_vocalize}" not in instruction
-    assert "תמיד לנקד: עובר בהמה, כותח" in instruction
+    assert "תמיד לנקד (כשמופיעות קריאות בסוגריים, בחר לפי ההקשר): עובר בהמה, כותח" in instruction
+    assert "כחל (כְּחָל = עטין של בהמה; כֹּחַל = צבע איפור)" in instruction
+    assert ('למה (לְמָה = אל מה, לאיזו כוונה, כמו "למה התכוון"; לָמָּה = מדוע, כמו "למה צריך"), שה'
+            in instruction)  # readings keep the entry's position
     assert "לעולם לא לנקד: דאורייתא, דרבנן" in instruction
 
 
 # --- stage wiring ------------------------------------------------------------
 
 def _vocalizer_with_gen(level="low", temperature=0.2):
-    cfg = MagicMock(pronunciation_instruction="INSTR", pronunciation_thinking_level=level, pronunciation_engine="gemini")
+    cfg = MagicMock(pronunciation_instruction="INSTR", pronunciation_thinking_level=level, pronunciation_engine="gemini",
+                    pronunciation_max_retries=0)
     gen = MagicMock(model_name="m", temperature=temperature)
     return create_pronunciation_vocalizer(cfg, generator_factory=lambda c: gen), gen
 
 
 def test_vocalizer_sync_uses_instruction_and_thinking_level():
     vocalizer, gen = _vocalizer_with_gen("low")
-    gen.complete.return_value = TextResult(VOCALIZED, TokenUsage(10, 20, 5))
+    gen.generate_text.return_value = VOCALIZED
     assert vocalizer.vocalize(ORIG) == (VOCALIZED, CHANGES)
-    gen.complete.assert_called_once_with("INSTR", ORIG, 0.2, "low")
-    assert vocalizer.vocalize_with_usage(ORIG)[1] == TokenUsage(10, 20, 5)
+    gen.generate_text.assert_called_once_with("INSTR", ORIG, thinking_level="low")
 
 
 def test_vocalizer_batch_request_uses_own_model_settings():
@@ -262,11 +442,75 @@ def test_vocalizer_batch_result_validated_like_sync():
     gen.get_batch_result.return_value = VOCALIZED
     assert vocalizer.batch_result(ORIG, "job") == (VOCALIZED, CHANGES)
     gen.get_batch_result.return_value = VOCALIZED.replace("עוסק", "דן")
-    with pytest.raises(PronunciationError, match="text changed"):
+    # a rejected output is an unusable result: the pipeline resubmits it as a new batch job
+    with pytest.raises(BatchResultError, match="pronunciation output rejected: .*עוסק -> דן"):
         vocalizer.batch_result(ORIG, "job")
-    gen.get_batch_result.side_effect = ValueError("Gemini batch returned empty text response.")
-    with pytest.raises(PronunciationError, match="batch result unavailable: Gemini batch returned empty"):
+
+
+REJECTED = VOCALIZED.replace("עוסק", "דן")
+
+
+def _retrying_vocalizer(max_retries):
+    gen = MagicMock(model_name="m", temperature=0.2)
+    return PronunciationVocalizer(gen, "INSTR", "low", max_retries), gen
+
+
+def test_sync_retry_succeeds_on_second_attempt(caplog):
+    vocalizer, gen = _retrying_vocalizer(1)
+    gen.generate_text.side_effect = [REJECTED, VOCALIZED]
+    assert vocalizer.vocalize(ORIG) == (VOCALIZED, CHANGES)
+    assert gen.generate_text.call_count == 2
+    assert all(c.args == ("INSTR", ORIG) and c.kwargs == {"thinking_level": "low"}
+               for c in gen.generate_text.call_args_list)
+    assert "Pronunciation attempt 1/2 failed" in caplog.text and "עוסק -> דן" in caplog.text
+
+
+def test_sync_retry_covers_llm_errors_and_empty_output():
+    vocalizer, gen = _retrying_vocalizer(2)
+    gen.generate_text.side_effect = [RuntimeError("network"), "  ", VOCALIZED]
+    assert vocalizer.vocalize(ORIG) == (VOCALIZED, CHANGES)
+    assert gen.generate_text.call_count == 3
+
+
+def test_fails_after_max_retries_plus_one_attempts_with_last_reason(caplog):
+    vocalizer, gen = _retrying_vocalizer(2)
+    gen.generate_text.side_effect = [REJECTED, REJECTED, ""]
+    with pytest.raises(PronunciationError, match=r"empty output \(after 3 attempt\(s\)\)"):
+        vocalizer.vocalize(ORIG)
+    assert gen.generate_text.call_count == 3
+    assert [r.levelname for r in caplog.records if "Pronunciation attempt" in r.message] == ["WARNING"] * 3
+
+
+def test_no_retry_when_max_retries_zero():
+    vocalizer, gen = _retrying_vocalizer(0)
+    gen.generate_text.return_value = REJECTED
+    with pytest.raises(PronunciationError, match=r"\(after 1 attempt\(s\)\)"):
+        vocalizer.vocalize(ORIG)
+    gen.generate_text.assert_called_once()
+
+
+def test_batch_result_is_one_attempt():
+    # retries after a batch result are run by the pipeline (main.run_llm_stage, see test_stage3_flow)
+    vocalizer, gen = _retrying_vocalizer(1)
+    gen.get_batch_result.return_value = REJECTED
+    with pytest.raises(BatchResultError, match="עוסק -> דן"):
         vocalizer.batch_result(ORIG, "job")
+    # the generator's BatchResultError and fetch (network) errors pass through unchanged
+    gen.get_batch_result.side_effect = BatchResultError("Gemini batch request failed (job j): error code 13: Internal")
+    with pytest.raises(BatchResultError, match="error code 13"):
+        vocalizer.batch_result(ORIG, "job")
+    gen.get_batch_result.side_effect = ConnectionError("reset")
+    with pytest.raises(ConnectionError):
+        vocalizer.batch_result(ORIG, "job")
+    gen.generate_text.assert_not_called()
+
+
+def test_vocalize_once_is_one_attempt():
+    vocalizer, gen = _retrying_vocalizer(3)
+    gen.generate_text.return_value = REJECTED
+    with pytest.raises(PronunciationError, match="עוסק -> דן"):
+        vocalizer.vocalize_once(ORIG)
+    gen.generate_text.assert_called_once()
 
 
 def test_parse_vocalized_response_shared_validation():
@@ -277,18 +521,20 @@ def test_parse_vocalized_response_shared_validation():
 
 def test_vocalizer_supports_batch():
     from pipeline.generator import BatchCapableGenerator
-    assert PronunciationVocalizer(MagicMock(spec=BatchCapableGenerator), "i", None).supports_batch
-    assert not PronunciationVocalizer(object(), "i", None).supports_batch
+    assert PronunciationVocalizer(MagicMock(spec=BatchCapableGenerator), "i", None, 0).supports_batch
+    assert not PronunciationVocalizer(object(), "i", None, 0).supports_batch
 
 
 def test_factory_creates_pronunciation_generator():
     from pipeline.factory import create_pronunciation_generator
     cfg = MagicMock(pronunciation_engine="gemini", pronunciation_model_name="pm",
                     pronunciation_temperature=0.2, gemini_api_key="k", ssl_verify=True,
-                    pronunciation_thinking_level="low")
+                    pronunciation_thinking_level="low", thinking_dir="th")
     with patch("pipeline.factory.GeminiScriptGenerator") as gem:
         create_pronunciation_generator(cfg)
-    gem.assert_called_once_with(api_key="k", model_name="pm", temperature=0.2, ssl_verify=True)
+    cfg.gemini_price.assert_called_once_with("pm")
+    gem.assert_called_once_with(api_key="k", model_name="pm", temperature=0.2, ssl_verify=True,
+                                pricing=cfg.gemini_price.return_value, thinking_dir="th")
 
 
 def test_factory_openai_pronunciation_ignores_thinking_level():
@@ -340,29 +586,29 @@ def test_real_config_thinking_level_high():
 
 def _gemini_gen():
     from pipeline.generator import GeminiScriptGenerator
-    with patch("pipeline.generator.genai.Client") as client_cls:
-        gen = GeminiScriptGenerator(api_key="k", model_name="m", temperature=0.2)
-    client = client_cls.return_value
-    client.models.generate_content.return_value = MagicMock(text="out", usage_metadata=None)
+    from tests.gemini_fakes import make_gemini_generator, answer_stream
+    gen, client = make_gemini_generator("unused", model_name="m", temperature=0.2)
+    client.models.generate_content_stream.side_effect = lambda **_: answer_stream("out", thought="")
     return gen, client
 
 
-def test_gemini_complete_passes_thinking_level():
+def test_gemini_generate_text_passes_thinking_level():
     from google.genai import types
     gen, client = _gemini_gen()
     with patch("pipeline.generator.log_gemini_usage"):
-        assert gen.complete("sys", "user", 0.2, "low").text == "out"
-    config = client.models.generate_content.call_args.kwargs["config"]
+        assert gen.generate_text("sys", "user", thinking_level="low") == "out"
+    config = client.models.generate_content_stream.call_args.kwargs["config"]
     assert isinstance(config.thinking_config, types.ThinkingConfig)
     assert config.thinking_config.thinking_level.value.lower() == "low"
     assert config.temperature == 0.2 and config.system_instruction == "sys"
 
 
-def test_gemini_complete_without_level_has_no_thinking_config():
+def test_gemini_generate_text_without_level_sends_no_thinking_level():
     gen, client = _gemini_gen()
     with patch("pipeline.generator.log_gemini_usage"):
-        gen.complete("sys", "user", 0.2)
-    assert client.models.generate_content.call_args.kwargs["config"].thinking_config is None
+        gen.generate_text("sys", "user")
+    thinking = client.models.generate_content_stream.call_args.kwargs["config"].thinking_config
+    assert thinking.thinking_level is None and thinking.include_thoughts is True
 
 
 def test_gemini_batch_request_carries_thinking_level():
@@ -381,9 +627,9 @@ def test_gemini_other_calls_unaffected_by_thinking_level():
     gen, client = _gemini_gen()
     with patch("pipeline.generator.log_gemini_usage"):
         gen.polish_siman_script("draft", "rel", "instr")
-    assert client.models.generate_content.call_count == 1
-    for call in client.models.generate_content.call_args_list:
-        assert getattr(call.kwargs.get("config"), "thinking_config", None) is None
+    assert client.models.generate_content_stream.call_count == 1
+    for call in client.models.generate_content_stream.call_args_list:
+        assert call.kwargs["config"].thinking_config.thinking_level is None
 
 
 def test_main_save_transcript_without_pronunciation_stage(tmp_path):
@@ -434,7 +680,7 @@ def test_run_summary_format():
 def _run_main_sync(tmp_path, monkeypatch, polish):
     """Runs main.main() in sync mode for simanim 94,95 with cached drafts and relations."""
     import main as main_mod
-    cfg = MagicMock(section_slug="YD", drafts_dir=str(tmp_path), relations_dir=str(tmp_path),
+    cfg = MagicMock(section_slug="YD", generator_max_retries=0, drafts_dir=str(tmp_path), relations_dir=str(tmp_path),
                     output_dir=str(tmp_path), pronunciation_enabled=False)
     for s in (94, 95):
         (tmp_path / f"YD_Siman_{s}_m_draft.txt").write_text(f"draft {s}", encoding="utf-8")
@@ -450,7 +696,7 @@ def _run_main_sync(tmp_path, monkeypatch, polish):
 
 
 def test_main_continues_after_siman_failure_and_exits_nonzero(tmp_path, monkeypatch, caplog):
-    def polish(draft, rel, instr):
+    def polish(draft, rel, instr, thinking_name):
         if draft == "draft 94":
             raise RuntimeError("LLM down")
         return "polished"
@@ -464,7 +710,7 @@ def test_main_continues_after_siman_failure_and_exits_nonzero(tmp_path, monkeypa
 
 
 def test_main_all_succeed_exits_zero(tmp_path, monkeypatch, caplog):
-    _run_main_sync(tmp_path, monkeypatch, lambda d, r, i: "polished")
+    _run_main_sync(tmp_path, monkeypatch, lambda d, r, i, thinking_name: "polished")
     assert "Succeeded (2/2): 94, 95" in caplog.text
 
 
@@ -474,15 +720,31 @@ def test_vocalize_script_errors_without_writing(tmp_path, monkeypatch, capsys):
     src = tmp_path / "x_transcript.txt"
     src.write_text(ORIG, encoding="utf-8")
     gen = MagicMock(model_name="m")
-    gen.complete.return_value = TextResult(VOCALIZED.replace("עוסק", "דן"), TokenUsage(1, 1, 0))
+    gen.generate_text.return_value = VOCALIZED.replace("עוסק", "דן")
     monkeypatch.setattr("pipeline.config.PipelineConfig", MagicMock())
     monkeypatch.setattr("pipeline.pronunciation.create_pronunciation_vocalizer",
-                        lambda c: PronunciationVocalizer(gen, "INSTR", None))
+                        lambda c: PronunciationVocalizer(gen, "INSTR", None, 0))
     with pytest.raises(SystemExit) as exc:
         script.main([str(src)])
     assert exc.value.code == 1
-    assert "text changed" in capsys.readouterr().err
+    assert "עוסק -> דן (letters changed" in capsys.readouterr().err
     assert sorted(os.listdir(tmp_path)) == ["x_transcript.txt"]
+
+
+def test_vocalize_script_retries_then_writes(tmp_path, monkeypatch):
+    import scripts.vocalize_pronunciation as script
+    monkeypatch.chdir(tmp_path)
+    src = tmp_path / "x.txt"
+    src.write_text(ORIG, encoding="utf-8")
+    gen = MagicMock(model_name="m")
+    gen.generate_text.side_effect = [REJECTED, VOCALIZED]
+    monkeypatch.setattr("pipeline.config.PipelineConfig", MagicMock())
+    monkeypatch.setattr("pipeline.pronunciation.create_pronunciation_vocalizer",
+                        lambda c: PronunciationVocalizer(gen, "INSTR", None, 1))
+    script.main([str(src)])
+    assert gen.generate_text.call_count == 2
+    assert (tmp_path / "x_vocalized.txt").read_text(encoding="utf-8") == VOCALIZED
+    assert (tmp_path / "x_vocalized_changes.txt").read_text(encoding="utf-8") == format_changes(CHANGES)
 
 
 def test_vocalize_script_applies_dictionary_nikkud_first(tmp_path, monkeypatch):
@@ -491,17 +753,14 @@ def test_vocalize_script_applies_dictionary_nikkud_first(tmp_path, monkeypatch):
     src = tmp_path / "x.txt"
     src.write_text('סימן הא והש"ך', encoding="utf-8")
     gen = MagicMock(model_name="m")
-    gen.complete.side_effect = lambda instr, text, temperature, thinking_level: TextResult(text, TokenUsage(1, 1, 0))
-    from pipeline.usage import ModelPricing
-    cfg = MagicMock()
-    cfg.experiment_pricing.return_value = ModelPricing(input_per_1m_usd=1.0, output_per_1m_usd=1.0, max_prompt_tokens=1000)
-    monkeypatch.setattr("pipeline.config.PipelineConfig", lambda path: cfg)
+    gen.generate_text.side_effect = lambda instr, text, thinking_level: text
+    monkeypatch.setattr("pipeline.config.PipelineConfig", MagicMock())
     monkeypatch.setattr("pipeline.pronunciation.create_pronunciation_vocalizer",
-                        lambda c: PronunciationVocalizer(gen, "INSTR", None))
+                        lambda c: PronunciationVocalizer(gen, "INSTR", None, 0))
     script.main([str(src)])
-    assert gen.complete.call_args.args[1] == "סימן הֵי והשַׁךְ"
+    assert gen.generate_text.call_args.args[1] == "סימן הֵי והשַׁךְ"
     assert (tmp_path / "x_vocalized.txt").read_text(encoding="utf-8") == "סימן הֵי והשַׁךְ"
-    assert (tmp_path / "x_vocalized_changes.txt").read_text(encoding="utf-8") == ""
+    assert (tmp_path / "x_vocalized_changes.txt").read_text(encoding="utf-8") == CHANGES_HEADER + "\n"
 
 
 # --- scripts ----------------------------------------------------------------

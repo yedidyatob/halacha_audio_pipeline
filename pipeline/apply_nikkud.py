@@ -3,9 +3,13 @@ Nikkud / pronunciation fixes for TTS.
 
 - RABBINIC_NIKKUD_DICT: fixed mappings for rabbinic abbreviations and terms.
   These may carry a Hebrew prefix (הרמב"ם, ברמב"ם, להרמב"ם, מהרמב"ם ...), which is preserved.
-- NO_PREFIX_NIKKUD_DICT: the letter names הא / פא / צדי. Replaced only as a whole word,
-  never with a prefix, and only in a letter-name context (see LETTER-NAME CONTEXT below).
+  The abbreviations in UNQUOTED_ABBREVIATIONS also match written without the gershayim
+  (מהרשל, והמהרשל), generated from their quoted entries.
+- NO_PREFIX_NIKKUD_DICT: the letter names הא / הי / וו / פא / צדי. Replaced only as a whole
+  word, never with a prefix, and only in a letter-name context (see LETTER-NAME CONTEXT below).
   A value may RESPELL the name, not only vocalize it: הא -> הֵי (ElevenLabs v4 reads הֵא wrongly).
+- LETTER_NAME_MISVOCALIZATIONS: known wrong vocalizations of those letter names (הֵא), repaired
+  to the name's entry under the same rules. The only already-vocalized words that are matched.
 - additional_nikkud_corrections: list of (plain, nikkuded) pairs; the same prefixes are allowed.
 
 All prefixed entries share ONE prefix set, DEFAULT_PREFIXES (generated from a single rule).
@@ -160,16 +164,62 @@ RABBINIC_NIKKUD_DICT = {
     'נ"ט': 'נַט',  # Fixed: הושאר כקיצור עם ניקוד קריא
     'ע"פ': 'עַל פִּי',
     'אע"פ': 'אַף עַל פִּי',
-    'שו"ת': 'שׁוּ"ת',
+    'שו"ת': 'שׁוּת',
 }
+
+# Abbreviations that also match WITHOUT the gershayim (the polish stage sometimes drops them:
+# והמהרשל for והמהרש"ל). The unquoted form is generated from the quoted entry and takes the
+# same prefixes. Only abbreviations whose unquoted form - bare or with any DEFAULT_PREFIXES
+# prefix - is not an ordinary Hebrew / Aramaic word or number. Left out for that reason:
+#   ראש רזה רמה רמא שך (משך) רשי (מרשי, שרשי) נציב גרא תשבץ סמק ריף (שריף) רדק (ברדק)
+#   חנן שוע (השוע) שות (ושות) יוד אוח, and the two-letter ones רת רן טז בח בי נט עפ;
+#   חומ / אעפ would end in a non-final letter, so they never occur unquoted.
+UNQUOTED_ABBREVIATIONS: tuple[str, ...] = (
+    'רמב"ם', 'רמב"ן', 'רשב"א', 'ריטב"א', 'רשב"ם', 'ראב"ד', 'ריב"ש', 'רלב"ג', 'סמ"ג', 'רמ"ך',
+    'סמ"ע', 'מג"א', 'מהרש"א', 'מהרש"ל', 'מהר"ם', 'מהרי"ל', 'מהרי"ט', 'רדב"ז', 'חיד"א', 'חת"ס',
+    'חזו"א', 'פרמ"ג', 'נוב"י', 'כה"ח', 'משנ"ב', 'ערוה"ש', 'אה"ע',
+)
+
+
+def _unquoted_variants() -> list[tuple[str, str]]:
+    """(unquoted key, nikkuded) for every UNQUOTED_ABBREVIATIONS entry."""
+    variants = []
+    for key in UNQUOTED_ABBREVIATIONS:
+        if key not in RABBINIC_NIKKUD_DICT or '"' not in key:
+            raise ValueError(f"UNQUOTED_ABBREVIATIONS entry {key!r} is not a quoted RABBINIC_NIKKUD_DICT key")
+        variants.append((key.replace('"', ""), RABBINIC_NIKKUD_DICT[key]))
+    return variants
+
 
 # Standalone words: replaced only as a whole word, never with a prefix
 # (a bare הא / פא / צדי is already risky; ב+הא etc. is meaningless).
 NO_PREFIX_NIKKUD_DICT = {
     'הא': 'הֵי',  # respelled: the letter name is pronounced "hei"
+    'הי': 'הֵי',
+    'וו': 'וָו',
     'פא': 'פֵּא',
     'צדי': 'צָדִי',
 }
+
+# Known wrong vocalizations of a NO_PREFIX_NIKKUD_DICT letter name, e.g. a polish output that
+# wrote the letter ה as הֵא. Being vocalized, no other entry matches them; each one is repaired
+# to its letter name's entry (the name = the word without nikkud), as a standalone word in a
+# letter-name context only, like the entry itself. See _letter_name_repairs.
+LETTER_NAME_MISVOCALIZATIONS: tuple[str, ...] = ('הֵא',)
+
+
+def _letter_name_repairs() -> list[tuple[str, str]]:
+    """(wrong form, NO_PREFIX_NIKKUD_DICT value) for every LETTER_NAME_MISVOCALIZATIONS entry."""
+    repairs = []
+    for wrong in LETTER_NAME_MISVOCALIZATIONS:
+        name = _POINTS_RE.sub("", wrong)
+        if name == wrong or name not in NO_PREFIX_NIKKUD_DICT:
+            raise ValueError(f"LETTER_NAME_MISVOCALIZATIONS entry {wrong!r} is not a vocalized "
+                             f"NO_PREFIX_NIKKUD_DICT letter name")
+        if wrong == NO_PREFIX_NIKKUD_DICT[name]:
+            raise ValueError(f"LETTER_NAME_MISVOCALIZATIONS entry {wrong!r} is the correct form")
+        repairs.append((wrong, NO_PREFIX_NIKKUD_DICT[name]))
+    return repairs
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +230,9 @@ NO_PREFIX_NIKKUD_DICT = {
 # points / nikkud / cantillation marks (U+0591-05C7), EXCEPT the punctuation-like
 # maqaf (U+05BE), paseq (U+05C0) and sof pasuq (U+05C3), which act as separators
 # (so שפתי־כהן behaves like שפתי-כהן).
-_WORD_CHARS = "\u05D0-\u05EA\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4-\u05C7"
+_POINTS = "\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4-\u05C7"
+_WORD_CHARS = "\u05D0-\u05EA" + _POINTS
+_POINTS_RE = re.compile(f"[{_POINTS}]")
 
 # Quote-like characters that occur INSIDE abbreviations (רמב"ם, ג'): ASCII ", Hebrew
 # gershayim ״ (U+05F4), ASCII apostrophe ' and geresh ׳ (U+05F3).
@@ -246,15 +298,16 @@ def _alternation(keys: Iterable[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# LETTER-NAME CONTEXT (NO_PREFIX_NIKKUD_DICT entries: הא / פא / צדי)
+# LETTER-NAME CONTEXT (NO_PREFIX_NIKKUD_DICT entries and LETTER_NAME_MISVOCALIZATIONS)
 #
-# These are ordinary Hebrew/Aramaic words too (הא דתניא, הא קמ"ל), so they are replaced
-# only when the text clearly means a letter name used as a number (סימן צדי הא, אות פא):
+# These are ordinary Hebrew/Aramaic words too (הא דתניא, הא קמ"ל, הי מינייהו, הֵא לך), so they
+# are replaced only when the text clearly means a letter name used as a number (סימן צדי הא, אות פא):
 #   1. preceded, on the SAME line, by a context word (LETTER_NAME_CONTEXT_WORDS) - optionally
 #      carrying a prefix (בסימן, לסעיף, ובאות ...) - with only whitespace, quotes, a
 #      colon, a dash or a bracket between them (not . , ; ? ! - those end the phrase), or
 #   2. directly adjacent (separated only by blank space) to another letter-name word
-#      (LETTER_NAMES), before or after: "צדי הא", "פא זין", "הא ריש".
+#      (LETTER_NAMES or a LETTER_NAME_MISVOCALIZATIONS form), before or after: "צדי הא",
+#      "פא זין", "הא ריש", "צדי הֵא".
 # A trailing geresh (הא' = "the first", an ordinal) is never a boundary for these entries,
 # unless the word is wrapped in quotes ('הא').
 # Anything else - "הא דתניא", a sentence-initial "הא" - is left unchanged.
@@ -265,7 +318,7 @@ LETTER_NAME_CONTEXT_WORDS: tuple[str, ...] = ("סימן", "סעיף", 'ס"ק', "
 
 LETTER_NAMES: tuple[str, ...] = (
     "צדי", "צדיק", "טית", "זין", "וו", "דלת", "גימל", "בית", "אלף", "חית", "יוד", "כף",
-    "למד", "מם", "נון", "סמך", "עין", "פא", "קוף", "ריש", "שין", "תו", "הא",
+    "למד", "מם", "נון", "סמך", "עין", "פא", "קוף", "ריש", "שין", "תו", "הא", "הי",
 )
 
 # allowed between a context word and the letter name (no sentence punctuation)
@@ -280,7 +333,8 @@ _LOOKBACK = 48  # chars of the current line examined before a match (keeps match
 def _letter_context_regexes(prefixes: tuple[str, ...]):
     """Compiled (context_before, name_before, name_after) regexes for the context rule."""
     ctx = "|".join(_key_to_regex(w) for w in sorted(LETTER_NAME_CONTEXT_WORDS, key=lambda w: (-len(w), w)))
-    names = "|".join(_key_to_regex(n) for n in sorted(LETTER_NAMES, key=lambda w: (-len(w), w)))
+    names = "|".join(_key_to_regex(n) for n in sorted(LETTER_NAMES + LETTER_NAME_MISVOCALIZATIONS,
+                                                       key=lambda w: (-len(w), w)))
     pre = "|".join(re.escape(p) for p in sorted({p for p in prefixes if p}, key=lambda p: (-len(p), p)))
     context_before = re.compile(
         f"(?<![{_WORD_CHARS}])(?:{pre})?(?:{ctx}){_CONTEXT_GAP}$"
@@ -292,7 +346,7 @@ def _letter_context_regexes(prefixes: tuple[str, ...]):
 
 
 def _has_letter_name_context(text: str, start: int, end: int, prefixes: tuple[str, ...]) -> bool:
-    """True if text[start:end] (a הא / פא / צדי match) is in a letter-name context."""
+    """True if text[start:end] (a letter-name match, e.g. הא / פא / צדי) is in a letter-name context."""
     # a trailing geresh makes it an ordinal (הא'), unless the word is wrapped in quotes ('הא')
     if text[end:end + 1] in ("'", "\u05F3") and text[start - 1:start] not in ("'", "\u05F3", '"', "\u05F4"):
         return False
@@ -358,16 +412,18 @@ def apply_nikkud_to_abbreviations(text: str) -> str:
     Replaces Rabbinic acronyms / additional word corrections with their nikkud forms.
 
     Each entry matches as a whole word (see the boundary rule above), optionally preceded
-    by one of DEFAULT_PREFIXES, which is preserved. Letter entries (NO_PREFIX_NIKKUD_DICT)
-    match only as standalone words and only in a letter-name context. Already-nikkuded text
-    is not matched again, so the function is idempotent.
+    by one of DEFAULT_PREFIXES, which is preserved; UNQUOTED_ABBREVIATIONS also match
+    without their gershayim. Letter entries (NO_PREFIX_NIKKUD_DICT, and the known wrong
+    vocalizations in LETTER_NAME_MISVOCALIZATIONS) match only as standalone words and only in
+    a letter-name context. Already-nikkuded text (other than those wrong forms) is not matched,
+    and no output is a key, so the function is idempotent.
     """
     prefixable = tuple(
-        list(RABBINIC_NIKKUD_DICT.items()) + list(additional_nikkud_corrections)
+        list(RABBINIC_NIKKUD_DICT.items()) + _unquoted_variants() + list(additional_nikkud_corrections)
     )
     matcher = _build_matcher(
         prefixable,
-        tuple(NO_PREFIX_NIKKUD_DICT.items()),
+        tuple(list(NO_PREFIX_NIKKUD_DICT.items()) + _letter_name_repairs()),
         tuple(DEFAULT_PREFIXES),
     )
     return matcher(text)

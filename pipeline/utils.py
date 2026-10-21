@@ -9,6 +9,7 @@ def save_output_file(
     extension: str,
     content: Optional[Union[str, bytes]],
     logger,
+    label: str,
     write_callback: Optional[Callable[[str], None]] = None
 ) -> str:
     """
@@ -18,6 +19,11 @@ def save_output_file(
     
     If write_callback is provided, it is invoked with the history path as its sole argument
     to write the file (e.g. for TTS synthesis). Otherwise, 'content' is written.
+    
+    Logs one INFO line naming what was saved (label, e.g. "Stage 3 (Polishing) output for Siman 87")
+    and every path written: "<label> saved: <latest path> (history copy: <history path>)", or just
+    the history path if the latest copy could not be updated (that also logs a warning).
+    This is the one place output paths are logged; callers do not log them again.
     
     Returns the path to the history file.
     """
@@ -39,7 +45,6 @@ def save_output_file(
             encoding = None if isinstance(content, bytes) else "utf-8"
             with open(history_path, mode, encoding=encoding) as f:
                 f.write(content)
-        logger.info(f"Saved history copy: {history_path}")
     except Exception as e:
         logger.error(f"Failed to save history copy to '{history_path}': {e}")
         raise
@@ -47,51 +52,45 @@ def save_output_file(
     # 2. Attempt to update latest copy
     try:
         shutil.copyfile(history_path, latest_path)
-        logger.info(f"Updated latest copy at: {latest_path}")
     except Exception as err:
         logger.warning(
             f"Could not overwrite latest copy at '{latest_path}' (it may be locked by another application): {err}. "
             f"The generated content remains fully saved in: '{history_path}'."
         )
-        
+        logger.info(f"{label} saved: {history_path}")
+    else:
+        logger.info(f"{label} saved: {latest_path} (history copy: {history_path})")
     return history_path
 
 
-def log_gemini_usage(logger, response, model_name: str) -> None:
+def gemini_cost(prompt_tokens: int, output_tokens: int, pricing: dict) -> float:
     """
-    Extracts usage_metadata from the Gemini response, calculates the estimated
-    cost on the fly based on current pricing, and logs it.
+    USD cost of one request from a validated config.yaml price entry (see PipelineConfig.gemini_price).
+    output_tokens must include thinking tokens (billed as output). If the entry has a long-context
+    tier and the prompt exceeds its threshold, the whole request is billed at that tier.
     """
-    if not hasattr(response, "usage_metadata") or not response.usage_metadata:
+    rates = pricing
+    tier = pricing.get("long_context")
+    if tier and prompt_tokens > tier["threshold_tokens"]:
+        rates = tier
+    return (prompt_tokens * rates["input_per_million"] + output_tokens * rates["output_per_million"]) / 1_000_000
+
+
+def log_gemini_usage(logger, response, model_name: str, pricing: dict) -> None:
+    """
+    Logs the token usage of a Gemini response and its estimated cost. Thinking tokens
+    (thoughts_token_count) are billed as output. pricing is the model's validated
+    config.yaml entry (PipelineConfig.gemini_price).
+    """
+    usage = getattr(response, "usage_metadata", None)
+    if not usage:
         return
-        
-    prompt_tokens = getattr(response.usage_metadata, "prompt_token_count", 0)
-    output_tokens = getattr(response.usage_metadata, "candidates_token_count", 0)
-    total_tokens = getattr(response.usage_metadata, "total_token_count", 0)
-    
-    # Handle mock objects in unit tests gracefully
-    if not isinstance(prompt_tokens, (int, float)) or not isinstance(output_tokens, (int, float)):
-        return
-    
-    # Determine pricing based on model class
-    model_lower = model_name.lower()
-    if "tts" in model_lower:
-        # Gemini Flash TTS pricing: $0.075/1M input, $20.00/1M audio output
-        input_rate = 0.075 / 1_000_000
-        output_rate = 20.00 / 1_000_000
-    elif "pro" in model_lower:
-        # Gemini Pro pricing: $1.25/1M input, $5.00/1M output
-        input_rate = 1.25 / 1_000_000
-        output_rate = 5.00 / 1_000_000
-    else:
-        # Gemini Flash pricing: $0.075/1M input, $0.30/1M output
-        input_rate = 0.075 / 1_000_000
-        output_rate = 0.30 / 1_000_000
-        
-    estimated_cost = (prompt_tokens * input_rate) + (output_tokens * output_rate)
-    
-    logger.info(
-        f"[Gemini Cost Tracker] Model: {model_name} | "
-        f"Tokens Used: Input={prompt_tokens}, Output={output_tokens}, Total={total_tokens} | "
-        f"Estimated Cost: ${estimated_cost:.6f} USD"
-    )
+    prompt_tokens = usage.prompt_token_count or 0
+    candidates_tokens = usage.candidates_token_count or 0
+    thoughts_tokens = usage.thoughts_token_count or 0
+    output_tokens = candidates_tokens + thoughts_tokens
+    tokens = (f"Input={prompt_tokens}, Output={candidates_tokens}, Thinking={thoughts_tokens}, "
+              f"Total={usage.total_token_count or 0}")
+    cost = gemini_cost(prompt_tokens, output_tokens, pricing)
+    logger.info(f"[Gemini Cost Tracker] Model: {model_name} | Tokens Used: {tokens} | "
+                f"Estimated Cost: ${cost:.6f} USD")
