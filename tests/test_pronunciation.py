@@ -690,8 +690,7 @@ def _run_main_sync(tmp_path, monkeypatch, polish):
     monkeypatch.setattr("sys.argv", ["main.py", "94,95", "--skip-tts"])
     with patch.object(main_mod, "PipelineConfig", return_value=cfg), \
          patch.object(main_mod, "create_generator_engine", return_value=gen), \
-         patch.object(main_mod, "SefariaExtractor"), \
-         patch("pipeline.evaluator.evaluate_draft", return_value=MagicMock()):
+         patch.object(main_mod, "SefariaExtractor"):
         main_mod.main()
 
 

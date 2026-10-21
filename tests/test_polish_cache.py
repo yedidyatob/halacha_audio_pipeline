@@ -119,8 +119,7 @@ def _main(tmp_path, monkeypatch, argv, gen):
     monkeypatch.setattr("sys.argv", ["main.py", *argv, "--skip-tts"])
     with patch.object(main_mod, "PipelineConfig", return_value=cfg), \
          patch.object(main_mod, "create_generator_engine", return_value=gen), \
-         patch.object(main_mod, "SefariaExtractor"), \
-         patch("pipeline.evaluator.evaluate_draft", return_value={"success": True}):
+         patch.object(main_mod, "SefariaExtractor"):
         main_mod.main()
 
 

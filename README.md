@@ -86,8 +86,7 @@ Sefaria prints every Rama gloss on the Shulchan Arukh in `<small>`, both the glo
 הגה and the short inline ones inside the Mechaber's text. Before HTML is stripped, the extractor turns
 each top-level `<small>` block into `[רמ"א] ... [/רמ"א]` (a leading הגה is dropped); all other
 Shulchan Arukh text is the Mechaber's, including text that continues after a gloss. Other works are
-cleaned as before. Rule 6 of `system_instruction` tells the LLM how to read the labels, and the
-evaluator uses them to know which se'ifim have a Rama gloss.
+cleaned as before. Rule 6 of `system_instruction` tells the LLM how to read the labels.
 
 ### Pronunciation nikkud (Stage 3.5)
 
