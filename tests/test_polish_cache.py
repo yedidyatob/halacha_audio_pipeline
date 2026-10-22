@@ -88,7 +88,7 @@ def test_sync_cache_hit_needs_no_draft(tmp_path):
 def test_batch_polishes_only_uncached_simanim(tmp_path):
     polish_gen = FakeBatchGenerator(lambda cid, prompt: prompt)
     voc_gen = FakeBatchGenerator(lambda cid, prompt: vocalized(prompt))
-    summary = _run(tmp_path, polish_gen, PronunciationVocalizer(voc_gen, "VOC", None, 0), batch=True,
+    summary = _run(tmp_path, polish_gen, PronunciationVocalizer(voc_gen, "VOC", None, 0, [], 0.02), batch=True,
                    cached_polish={95: "טית cached 95", 97: "טית cached 97"})
     assert summary.succeeded == list(DRAFTS)
     assert [r["custom_id"] for r in polish_gen.submitted] == ["stage3_siman_94", "stage3_siman_96"]
@@ -102,7 +102,7 @@ def test_batch_all_cached_submits_no_polish_job(tmp_path, caplog):
     voc_gen = FakeBatchGenerator(lambda cid, prompt: vocalized(prompt))
     cached = {s: f"cached {d}" for s, d in DRAFTS.items()}
     with caplog.at_level("INFO"):
-        summary = _run(tmp_path, polish_gen, PronunciationVocalizer(voc_gen, "VOC", None, 0), batch=True,
+        summary = _run(tmp_path, polish_gen, PronunciationVocalizer(voc_gen, "VOC", None, 0, [], 0.02), batch=True,
                        cached_polish=cached)
     assert summary.succeeded == list(DRAFTS) and polish_gen.submitted == []
     assert len(voc_gen.submitted) == len(DRAFTS)

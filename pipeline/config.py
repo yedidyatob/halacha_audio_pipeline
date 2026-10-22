@@ -423,6 +423,14 @@ class PipelineConfig:
         return _max_retries(self._pronunciation_value("max_retries"), "pronunciation.max_retries")
 
     @property
+    def pronunciation_max_reverted_ratio(self) -> float:
+        """Largest share of a siman's words the stage may revert before the whole output is rejected."""
+        value = self._pronunciation_value("max_reverted_ratio")
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+            raise ValueError(f"'pronunciation.max_reverted_ratio' must be a number between 0 and 1, got {value!r}.")
+        return float(value)
+
+    @property
     def pronunciation_always_vocalize(self) -> list:
         """The always_vocalize entries as rendered in the prompt (see _always_vocalize_entry)."""
         value = self._pronunciation_value("always_vocalize")

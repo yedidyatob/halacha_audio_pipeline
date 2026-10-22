@@ -166,6 +166,11 @@ pronunciation:
   # Retries after a failed attempt (LLM error / rejected output); 0 = no retry.
   # Sync mode retries with new calls; batch mode resubmits the failed simanim as new batch jobs.
   max_retries: 1
+  # A word the model changed invalidly (an already-vocalized word altered, a letter other than ו/י
+  # changed, ו/י added or removed at the first letter, nikkud on a never_vocalize word) is reverted
+  # to the original; the whole output is rejected (and retried) only if more than this share of
+  # the siman's words had to be reverted. Between 0 and 1.
+  max_reverted_ratio: 0.02
   # Filled into {always_vocalize} / {never_vocalize} in pronunciation_instruction (joined with ", ";
   # an empty list renders as "אין").
   # An always_vocalize entry is a word, or a word with its readings (one or more), rendered as

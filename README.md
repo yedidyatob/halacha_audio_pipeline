@@ -96,6 +96,8 @@ only; it is required when `pronunciation.engine` is `gemini` and ignored for `op
 `pronunciation.max_retries` is the number of retries after a failed attempt (LLM error, empty or
 rejected output; 0 = no retry; batch mode retries as new batch jobs, see Batch Mode); each failed
 attempt is logged as a warning with its reason.
+`pronunciation.max_reverted_ratio` (required, a number between 0 and 1; `0.02`) is the largest
+share of a siman's words that may be reverted before the whole output is rejected (see below).
 `pronunciation.always_vocalize` / `pronunciation.never_vocalize` are word lists filled into the
 `{always_vocalize}` / `{never_vocalize}` placeholders of the instruction (joined with ", "; an empty
 list renders as "אין"). An `always_vocalize` entry may also give the word's readings, one or more
@@ -110,15 +112,25 @@ header line, then one tab-separated line per distinct original → vocalized pai
 words on each side of the first occurrence, the word in brackets, e.g. `מה דינו של [כְּחָל] של בהמה`).
 Words the LLM vocalized in more than one way (`varies` = `yes`) come first, each variant on its own
 line; then the rest by count.
+After a blank line comes the reverted section: a title line
+(`reverted (the model's version was invalid; the original word was kept)`), a header line, then one
+tab-separated line per reverted word in text order: `original`, `model` (the model's version),
+`reason`, `line` and `context` (the model's output around it, its version in brackets). It holds
+only the header when nothing was reverted.
 
 The stage runs after the dictionary nikkud, and the LLM is told to leave already-vocalized words
-alone. Validation is strict and word by word: words, whitespace and lines must be unchanged (only
-trailing whitespace / line endings may differ); with nikkud removed each word must equal the input
-word, except that ו / י may be added or removed for standard voweled spelling (עובר → עֻבָּר,
-הקילו → הֵקֵלּוּ), never as the word's first letter; every word that already had nikkud must be
-byte-identical; and no markup (`<...>`) may appear. There is no fallback: if every attempt fails,
+alone. Validation is the same in sync and batch mode, word by word. A single bad word does not
+fail the siman: it is **reverted** (the input word is put back exactly), logged as a warning and
+listed in the review file. A word is reverted when the model changed an already-vocalized word
+(it must stay byte-identical); changed, added or dropped a letter other than ו / י (ו / י may be
+added or removed for standard voweled spelling, עובר → עֻבָּר, הקילו → הֵקֵלּוּ); added or removed
+ו / י at the word's first letter; or put nikkud on a `never_vocalize` word.
+The whole output is rejected, and the attempt retried, only when the call fails or returns empty
+output or markup (`<...>`); when the words do not line up with the input (line count, merged, split,
+missing or extra words; only trailing whitespace / line endings may differ); or when more than
+`max_reverted_ratio` of the words had to be reverted. There is no fallback: if every attempt fails,
 that siman fails with the last reason (no transcript, no TTS) and the run continues with the next
-siman.
+siman. The run summary lists the reverted-word count per siman.
 Letter names whose spelling must change (הא / הי → הֵי, and the wrong vocalization הֵא → הֵי) are
 handled by the dictionary stage (`NO_PREFIX_NIKKUD_DICT`, `LETTER_NAME_MISVOCALIZATIONS`), not by
 the LLM; the polish writes letter names without nikkud.
@@ -157,7 +169,8 @@ exits with code 1 if any siman failed (0 otherwise):
 ===== Run summary =====
 Succeeded (2/3): 94, 96
 Failed (1/3): 95
-  - Siman 95 | stage: Stage 3.5 (Pronunciation nikkud) | reason: pronunciation output rejected: text changed (ignoring nikkud): ...
+  - Siman 95 | stage: Stage 3.5 (Pronunciation nikkud) | reason: pronunciation output rejected: words do not line up with the input (ignoring nikkud): ...
+Pronunciation words reverted (1): 94: 1, 96: 0
 ```
 
 Setup errors and Stage 1 / Stage 2 failures still abort the whole run immediately (exit 1),
@@ -377,7 +390,7 @@ output/
 ├── {section}_Siman_{N}_{model}_polish.txt          # Stage 3 polished text (before nikkud)
 ├── {section}_Siman_{N}_{model}_transcript.txt      # Latest transcript
 ├── {section}_Siman_{N}_{model}_transcript_YYYYMMDD_HHMMSS.txt  # Timestamped history
-├── {section}_Siman_{N}_{model}_pronunciation_changes.txt  # review list of the words the LLM changed (see Pronunciation nikkud), if enabled
+├── {section}_Siman_{N}_{model}_pronunciation_changes.txt  # review file: words the LLM changed and reverted (see Pronunciation nikkud), if enabled
 ├── {section}_Siman_{N}_{model}.mp3               # Audio file
 ├── drafts/                                         # Stage 1 cached drafts
 │   └── {section}_Siman_{N}_{model}_draft.txt
