@@ -289,5 +289,4 @@ def test_repo_config_prices_every_configured_gemini_model():
     assert (cfg.native_audio_model_name, cfg.native_audio_voice_name, cfg.native_audio_temperature) == \
         ("gemini-2.5-flash-preview-tts", "Puck", 0.3)
     assert cfg.gemini_price(cfg.gemini_model_name) == {"input_per_million": 2.0, "output_per_million": 10.0}
-    assert cfg.gemini_price(cfg.pronunciation_model_name)
     assert cfg.gemini_price(cfg.enhancer_model_name)  # enhance_transcript.py default --model

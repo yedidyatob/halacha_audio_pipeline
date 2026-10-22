@@ -75,10 +75,9 @@ The pipeline runs in three stages:
 |-------|-------------|
 | **Stage 1** | Extract Halachic content from Sefaria API (Rama glosses in the Shulchan Arukh are labeled `[רמ"א] ... [/רמ"א]`, see below) |
 | **Stage 2** | Analyze cross-simanim relations for context |
-| **Stage 3** | Generate polished TTS-ready script & synthesize audio |
-| **Stage 3.4** | Dictionary nikkud (`pipeline/apply_nikkud.py`): rabbinic abbreviations (an allowlist also without gershayim, e.g. מהרשל, when the bare form is not an ordinary word), fixed word corrections and letter names in a letter-name context (incl. the respelling הא → הֵי); never touches already-vocalized words |
-| **Stage 3.5** | Pronunciation nikkud (optional, `pronunciation.enabled`): an LLM adds nikkud only to context-ambiguous words (עובר → עֻבָּר, פת, סופר, letter names used as letters). Plain text, no markup |
-| **Stage 3.6** | Save the transcript, then TTS |
+| **Stage 3** | Generate the polished TTS-ready script, vocalizing only the words the TTS engine could misread (one LLM call per siman, see below) |
+| **Stage 3.1** | Dictionary nikkud (`pipeline/apply_nikkud.py`): rabbinic abbreviations (an allowlist also without gershayim, e.g. מהרשל, when the bare form is not an ordinary word), fixed word corrections and letter names in a letter-name context (incl. the respelling הא → הֵי). Matching ignores nikkud, so the dictionary's nikkud always replaces the model's |
+| **Stage 3.2** | Save the transcript and its nikkud review file, then TTS |
 
 ### Mechaber vs. Rama (Stage 1)
 
@@ -88,68 +87,60 @@ each top-level `<small>` block into `[רמ"א] ... [/רמ"א]` (a leading הגה
 Shulchan Arukh text is the Mechaber's, including text that continues after a gloss. Other works are
 cleaned as before. Rule 6 of `system_instruction` tells the LLM how to read the labels.
 
-### Pronunciation nikkud (Stage 3.5)
+### Nikkud (Stages 3 and 3.1)
 
-Configured in `config.yaml` (`pronunciation:` section + `pronunciation_instruction`; no code defaults).
-`pronunciation.thinking_level` (`low`/`medium`/`high`) sets the Gemini thinking level for this call
-only; it is required when `pronunciation.engine` is `gemini` and ignored for `openai`.
-`pronunciation.max_retries` is the number of retries after a failed attempt (LLM error, empty or
-rejected output; 0 = no retry; batch mode retries as new batch jobs, see Batch Mode); each failed
-attempt is logged as a warning with its reason.
+The Stage 3 polish call also adds the nikkud: `polishing_instruction` in `config.yaml` ends with a
+nikkud addendum (`===== תוספת: ניקוד לצורך הגייה =====`) telling the model to vocalize only the words a
+reader could read two ways (עובר → עֻבָּר, פת, סופר, letter names used as letters), with no markup. It
+uses the polish's model, temperature (`generator.polish_temperature`), thinking and retries, in sync
+and batch mode; there is no separate nikkud LLM call.
 `pronunciation.always_vocalize` / `pronunciation.never_vocalize` are word lists filled into the
-`{always_vocalize}` / `{never_vocalize}` placeholders of the instruction (joined with ", "; an empty
-list renders as "אין"). An `always_vocalize` entry may also give the word's readings, one or more
+`{always_vocalize}` / `{never_vocalize}` placeholders of `polishing_instruction` (joined with ", "; an
+empty list renders as "אין"). An `always_vocalize` entry may also give the word's readings, one or more
 (`word` + `readings: [{nikkud, meaning}, ...]`), rendered as
 `למה (לְמָה = אל מה; לָמָּה = מדוע)`; at startup each reading must have a meaning, and its
-nikkud must be the word's letters (ו / י may be added or removed except as the first letter, as in
-the validation below).
+nikkud must be the word's letters (ו / י may be added or removed except as the first letter).
 
-The changes file (`..._pronunciation_changes.txt`) is the review list of what the LLM vocalized: a
-header line, then one tab-separated line per distinct original → vocalized pair:
-`varies`, `original`, `vocalized`, `count`, `first_line` (in the transcript) and `context` (up to 5
-words on each side of the first occurrence, the word in brackets, e.g. `מה דינו של [כְּחָל] של בהמה`).
-Words the LLM vocalized in more than one way (`varies` = `yes`) come first, each variant on its own
-line; then the rest by count.
+The dictionary stage (3.1) then runs on the vocalized polish. Its matching ignores nikkud, on the
+word and on its prefix letters (ו, ה, ב, כ, ל, מ, ש and their combinations), so הָרַמְבַּ"ם, וּבִכְחָל and
+סימן הֵא are found like their plain forms. The dictionary always wins: the matched word gets the
+dictionary's nikkud (or respelling: הא / הֵא → הֵי). The prefix is kept exactly as the model wrote it,
+including its nikkud (וּבִכְחָל → וּבִכְּחָל): the entry vocalizes only the word, and a prefix's vowel
+depends on the word that follows, which the model saw. Words not in the dictionary keep the model's
+nikkud, and a partial-word match is never touched.
 
-The stage runs after the dictionary nikkud, and the LLM is told to leave already-vocalized words
-alone. Validation is strict and word by word: words, whitespace and lines must be unchanged (only
-trailing whitespace / line endings may differ); with nikkud removed each word must equal the input
-word, except that ו / י may be added or removed for standard voweled spelling (עובר → עֻבָּר,
-הקילו → הֵקֵלּוּ), never as the word's first letter; every word that already had nikkud must be
-byte-identical; and no markup (`<...>`) may appear. There is no fallback: if every attempt fails,
-that siman fails with the last reason (no transcript, no TTS) and the run continues with the next
-siman.
-Letter names whose spelling must change (הא / הי → הֵי, and the wrong vocalization הֵא → הֵי) are
-handled by the dictionary stage (`NO_PREFIX_NIKKUD_DICT`, `LETTER_NAME_MISVOCALIZATIONS`), not by
-the LLM; the polish writes letter names without nikkud.
+The review file (`..._pronunciation_changes.txt`, saved with every transcript) has two sections:
+- the vocalized words of the final transcript: a header line, then one tab-separated line per
+  distinct plain → vocalized pair: `varies`, `plain`, `vocalized`, `count`, `first_line` (in the
+  transcript) and `context` (up to 5 words on each side of the first occurrence, the word in
+  brackets, e.g. `מה דינו של [כְּחָל] של בהמה`). Words vocalized in more than one way (`varies` =
+  `yes`) come first, each variant on its own line; then the rest by count.
+- after a blank line, `dictionary overrides (the model's nikkud was replaced by the dictionary's)`,
+  a header line and one line per place where the dictionary replaced a word the model had
+  vocalized differently: `model`, `dictionary`, `line`, `context` (the dictionary's form in brackets).
 
 Standalone (Windows PowerShell, from the repo root):
 
 ```powershell
-# Dictionary nikkud + LLM pronunciation nikkud on any text file
-# (writes <input>_vocalized.txt and <input>_vocalized_changes.txt, the changes file described above)
-.venv\Scripts\python scripts\vocalize_pronunciation.py output\<file>.txt
 # Synthesize any text file with the TTS engine configured in config.yaml
-.venv\Scripts\python scripts\tts_from_file.py output\<file>_vocalized.txt
+.venv\Scripts\python scripts\tts_from_file.py output\<file>_transcript.txt
 ```
-
-`scripts/vocalize_pronunciation.py` retries like the pipeline (`pronunciation.max_retries`), then
-writes nothing and exits with code 1 if every attempt fails.
 
 ### Stage 3 polish cache
 
 The Stage 3 polish (`{section}_Siman_{N}_{model}_polish.txt` in `output_dir`) is also a cache, in
 sync and batch mode: when it exists for a target siman, the run loads it instead of calling the LLM
-(logged as `Loaded cached Stage 3 polish for Siman N: <path> (<n> chars).`) and Stages 3.4 / 3.5 /
+(logged as `Loaded cached Stage 3 polish for Siman N: <path> (<n> chars).`) and Stage 3.1 /
 transcript / TTS run as usual; in batch mode only the other simanim get polish jobs, and none are
 submitted when every polish is cached. An empty (whitespace-only) cached polish counts as missing
-and is regenerated, with a warning. `--overwrite-cache` regenerates it. For example, after editing
-`pronunciation.always_vocalize`, `python main.py 87 --context-range 87-111 --skip-tts` calls the LLM
-only for Stage 3.5 (the drafts and the relations map are cached too).
+and is regenerated, with a warning. `--overwrite-cache` regenerates it. The cached polish
+is the vocalized polish, before the dictionary nikkud, so after editing the dictionary a rerun with
+the cache calls no LLM; after editing `polishing_instruction` or `pronunciation.always_vocalize`, use
+`--overwrite-cache` to polish again.
 
 ### Run summary and exit code
 
-A failure in Stage 3 for one siman (polishing, dictionary nikkud, pronunciation nikkud, transcript save, TTS)
+A failure in Stage 3 for one siman (polishing, dictionary nikkud, transcript save, TTS)
 fails only that siman; the remaining simanim still run. At the end, `main.py` logs a summary and
 exits with code 1 if any siman failed (0 otherwise):
 
@@ -157,7 +148,7 @@ exits with code 1 if any siman failed (0 otherwise):
 ===== Run summary =====
 Succeeded (2/3): 94, 96
 Failed (1/3): 95
-  - Siman 95 | stage: Stage 3.5 (Pronunciation nikkud) | reason: pronunciation output rejected: text changed (ignoring nikkud): ...
+  - Siman 95 | stage: Stage 3 (Polishing and nikkud) | reason: batch job failed (job_id: ...) (after 2 attempt(s))
 ```
 
 Setup errors and Stage 1 / Stage 2 failures still abort the whole run immediately (exit 1),
@@ -209,7 +200,7 @@ path, `resolve_run_plan`, honouring `--overwrite-cache`, `--relations-file`, `--
 - whether the relations map is loaded (from `--relations-file` or the cache) or generated, and its path
 - which Stage 1 drafts load from the cache and which are requested, with their paths
 - per target siman, whether its Stage 3 polish loads from the cache or is generated, with its path
-- which simanim go through Stage 3 / 3.5 / TTS, with the transcript and audio paths
+- which simanim go through Stage 3 / 3.1 / TTS, with the transcript and audio paths
 
 It then exits with code 0. Nothing is written and no API, LLM, TTS or Sefaria call is made;
 only the local cache files are read.
@@ -224,26 +215,23 @@ python main.py 94 --context-range 87-111 --batch
 python main.py 94 --retrieve-batch <batch_id>
 ```
 
-With `--batch`, every LLM stage runs as batch jobs with polling, including pronunciation nikkud
-(Stage 3.5): one job per siman that polished successfully, using the `pronunciation:` engine,
-model, temperature and `thinking_level` (which may differ from the generator engine). The run stops at
-startup if `pronunciation.engine` does not support batch.
+With `--batch`, every LLM stage runs as batch jobs with polling, including the Stage 3 polish and
+nikkud (one job per siman).
 
 Failures and retries work the same way in every LLM stage. A failed attempt is a failed call in sync
 mode; in batch mode a failed submit, a job the API reports as failed / cancelled / expired, or a failed
-request inside a succeeded job, including a Stage 3.5 output rejected by validation (logged
+request inside a succeeded job (logged
 with the API's error code and message, e.g. `error code 1 (CANCELLED): The operation was cancelled.`,
 or a blocked / cut-off / empty response named by its block or finish reason). Every failed attempt is
 logged as a warning. Retries run in rounds: each round retries all the items of the stage that have
 failed so far, in sync mode as new sync calls and in batch mode as new batch jobs that are polled
 again (batch mode never falls back to sync calls). Stages 1-3 allow up to `generator.max_retries`
-rounds and Stage 3.5 up to `pronunciation.max_retries`; Stage 3.5 results also go through the same
-validation as sync mode.
+rounds.
 When an item still fails after its retries:
 - Stage 1 (drafts): every successful draft is already saved to the cache (each one as soon as it
   arrives). The run then aborts, and a rerun only regenerates the missing drafts.
 - Stage 2 (relations map): the run aborts.
-- Stages 3 / 3.5: only that siman fails, and it appears in the end-of-run summary.
+- Stage 3: only that siman fails, and it appears in the end-of-run summary.
 
 A failed status check or result fetch while polling (network / API error) says nothing about the
 job, which may still be running or already done. It is logged as a warning and simply tried again
@@ -288,7 +276,7 @@ mode, new batch jobs in batch mode.
 
 ### Gemini calls: streaming and thinking files
 
-Every synchronous Gemini text call (Stages 1-3, pronunciation nikkud in sync mode, and
+Every synchronous Gemini text call (Stages 1-3 and
 `enhance_transcript.py`) goes through one path, `GeminiScriptGenerator._generate`: it streams the
 response (`generate_content_stream`) with `thinking_config.include_thoughts` on, so bytes keep
 arriving while the model thinks. A long non-streaming call sends nothing until it finishes, and an
@@ -310,7 +298,7 @@ Each synchronous Gemini call logs its tokens (input, output, thinking) and estim
 tokens are billed as output. Prices come from the `gemini_pricing:` section of `config.yaml` (USD per
 1M tokens, paid tier, standard / non-batch, from https://ai.google.dev/gemini-api/docs/pricing); an
 optional `long_context` tier applies to the whole request when the prompt exceeds
-`threshold_tokens`. Every Gemini model used for a text call (generator, pronunciation,
+`threshold_tokens`. Every Gemini model used for a text call (generator,
 `enhancer.model_name` or `enhance_transcript.py --model`) needs an entry; a missing one is a startup error.
 
 ```yaml
@@ -374,10 +362,10 @@ has no `next_text`, and a single-chunk text sends neither.
 
 ```
 output/
-├── {section}_Siman_{N}_{model}_polish.txt          # Stage 3 polished text (before nikkud)
+├── {section}_Siman_{N}_{model}_polish.txt          # Stage 3 polished and vocalized text (before the dictionary nikkud)
 ├── {section}_Siman_{N}_{model}_transcript.txt      # Latest transcript
 ├── {section}_Siman_{N}_{model}_transcript_YYYYMMDD_HHMMSS.txt  # Timestamped history
-├── {section}_Siman_{N}_{model}_pronunciation_changes.txt  # review list of the words the LLM changed (see Pronunciation nikkud), if enabled
+├── {section}_Siman_{N}_{model}_pronunciation_changes.txt  # nikkud review: vocalized words and dictionary overrides (see Nikkud)
 ├── {section}_Siman_{N}_{model}.mp3               # Audio file
 ├── drafts/                                         # Stage 1 cached drafts
 │   └── {section}_Siman_{N}_{model}_draft.txt

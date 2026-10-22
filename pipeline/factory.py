@@ -26,32 +26,6 @@ def create_generator_engine(config: PipelineConfig) -> BaseScriptGenerator:
     else:
         raise ValueError(f"Unsupported Generator engine: {config.generator_engine}")
 
-def create_pronunciation_generator(config: PipelineConfig) -> BaseScriptGenerator:
-    """
-    Generator for the pronunciation stage. Reuses the Gemini/OpenAI generator
-    classes with the model settings from the 'pronunciation' section of config.yaml.
-    (OpenAI service_tier is shared with the 'generator.openai' section.)
-    """
-    engine = config.pronunciation_engine
-    if engine == "gemini":
-        return GeminiScriptGenerator(
-            api_key=config.gemini_api_key,
-            model_name=config.pronunciation_model_name,
-            temperature=config.pronunciation_temperature,
-            ssl_verify=config.ssl_verify,
-            pricing=config.gemini_price(config.pronunciation_model_name),
-            thinking_dir=config.thinking_dir,
-        )
-    elif engine == "openai":
-        return OpenAIScriptGenerator(
-            api_key=config.openai_api_key,
-            model_name=config.pronunciation_model_name,
-            temperature=config.pronunciation_temperature,
-            service_tier=config.openai_service_tier,
-            ssl_verify=config.ssl_verify
-        )
-    raise ValueError(f"Unsupported pronunciation engine: {engine}")
-
 def create_tts_engine(config: PipelineConfig) -> BaseTTS:
     """
     Factory function to return the configured TTS Synthesizer engine.

@@ -16,7 +16,6 @@ generator:
   # Retry rounds after a failed attempt in Stages 1-3 (drafts, relations, polish): API error,
   # failed batch job / request, empty, blocked or cut-off response. 0 = no retry. Sync mode retries
   # with new calls; batch mode resubmits the failed items as new batch jobs.
-  # (Stage 3.5 uses pronunciation.max_retries.)
   max_retries: 1
   # Gemini thinking level for the Stage 1 draft calls, sync and batch (low, medium or high).
   # Ignored for openai.
@@ -61,7 +60,7 @@ system_instruction: |
     5. שמות מפורשים: ציין תמיד את שמות בעלי הדעות (הראשונים והאחרונים) ואל תשתמש בביטויים סתמיים כמו "יש אומרים" או "חלק מהפוסקים".
     6. הפרדת המחבר והרמ"א: בטקסט השולחן ערוך, כל קטע המסומן [רמ"א] ... [/רמ"א] הוא דברי הרמ"א, גם באמצע סעיף וגם בלי המילה "הגה"; כל שאר הטקסט הוא דברי המחבר, גם כשהוא ממשיך אחרי הגהת הרמ"א. "פסק הרמ"א" חייב לכלול גם את ההגהות הקצרות שבתוך דברי המחבר. קטע לא מסומן בסוגריים שיש בו פסק ואחריו מראה מקום (למשל "(וי"א אפי' אינו בן יומו) (רשב"א...)") הוא כנראה גם כן דברי הרמ"א; אבל מילה בודדת בסוגריים (נוסח אחר, כמו "(עליו)") אינה הגהה.
 
-# Shared Polishing Instruction for Script Styling (Stage 2: Pedagogical Lesson Structuring and TTS Formatting)
+# Shared Polishing Instruction for Script Styling (Stage 3: Pedagogical Lesson Structuring, TTS Formatting and nikkud)
 polishing_instruction: |
     אתה משמש כרב מורה הוראה המעביר שיעור שמע (אודיו) מרתק, דינמי וברור הלכתית, המיועד לתלמידים מתקדמים הלומדים למבחני רבנות.
     
@@ -114,6 +113,27 @@ polishing_instruction: |
         - בחזרה חובה לנקוב בשם כל מקור ובפסיקתו המדויקת (למשל: "המחבר אוסר", "הרמ"א מתיר בדיעבד", "הש"ך מחמיר"). לעולם אל תכתוב בחזרה ביטויים סתמיים כמו "יש אומרים", "יש פוסקים", "יש דעות" או "ראינו שאסור...", וגם לא את הדין לבדו בלי מקור. אם בקטע הוזכרו כמה דעות, החזרה חייבת למנות כל אחת מהן בשם בעל הדעה.
         - דוגמה טובה: "בואו נעשה סדר במה שראינו עכשיו. ראשית, למדנו שהמחבר מחמיר ואומר שצריך לקלוף עד הבשר בגלל חשש חנ"נ, בעוד שהרמ"א מקל ואומר שמספיק קליפה כהודו כי סומך על הסברא של נ"ט בר נ"ט. ושנית, הש"ך והט"ז נחלקו בשאלה אם הלכה זו תלויה בדין 'בן יומו' מסימן צ"ב, כאשר הש"ך חושב X והט"ז חושב Y."
 
+    ===== תוספת: ניקוד לצורך הגייה =====
+    כל ההנחיות לעיל לעריכת השיעור נשארות בתוקף. בנוסף, בתסריט המלוטש שאתה כותב,
+    הוסף ניקוד רק למילים שמנוע ה-TTS עלול לקרוא לא נכון, בלי שום תגיות או סימון.
+    הכללים לבחירת המילים:
+    נקד מילה רק אם קורא עברית בלי ניקוד עלול לקרוא אותה בשתי דרכים שונות, ובהקשר הזה נכונה דווקא אחת מהן:
+    - אותן אותיות, משמעות והגייה אחרת: עובר (עֻבָּר / עוֹבֵר), פת, ספר, סופר, מבשר, כלי.
+    - מילה שנוטים לקרוא בטעות: כותח, נבילה, הקילו.
+    אל תנקד מילה רק בגלל שהיא ארמית או תורנית, אם יש לה קריאה מקובלת אחת (דאורייתא, דרבנן, מותר, אסור, בדיעבד).
+    אם אינך בטוח, אל תנקד.
+
+    תמיד לנקד (כשמופיעות קריאות בסוגריים, בחר לפי ההקשר): {always_vocalize}
+    לעולם לא לנקד: {never_vocalize}
+
+    נקד רק את המילה הדו-משמעית עצמה (כולל אותיות השימוש הצמודות לה), בניקוד מלא ומדויק לפי ההקשר, ואל תנקד את שאר המשפט.
+
+    דוגמאות:
+    עובר בהמה ← עֻבָּר בְּהֵמָה
+    כותח ← כּוּתָח
+    אכל פת ← אכל פַּת
+    טעות סופר ← טעות סוֹפֵר
+
 
 
 
@@ -145,29 +165,11 @@ relations_instruction: |
 
 
 
-# Pronunciation stage (Stage 3.5; runs after polish and the dictionary nikkud stage, before save/TTS).
-# An LLM adds nikkud ONLY to context-ambiguous words (homographs, letter names used as letters).
-# Plain text, no markup. Validation (word by word): the output without nikkud must equal the
-# input, except that ו / י may be added or removed for standard voweled spelling (never as a
-# word's first letter), and words that were already vocalized must be unchanged. A failed
-# attempt (LLM error / invalid output) is retried up to max_retries times; if all fail, that
-# siman fails: no transcript, no TTS.
-# Letter-name respellings (הא / הי / הֵא -> הֵי) are done by the dictionary nikkud stage
-# (pipeline/apply_nikkud.py, NO_PREFIX_NIKKUD_DICT and LETTER_NAME_MISVOCALIZATIONS), not here;
-# the polish writes letter names without nikkud.
+# Words the Stage 3 polish must always / never vocalize, filled into {always_vocalize} /
+# {never_vocalize} in polishing_instruction (joined with ", "; an empty list renders as "אין").
+# The dictionary nikkud stage (pipeline/apply_nikkud.py) then overrides the model's nikkud for
+# every dictionary word (abbreviations, names, letter names).
 pronunciation:
-  enabled: true
-  engine: "gemini"  # "gemini" or "openai" (openai reuses generator.openai.service_tier)
-  model_name: "gemini-4-argon"
-  temperature: 0.2
-  # Gemini thinking level for the pronunciation call (required for engine gemini; ignored for openai).
-  # Gemini 4 Argon accepts low/medium/high; try low to compare cost vs quality.
-  thinking_level: "high"
-  # Retries after a failed attempt (LLM error / rejected output); 0 = no retry.
-  # Sync mode retries with new calls; batch mode resubmits the failed simanim as new batch jobs.
-  max_retries: 1
-  # Filled into {always_vocalize} / {never_vocalize} in pronunciation_instruction (joined with ", ";
-  # an empty list renders as "אין").
   # An always_vocalize entry is a word, or a word with its readings (one or more), rendered as
   # 'למה (לְמָה = אל מה; לָמָּה = מדוע)'. Each reading needs a nikkud and a meaning; the
   # nikkud must be the word's letters (ו / י may be added or removed, except as the first letter),
@@ -186,32 +188,6 @@ pronunciation:
         - {nikkud: "גְּזֵרָה", meaning: 'צו או תקנה, כמו "גזרה שווה"'}
         - {nikkud: "גִּזְרָה", meaning: "חיתוך, צורה"}
   never_vocalize: ["דאורייתא", "דרבנן"]
-
-pronunciation_instruction: |
-    אתה עורך הגייה לשיעור שמע בעברית שיוקרא במנוע TTS.
-    החזר את התסריט בדיוק כפי שהוא, מילה במילה ואות באות, בלי לשנות, להוסיף או להשמיט דבר, ובלי שום תגיות או סימון.
-    השינוי היחיד המותר: להוסיף ניקוד למילים שהמנוע עלול לקרוא לא נכון, ורק להן. במילה שאתה מנקד מותר להוסיף או להשמיט ו או י לפי הכתיב המנוקד התקני (הקילו ← הֵקֵלּוּ), אך לא באות הראשונה של המילה; אל תשנה, תוסיף או תשמיט שום אות אחרת.
-    מילה שכבר מנוקדת, אפילו חלקית, השאר בדיוק כפי שהיא: אל תשנה ואל תוסיף בה ניקוד.
-
-    נקד מילה רק אם קורא עברית בלי ניקוד עלול לקרוא אותה בשתי דרכים שונות, ובהקשר הזה נכונה דווקא אחת מהן:
-    - אותן אותיות, משמעות והגייה אחרת: עובר (עֻבָּר / עוֹבֵר), פת, ספר, סופר, מבשר, כלי.
-    - מילה שנוטים לקרוא בטעות: כותח, נבילה, הקילו.
-    - שמות אותיות (טית, בית, פא, צדי) כשהם משמשים כאות.
-    אל תנקד מילה רק בגלל שהיא ארמית או תורנית, אם יש לה קריאה מקובלת אחת (דאורייתא, דרבנן, מותר, אסור, בדיעבד).
-    אם אינך בטוח, אל תנקד.
-
-    תמיד לנקד (כשמופיעות קריאות בסוגריים, בחר לפי ההקשר): {always_vocalize}
-    לעולם לא לנקד: {never_vocalize}
-
-    נקד רק את המילה הדו-משמעית עצמה (כולל אותיות השימוש הצמודות לה), בניקוד מלא ומדויק לפי ההקשר, ואל תנקד את שאר המשפט.
-
-    דוגמאות:
-    עובר בהמה ← עֻבָּר בְּהֵמָה
-    כותח ← כּוּתָח
-    סימן טית ← סימן טֵית
-    סעיף בית ← סעיף בֵּית
-    אכל פת ← אכל פַּת
-    טעות סופר ← טעות סוֹפֵר
 
 # TTS Engine Selection and Settings
 tts:
@@ -283,7 +259,7 @@ directories:
 # Gemini text-model prices for the cost tracker, USD per 1M tokens (paid tier, standard / non-batch).
 # Thinking tokens are billed as output. Optional long_context: the rates for a request whose prompt
 # exceeds threshold_tokens (the whole request is billed at that tier). Every Gemini model used for a
-# text call (generator, pronunciation, enhance_transcript.py --model) needs an entry here.
+# text call (generator, enhance_transcript.py --model) needs an entry here.
 # Source: https://ai.google.dev/gemini-api/docs/pricing (checked 2026-10-22).
 gemini_pricing:
   # Introductory prices through 2026-11-30; from 2026-12-01: input 4.00, output 20.00. No long-context tier.

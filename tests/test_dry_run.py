@@ -9,8 +9,7 @@ from pipeline.generator import GeminiScriptGenerator
 
 def _cfg(tmp_path):
     return MagicMock(section_slug="YD", drafts_dir=str(tmp_path / "drafts"), relations_dir=str(tmp_path / "rel"),
-                     output_dir=str(tmp_path / "out"), generator_max_retries=1, generator_engine="gemini", tts_engine="gemini",
-                     pronunciation_enabled=False)
+                     output_dir=str(tmp_path / "out"), generator_max_retries=1, generator_engine="gemini", tts_engine="gemini")
 
 
 def _args(**kw):
@@ -99,7 +98,7 @@ def test_main_dry_run_prints_plan_and_calls_nothing(cache, monkeypatch, caplog):
     assert "from cache (2): [94, 96]" in out
     assert "to be GENERATED (1, as batch jobs, after a Sefaria fetch each): [95]" in out
     assert f"Siman 95 -> {cache / 'drafts' / 'YD_Siman_95_m_draft.txt'}" in out
-    assert "3.5 pronunciation nikkud: [94]" in out and "disabled" in out
+    assert "Stage 3 polish and nikkud -> 3.1 dictionary nikkud: [94]" in out and "pronunciation" not in out
     base = cache / 'out' / 'YD_Siman_94_m'
     assert "Stage 3 polish from cache (0): none" in out
     assert f"Stage 3 polish to be GENERATED (1, as batch jobs): [94]\n" in out
