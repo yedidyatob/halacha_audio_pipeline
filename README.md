@@ -264,7 +264,7 @@ generator:
   engine: "gemini"  # or "openai"
   
   gemini:
-    model_name: "gemini-3.1-pro-preview"
+    model_name: "gemini-4-argon"
     temperature: 0.3
     
   openai:
