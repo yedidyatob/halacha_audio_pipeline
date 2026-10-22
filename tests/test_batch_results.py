@@ -68,7 +68,7 @@ def test_gemini_batch_job_without_responses():
 
 def _openai_with(output=None, error=None):
     with patch("pipeline.generator.OpenAI") as openai_cls:
-        gen = OpenAIScriptGenerator(api_key="k", model_name="gpt")
+        gen = OpenAIScriptGenerator(api_key="k", model_name="gpt", temperature=1.0, service_tier=None, ssl_verify=True)
     client = openai_cls.return_value
     client.batches.retrieve.return_value = MagicMock(output_file_id=output and "out", error_file_id=error and "err")
     files = {"out": output, "err": error}

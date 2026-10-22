@@ -273,6 +273,12 @@ generator:
     service_tier: "auto"
 ```
 
+Every generation setting (model names, temperatures, `service_tier`, `polish_temperature`, and the
+`enhancer` and `experiments.gemini_native_audio` sections) is required in `config.yaml`; there are no
+code defaults, and a missing or invalid value is a startup error. `generator.polish_temperature` is the
+temperature of the Stage 3 polish calls (sync and batch). `enhance_transcript.py` reads
+`enhancer.model_name` / `enhancer.temperature`; its `--model` / `--temperature` flags override them.
+
 `generator.max_retries` is the number of retries after a failed attempt in Stages 1-3 (API error,
 failed batch job or request, empty, blocked or cut-off response; 0 = no retry): new calls in sync
 mode, new batch jobs in batch mode.
@@ -305,7 +311,7 @@ tokens are billed as output. Prices come from the `gemini_pricing:` section of `
 1M tokens, paid tier, standard / non-batch, from https://ai.google.dev/gemini-api/docs/pricing); an
 optional `long_context` tier applies to the whole request when the prompt exceeds
 `threshold_tokens`. Every Gemini model used for a text call (generator, pronunciation,
-`enhance_transcript.py --model`) needs an entry; a missing one is a startup error.
+`enhancer.model_name` or `enhance_transcript.py --model`) needs an entry; a missing one is a startup error.
 
 ```yaml
 gemini_pricing:

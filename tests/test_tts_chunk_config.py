@@ -72,27 +72,27 @@ def test_repo_config_yaml_chunk_settings():
 
 
 def test_engines_store_and_validate_chunk_size():
-    assert OpenAITTS(api_key="k", chunk_size=4000, **GAPS)._chunk_size == 4000
-    assert GoogleCloudTTS(chunk_size=2000, **GAPS)._chunk_size == 2000
+    assert OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy", chunk_size=4000, **GAPS)._chunk_size == 4000
+    assert GoogleCloudTTS(credentials_path=None, voice_name="v", language_code="he-IL", speaking_rate=1.0, pitch=0.0, chunk_size=2000, **GAPS)._chunk_size == 2000
     with patch("google.auth.default", side_effect=Exception("no creds")):
         assert GeminiTTS("m", "v", chunk_size=1234, **GAPS)._chunk_size == 1234
     el = ElevenLabsTTS(api_key="k", chunk_size=8000, context_chars=500, **GAPS)
     assert (el._chunk_size, el.context_chars) == (8000, 500)
     with pytest.raises(ValueError):
-        OpenAITTS(api_key="k", chunk_size=0, **GAPS)
+        OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy", chunk_size=0, **GAPS)
     with pytest.raises(ValueError):
         ElevenLabsTTS(api_key="k", chunk_size=8000, context_chars=-1, **GAPS)
     with pytest.raises(ValueError, match="5000 bytes"):
-        GoogleCloudTTS(chunk_size=3000, **GAPS)
+        GoogleCloudTTS(credentials_path=None, voice_name="v", language_code="he-IL", speaking_rate=1.0, pitch=0.0, chunk_size=3000, **GAPS)
     with pytest.raises(TypeError):
-        OpenAITTS(api_key="k", **GAPS)  # no code default for chunk_size
+        OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy", **GAPS)  # no code default for chunk_size
     for bad in (None, True, 2.0, "10"):
         with pytest.raises(ValueError):
             validate_chunk_size(bad)
 
 
 def test_google_rejects_chunk_over_byte_limit():
-    g = GoogleCloudTTS(chunk_size=2500, **GAPS)
+    g = GoogleCloudTTS(credentials_path=None, voice_name="v", language_code="he-IL", speaking_rate=1.0, pitch=0.0, chunk_size=2500, **GAPS)
     g._texttospeech = MagicMock()
     g._google_client = MagicMock()
     with pytest.raises(ValueError, match="bytes"):

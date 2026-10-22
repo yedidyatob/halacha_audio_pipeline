@@ -204,6 +204,32 @@ def test_draft_thinking_level():
     assert _config(BASE + 'generator:\n  engine: "openai"\n').draft_thinking_level is None
 
 
+@pytest.mark.parametrize("prop, section, key", [
+    ("gemini_model_name", "generator:\n  gemini:\n", "model_name"),
+    ("gemini_temperature", "generator:\n  gemini:\n", "temperature"),
+    ("openai_model_name", "generator:\n  openai:\n", "model_name"),
+    ("openai_temperature", "generator:\n  openai:\n", "temperature"),
+    ("openai_service_tier", "generator:\n  openai:\n", "service_tier"),
+    ("enhancer_model_name", "enhancer:\n", "model_name"),
+    ("enhancer_temperature", "enhancer:\n", "temperature"),
+    ("native_audio_model_name", "experiments:\n  gemini_native_audio:\n", "model_name"),
+    ("native_audio_voice_name", "experiments:\n  gemini_native_audio:\n", "voice_name"),
+    ("native_audio_temperature", "experiments:\n  gemini_native_audio:\n", "temperature"),
+])
+def test_generation_settings_are_required_and_validated(prop, section, key):
+    indent = " " * (section.count("\n") * 2)
+    is_temperature = key == "temperature"
+    good, bad = ("0.4", '"0.4"') if is_temperature else ('"x"', '""')
+    assert getattr(_config(BASE + section + f"{indent}{key}: {good}\n"), prop) == (0.4 if is_temperature else "x")
+    with pytest.raises(ValueError, match=f"'{key}' under"):
+        getattr(_config(BASE + section + f"{indent}other: 1\n"), prop)
+    with pytest.raises(ValueError, match="must be a number" if is_temperature else "non-empty string"):
+        getattr(_config(BASE + section + f"{indent}{key}: {bad}\n"), prop)
+    if is_temperature:
+        with pytest.raises(ValueError, match="must be a number"):
+            getattr(_config(BASE + section + f"{indent}{key}: true\n"), prop)
+
+
 def test_polish_temperature():
     assert _config(BASE + 'generator:\n  polish_temperature: 0.1\n').polish_temperature == 0.1
     assert _config(BASE + 'generator:\n  polish_temperature: 0\n').polish_temperature == 0.0
@@ -258,6 +284,10 @@ def test_repo_config_prices_every_configured_gemini_model():
         cfg = PipelineConfig("config.yaml")
     assert cfg.draft_thinking_level == "high"
     assert cfg.polish_temperature == 0.1
+    assert (cfg.gemini_temperature, cfg.openai_temperature, cfg.openai_service_tier) == (0.3, 1.0, "auto")
+    assert (cfg.enhancer_model_name, cfg.enhancer_temperature) == ("gemini-3.1-flash-lite", 0.2)
+    assert (cfg.native_audio_model_name, cfg.native_audio_voice_name, cfg.native_audio_temperature) == \
+        ("gemini-2.5-flash-preview-tts", "Puck", 0.3)
     assert cfg.gemini_price(cfg.gemini_model_name)["output_per_million"] == 12.0
     assert cfg.gemini_price(cfg.pronunciation_model_name)
-    assert cfg.gemini_price("gemini-3.1-flash-lite")  # enhance_transcript.py default --model
+    assert cfg.gemini_price(cfg.enhancer_model_name)  # enhance_transcript.py default --model

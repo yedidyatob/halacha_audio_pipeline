@@ -183,8 +183,8 @@ pronunciation:
     - "שה"
     - word: "גזרה"
       readings:
-        - {nikkud: "גְּזֵרָה", meaning: "צו או תקנה"}
-        - {nikkud: "גִּזְרָה", meaning: 'חיתוך, צורה או סוג, כמו "גזרה שווה"'}
+        - {nikkud: "גְּזֵרָה", meaning: 'צו או תקנה, כמו "גזרה שווה"'}
+        - {nikkud: "גִּזְרָה", meaning: "חיתוך, צורה"}
   never_vocalize: ["דאורייתא", "דרבנן"]
 
 pronunciation_instruction: |
@@ -258,6 +258,19 @@ tts:
     model: "tts-1" # Options: tts-1, tts-1-hd
     speed: 1.0
     chunk_size: 4000  # max characters per request (OpenAI hard limit is 4096)
+
+# enhance_transcript.py (ElevenLabs audio-tag enhancement); --model / --temperature override these.
+enhancer:
+  model_name: "gemini-3.1-flash-lite"
+  temperature: 0.2  # high fidelity to the source text
+
+# Standalone experiments in scripts/ (test_gemini_audio.py, run_gemini_native_audio.py):
+# Gemini native audio generation, outside the pipeline.
+experiments:
+  gemini_native_audio:
+    model_name: "gemini-2.5-flash-preview-tts"
+    voice_name: "Puck"
+    temperature: 0.3
 
 # Directory settings for output files
 directories:

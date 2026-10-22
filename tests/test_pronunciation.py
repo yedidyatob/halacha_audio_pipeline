@@ -405,7 +405,7 @@ def test_real_config_yaml_has_pronunciation():
     assert "ניקוד" in instruction and "phoneme" not in instruction and "IPA" not in instruction
     assert "{always_vocalize}" not in instruction and "{never_vocalize}" not in instruction
     assert "תמיד לנקד (כשמופיעות קריאות בסוגריים, בחר לפי ההקשר): עובר בהמה, כותח" in instruction
-    assert ("גזרה (גְּזֵרָה = צו או תקנה; גִּזְרָה = חיתוך, צורה או סוג, כמו \"גזרה שווה\")"
+    assert ('גזרה (גְּזֵרָה = צו או תקנה, כמו "גזרה שווה"; גִּזְרָה = חיתוך, צורה)'
             in instruction)
     assert "כחל" not in instruction  # in the nikkud dictionary (apply_nikkud) instead
     assert ('למה (לְמָה = אל מה, לאיזו כוונה, כמו "למה התכוון"; לָמָּה = מדוע, כמו "למה צריך"), שה'

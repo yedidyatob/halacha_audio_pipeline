@@ -56,13 +56,13 @@ def test_polish_siman_script_success(tmp_path):
 
 @patch("pipeline.generator.OpenAI")
 def test_openai_generator_initialization(mock_openai_cls):
-    generator = OpenAIScriptGenerator(api_key="fake-openai-key", model_name="gpt-4o", temperature=0.7)
+    generator = OpenAIScriptGenerator(api_key="fake-openai-key", model_name="gpt-4o", temperature=0.7, service_tier=None, ssl_verify=True)
     mock_openai_cls.assert_called_once_with(api_key="fake-openai-key")
     assert generator.model_name == "gpt-4o"
     assert generator.temperature == 0.7
     assert generator.service_tier is None
 
-    generator_with_tier = OpenAIScriptGenerator(api_key="fake-openai-key", model_name="o1", service_tier="flex")
+    generator_with_tier = OpenAIScriptGenerator(api_key="fake-openai-key", model_name="o1", service_tier="flex", temperature=1.0, ssl_verify=True)
     assert generator_with_tier.service_tier == "flex"
 
 
@@ -76,7 +76,7 @@ def test_openai_generate_siman_script_gpt4o(mock_openai_cls):
     mock_response.choices[0].message.content = "שיעור שמע מאופנאיי"
     mock_client.chat.completions.create.return_value = mock_response
 
-    generator = OpenAIScriptGenerator(api_key="fake-key", model_name="gpt-4o", temperature=0.5)
+    generator = OpenAIScriptGenerator(api_key="fake-key", model_name="gpt-4o", temperature=0.5, service_tier=None, ssl_verify=True)
     script = generator.generate_siman_script(
         siman=94,
         master_context="קובץ מקורות כלשהו",
@@ -101,7 +101,7 @@ def test_openai_generate_siman_script_with_service_tier(mock_openai_cls):
     mock_response.choices[0].message.content = "שיעור שמע מאופנאיי עם שירות פלקס"
     mock_client.chat.completions.create.return_value = mock_response
 
-    generator = OpenAIScriptGenerator(api_key="fake-key", model_name="gpt-4o", temperature=0.5, service_tier="flex")
+    generator = OpenAIScriptGenerator(api_key="fake-key", model_name="gpt-4o", temperature=0.5, service_tier="flex", ssl_verify=True)
     script = generator.generate_siman_script(
         siman=94,
         master_context="קובץ מקורות כלשהו",
@@ -127,7 +127,7 @@ def test_openai_generate_siman_script_o1_reasoning(mock_openai_cls):
     mock_client.chat.completions.create.return_value = mock_response
 
     # Initialize with o1 reasoning model
-    generator = OpenAIScriptGenerator(api_key="fake-key", model_name="o1", temperature=1.0)
+    generator = OpenAIScriptGenerator(api_key="fake-key", model_name="o1", temperature=1.0, service_tier=None, ssl_verify=True)
     script = generator.generate_siman_script(
         siman=94,
         master_context="קובץ מקורות כלשהו",
@@ -154,7 +154,7 @@ def test_openai_polish_siman_script_success(mock_openai_cls):
     mock_response.choices[0].message.content = "שיעור שמע מלוטש מאופנאיי"
     mock_client.chat.completions.create.return_value = mock_response
 
-    generator = OpenAIScriptGenerator(api_key="fake-key", model_name="gpt-4o")
+    generator = OpenAIScriptGenerator(api_key="fake-key", model_name="gpt-4o", temperature=1.0, service_tier=None, ssl_verify=True)
     polished = generator.polish_siman_script("טקסט גולמי", "", "עורך לשוני מקצועי", temperature=0.15)
 
     assert polished == "שיעור שמע מלוטש מאופנאיי"
@@ -176,7 +176,7 @@ def test_openai_polish_siman_script_with_service_tier(mock_openai_cls):
     mock_response.choices[0].message.content = "שיעור שמע מלוטש מאופנאיי עם שירות פלקס"
     mock_client.chat.completions.create.return_value = mock_response
 
-    generator = OpenAIScriptGenerator(api_key="fake-key", model_name="gpt-4o", service_tier="flex")
+    generator = OpenAIScriptGenerator(api_key="fake-key", model_name="gpt-4o", service_tier="flex", temperature=1.0, ssl_verify=True)
     polished = generator.polish_siman_script("טקסט גולמי", "", "עורך לשוני מקצועי", temperature=0.15)
 
     assert polished == "שיעור שמע מלוטש מאופנאיי עם שירות פלקס"
@@ -200,7 +200,7 @@ def test_openai_create_batch_generation_job(mock_openai_cls, tmp_path):
     mock_batch_response.id = "batch-555"
     mock_client.batches.create.return_value = mock_batch_response
 
-    generator = OpenAIScriptGenerator(api_key="fake-key", model_name="o1")
+    generator = OpenAIScriptGenerator(api_key="fake-key", model_name="o1", temperature=1.0, service_tier=None, ssl_verify=True)
     batch_file = os.path.join(tmp_path, "openai_batch_siman_94_generation.jsonl")
     
     batch_id = generator.submit_batch(
@@ -244,7 +244,7 @@ def test_openai_get_batch_result_completed(mock_openai_cls):
     mock_content_response.text = '{"custom_id": "siman_94_generation", "response": {"status_code": 200, "body": {"choices": [{"message": {"content": "שיעור הלכה שלם ומפורט"}, "finish_reason": "stop"}]}}, "error": null}\n'
     mock_client.files.content.return_value = mock_content_response
 
-    generator = OpenAIScriptGenerator(api_key="fake-key", model_name="o1")
+    generator = OpenAIScriptGenerator(api_key="fake-key", model_name="o1", temperature=1.0, service_tier=None, ssl_verify=True)
     result = generator.get_batch_result("batch-555")
 
     assert result == "שיעור הלכה שלם ומפורט"
@@ -261,7 +261,7 @@ def test_openai_get_batch_status(mock_openai_cls):
     mock_batch.status = "in_progress"
     mock_client.batches.retrieve.return_value = mock_batch
 
-    generator = OpenAIScriptGenerator(api_key="fake-key", model_name="o1")
+    generator = OpenAIScriptGenerator(api_key="fake-key", model_name="o1", temperature=1.0, service_tier=None, ssl_verify=True)
     status = generator.get_batch_status("batch-555")
 
     assert status == "pending"
@@ -293,7 +293,7 @@ def test_openai_analyze_cross_relations_success(mock_openai_cls):
     mock_response.choices[0].message.content = "ניתוח יחסים מאופנאיי"
     mock_client.chat.completions.create.return_value = mock_response
 
-    generator = OpenAIScriptGenerator(api_key="fake-key", model_name="gpt-4o")
+    generator = OpenAIScriptGenerator(api_key="fake-key", model_name="gpt-4o", temperature=1.0, service_tier=None, ssl_verify=True)
     drafts = {94: "טיוטה 94", 95: "טיוטה 95"}
     relations = generator.analyze_cross_relations(drafts, "הנחיית יחסים")
 

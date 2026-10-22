@@ -81,8 +81,8 @@ def create_tts_engine(config: PipelineConfig) -> BaseTTS:
             credentials_path=config.google_tts_credentials,
             voice_name=g["voice_name"],
             language_code=g["language_code"],
-            speaking_rate=g.get("speaking_rate", 1.0),
-            pitch=g.get("pitch", 0.0),
+            speaking_rate=g["speaking_rate"],
+            pitch=g["pitch"],
             chunk_size=config.tts_chunk_size,
             **gaps
         )
@@ -92,7 +92,7 @@ def create_tts_engine(config: PipelineConfig) -> BaseTTS:
             api_key=config.openai_api_key,
             voice=o["voice"],
             model=o["model"],
-            speed=o.get("speed", 1.0),
+            speed=o["speed"],
             ssl_verify=config.ssl_verify,
             chunk_size=config.tts_chunk_size,
             **gaps

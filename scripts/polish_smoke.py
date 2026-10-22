@@ -29,7 +29,10 @@ def main():
         generator = GeminiScriptGenerator(
             api_key=config.gemini_api_key,
             model_name=config.gemini_model_name,
-            temperature=config.gemini_temperature
+            temperature=config.gemini_temperature,
+            ssl_verify=config.ssl_verify,
+            pricing=config.gemini_price(config.gemini_model_name),
+            thinking_dir=config.thinking_dir,
         )
 
         # Read draft

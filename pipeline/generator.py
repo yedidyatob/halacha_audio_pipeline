@@ -23,7 +23,7 @@ class BaseScriptGenerator(ABC):
     """
     Abstract Base Class for Halacha Script Generators.
     """
-    def __init__(self, api_key: str = None, model_name: str = "", temperature: float = 0.3):
+    def __init__(self, api_key: Optional[str], model_name: str, temperature: float):
         self.api_key = api_key
         self.model_name = model_name
         self.temperature = temperature
@@ -415,7 +415,8 @@ class OpenAIScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
     Generates custom, TTS-optimized Hebrew script files using OpenAI's API.
     Supports o1/o3 reasoning models automatically.
     """
-    def __init__(self, api_key: str = None, model_name: str = "o1", temperature: float = 1.0, service_tier: str = None, ssl_verify: bool = True):
+    def __init__(self, api_key: Optional[str], model_name: str, temperature: float, service_tier: Optional[str],
+                 ssl_verify: bool):
         super().__init__(api_key, model_name, temperature)
         self.service_tier = service_tier
         self.ssl_verify = ssl_verify
