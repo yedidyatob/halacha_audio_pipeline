@@ -186,6 +186,7 @@ python main.py 94 --context-range 87-111
 | `--limit-lessons N` | Process only first N simanim (debug mode) |
 | `--overwrite-cache` | Regenerate cached drafts, relations and Stage 3 polish |
 | `--relations-file PATH` | Use pre-existing relations map |
+| `--draft-file SIMAN=PATH` | Use an existing Stage 1 draft for a siman (any filename, e.g. from another model) instead of the cache or a new Stage 1 call; repeatable; not affected by `--overwrite-cache` |
 | `--dry-run` | Print the run plan and exit (no API / LLM / TTS / Sefaria calls) |
 
 ### Dry Run
