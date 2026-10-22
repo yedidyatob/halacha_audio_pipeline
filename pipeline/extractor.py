@@ -27,7 +27,7 @@ class SefariaExtractor:
     Fetches and cleans classical Jewish texts from the Sefaria API.
     Handles nested list structures and HTML sanitization.
     """
-    def __init__(self, section_name: str = "Yoreh De'ah", base_url: str = "https://www.sefaria.org/api", timeout: int = 15, retries: int = 3, ssl_verify: bool = True):
+    def __init__(self, *, section_name: str, base_url: str, timeout: float, retries: int, ssl_verify: bool):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.retries = retries

@@ -31,8 +31,7 @@ class BaseScriptGenerator(ABC):
     def _get_generation_user_prompt(
         self, 
         gematria_siman: str, 
-        master_context: str, 
-        commentators_desc: str = 'השפתי כהן (הש"ך) והטורי זהב (הט"ז) והמקורות שהם מביאים'
+        master_context: str,
     ) -> str:
         return (
             f"להלן קובץ המקורות עבור סימן {gematria_siman}:\n"
@@ -78,7 +77,6 @@ class BaseScriptGenerator(ABC):
         siman: int, 
         master_context: str, 
         system_instruction: str,
-        commentators_desc: str = 'השפתי כהן (הש"ך) והטורי זהב (הט"ז) והמקורות שהם מביאים',
         thinking_level: Optional[str] = None,
         thinking_name: Optional[str] = None,
     ) -> str:
@@ -103,15 +101,6 @@ class BaseScriptGenerator(ABC):
         Refines a draft script to ensure it is 100% optimized for TTS pronunciation.
         """
         pass
-
-    def generate_text(self, system_instruction: str, user_prompt: str, thinking_level: str = None,
-                      thinking_name: Optional[str] = None) -> str:
-        """
-        Generic single-shot completion (system instruction + user prompt) at this
-        generator's configured temperature. Used by auxiliary stages such as
-        the transcript enhancer. thinking_level is honoured by Gemini only (None = model default).
-        """
-        raise NotImplementedError(f"{type(self).__name__} does not implement generate_text().")
 
 
 class BatchCapableGenerator(ABC):
@@ -202,14 +191,13 @@ class GeminiScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
         siman: int, 
         master_context: str, 
         system_instruction: str,
-        commentators_desc: str = 'השפתי כהן (הש"ך) והטורי זהב (הט"ז) והמקורות שהם מביאים',
         thinking_level: Optional[str] = None,
         thinking_name: Optional[str] = None,
     ) -> str:
         gematria_siman = int_to_gematria(siman)
         logger.info(f"Generating script for Siman {siman} ({gematria_siman}) using Gemini model {self.model_name}"
                     + (f" (thinking_level {thinking_level})" if thinking_level else "") + "...")
-        user_prompt = self._get_generation_user_prompt(gematria_siman, master_context, commentators_desc)
+        user_prompt = self._get_generation_user_prompt(gematria_siman, master_context)
         try:
             script_text = self._generate(system_instruction, user_prompt, self.temperature, thinking_level,
                                          f"Gemini script generation for Siman {siman}", thinking_name)
@@ -245,15 +233,6 @@ class GeminiScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
             raise
         logger.info(f"Successfully polished script ({len(polished_text)} chars).")
         return polished_text
-
-    def generate_text(self, system_instruction: str, user_prompt: str, thinking_level: str = None,
-                      thinking_name: Optional[str] = None) -> str:
-        logger.info(
-            f"Running Gemini text call via model {self.model_name} (temperature {self.temperature}"
-            + (f", thinking_level {thinking_level}" if thinking_level else "") + ")..."
-        )
-        return self._generate(system_instruction, user_prompt, self.temperature, thinking_level,
-                              "Gemini text call", thinking_name)
 
     def submit_batch(
         self,
@@ -314,7 +293,7 @@ class GeminiScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
 
 
 def build_gemini_client(api_key: Optional[str], ssl_verify: bool) -> genai.Client:
-    """The Gemini client for every Gemini text call (generator, enhancer)."""
+    """The Gemini client for every Gemini text call."""
     kwargs = {}
     if api_key:
         kwargs["api_key"] = api_key
@@ -446,13 +425,12 @@ class OpenAIScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
         siman: int, 
         master_context: str, 
         system_instruction: str,
-        commentators_desc: str = 'השפתי כהן (הש"ך) והטורי זהב (הט"ז) והמקורות שהם מביאים',
         thinking_level: Optional[str] = None,
         thinking_name: Optional[str] = None,
     ) -> str:
         gematria_siman = int_to_gematria(siman)
         logger.info(f"Generating script for Siman {siman} ({gematria_siman}) using OpenAI model {self.model_name}...")
-        user_prompt = self._get_generation_user_prompt(gematria_siman, master_context, commentators_desc)
+        user_prompt = self._get_generation_user_prompt(gematria_siman, master_context)
 
         messages = []
         is_reasoning_model = self.model_name.startswith("o1") or self.model_name.startswith("o3")
@@ -561,26 +539,6 @@ class OpenAIScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
         except Exception as e:
             logger.error(f"Error during OpenAI script polish call: {e}")
             raise
-
-    def generate_text(self, system_instruction: str, user_prompt: str, thinking_level: str = None,
-                      thinking_name: Optional[str] = None) -> str:
-        # thinking_level is Gemini-only; ignored here.
-        logger.info(f"Running OpenAI text call via model {self.model_name}...")
-        is_reasoning_model = self.model_name.startswith("o1") or self.model_name.startswith("o3")
-        messages = [
-            {"role": "developer" if is_reasoning_model else "system", "content": system_instruction},
-            {"role": "user", "content": user_prompt},
-        ]
-        kwargs = {"model": self.model_name, "messages": messages}
-        if not is_reasoning_model:
-            kwargs["temperature"] = self.temperature
-        if self.service_tier:
-            kwargs["service_tier"] = self.service_tier
-        response = self.client.chat.completions.create(**kwargs)
-        text = response.choices[0].message.content
-        if not text:
-            raise ValueError("OpenAI API returned an empty text response.")
-        return text
 
     def submit_batch(
         self,

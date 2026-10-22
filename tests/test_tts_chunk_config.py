@@ -16,7 +16,7 @@ VOCALIZED_WORD = "טֵית"
 
 
 def _load(tts_yaml: str) -> PipelineConfig:
-    yaml_content = ('halachic_section: "Yoreh De\'ah"\ndirectories:\n  thinking_dir: "./output/thinking"\ngenerator:\n  engine: "gemini"\n'
+    yaml_content = ('halachic_section: "Yoreh De\'ah"\nsefaria:\n  base_url: "u"\n  timeout_seconds: 15\n  retries: 3\n  ssl_verify: true\ndirectories:\n  thinking_dir: "./output/thinking"\ngenerator:\n  engine: "gemini"\n'
                     'tts:\n  chunk_gap_paragraph_ms: 0\n  chunk_gap_sentence_ms: 0\n' + tts_yaml)
     with patch("builtins.open", mock_open(read_data=yaml_content)), \
          patch("os.path.exists", return_value=True), patch("os.makedirs"):
@@ -28,7 +28,8 @@ def _load(tts_yaml: str) -> PipelineConfig:
 @pytest.mark.parametrize("engine,size", [("elevenlabs", 8000), ("google", 2000), ("openai", 4000), ("gemini", 2000)])
 def test_config_reads_chunk_size_for_selected_engine(engine, size):
     extra = "    context_chars: 500\n" if engine == "elevenlabs" else ""
-    gem = '    model_name: "m"\n    voice_name: "Achird"\n' if engine == "gemini" else ""
+    gem = ('    model_name: "m"\n    voice_name: "Achird"\n    pitch: 0\n    speaking_rate: 1\n'
+           '    language_code: "he-il"\n') if engine == "gemini" else ""
     cfg = _load(f'  engine: "{engine}"\n  {engine}:\n    chunk_size: {size}\n' + extra + gem)
     assert cfg.tts_chunk_size == size
 
@@ -75,7 +76,7 @@ def test_engines_store_and_validate_chunk_size():
     assert OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy", chunk_size=4000, **GAPS)._chunk_size == 4000
     assert GoogleCloudTTS(credentials_path=None, voice_name="v", language_code="he-IL", speaking_rate=1.0, pitch=0.0, chunk_size=2000, **GAPS)._chunk_size == 2000
     with patch("google.auth.default", side_effect=Exception("no creds")):
-        assert GeminiTTS("m", "v", chunk_size=1234, **GAPS)._chunk_size == 1234
+        assert GeminiTTS("m", "v", pitch=0, speaking_rate=1, language_code="he-il", chunk_size=1234, **GAPS)._chunk_size == 1234
     el = ElevenLabsTTS(api_key="k", chunk_size=8000, context_chars=500, **GAPS)
     assert (el._chunk_size, el.context_chars) == (8000, 500)
     with pytest.raises(ValueError):
@@ -171,3 +172,48 @@ def test_previous_and_next_text_per_chunk(tmp_path):
         if i < len(calls) - 1:
             assert c["next_text"] == context_head(paras[i + 1], 20)
             assert paras[i + 1].startswith(c["next_text"]) and 0 < len(c["next_text"]) <= 20
+
+
+# --- Gemini TTS request fields (tts.gemini.pitch / speaking_rate / language_code) ----------
+
+GEMINI_TTS = ('  engine: "gemini"\n  gemini:\n    model_name: "m"\n    voice_name: "Achird"\n    chunk_size: 2000\n'
+              '    pitch: 0\n    speaking_rate: 1\n    language_code: "he-il"\n')
+
+
+def test_config_reads_gemini_tts_request_fields():
+    cfg = _load(GEMINI_TTS.replace("pitch: 0", "pitch: -2.5").replace("speaking_rate: 1", "speaking_rate: 0.9"))
+    assert (cfg.gemini_tts_pitch, cfg.gemini_tts_speaking_rate, cfg.gemini_tts_language_code) == (-2.5, 0.9, "he-il")
+
+
+@pytest.mark.parametrize("line", ["    pitch: 0\n", "    speaking_rate: 1\n", '    language_code: "he-il"\n'])
+def test_config_gemini_tts_request_fields_required(line):
+    key = line.split(":")[0].strip()
+    with pytest.raises(ValueError, match=f"'{key}' under 'tts.gemini'"):
+        _load(GEMINI_TTS.replace(line, ""))
+
+
+@pytest.mark.parametrize("old, new, message", [
+    ("pitch: 0", "pitch: 21", "'tts.gemini.pitch' must be a number between -20.0 and 20.0"),
+    ("pitch: 0", 'pitch: "0"', "'tts.gemini.pitch' must be a number"),
+    ("speaking_rate: 1", "speaking_rate: 0.1", "'tts.gemini.speaking_rate' must be a number between 0.25 and 2.0"),
+    ("speaking_rate: 1", "speaking_rate: true", "'tts.gemini.speaking_rate' must be a number"),
+    ('language_code: "he-il"', 'language_code: ""', "'tts.gemini.language_code' must be a non-empty string"),
+])
+def test_config_gemini_tts_request_fields_validated(old, new, message):
+    with pytest.raises(ValueError, match=message):
+        _load(GEMINI_TTS.replace(old, new))
+
+
+def test_gemini_tts_request_uses_configured_fields(tmp_path):
+    with patch("google.auth.default", side_effect=Exception("no creds")):
+        gem = GeminiTTS("m", "Achird", pitch=-1.5, speaking_rate=0.8, language_code="he-IL", chunk_size=2000, **GAPS)
+    gem.credentials = MagicMock(token="t")
+    response = MagicMock(status_code=200)
+    import base64
+    response.json.return_value = {"audioContent": base64.b64encode(b"\0\0" * 10).decode()}
+    with patch("requests.post", return_value=response) as post, \
+         patch("google.auth.transport.requests.Request"):
+        gem.synthesize("שלום", str(tmp_path / "a.mp3"))
+    payload = post.call_args.kwargs["json"]
+    assert payload["audioConfig"] == {"audioEncoding": "LINEAR16", "pitch": -1.5, "speakingRate": 0.8}
+    assert payload["voice"] == {"languageCode": "he-IL", "modelName": "m", "name": "Achird"}

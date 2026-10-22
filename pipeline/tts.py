@@ -674,6 +674,9 @@ class GeminiTTS(BaseTTS):
         voice_name: str,
         api_key: str = None,
         *,
+        pitch: float,
+        speaking_rate: float,
+        language_code: str,
         chunk_size: int,
         chunk_gap_paragraph_ms: int,
         chunk_gap_sentence_ms: int,
@@ -682,6 +685,9 @@ class GeminiTTS(BaseTTS):
         self._set_chunk_size(chunk_size)
         self.model_id = model_id
         self.voice_name = voice_name
+        self.pitch = pitch
+        self.speaking_rate = speaking_rate
+        self.language_code = language_code
 
         try:
             import google.auth
@@ -764,12 +770,12 @@ class GeminiTTS(BaseTTS):
                 payload = {
                     "audioConfig": {
                         "audioEncoding": "LINEAR16",
-                        "pitch": 0,
-                        "speakingRate": 1,
+                        "pitch": self.pitch,
+                        "speakingRate": self.speaking_rate,
                     },
                     "input": {"text": chunk},
                     "voice": {
-                        "languageCode": "he-il",
+                        "languageCode": self.language_code,
                         "modelName": self.model_id,
                         "name": self.voice_name,
                     },
