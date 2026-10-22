@@ -64,6 +64,9 @@ directories:
 system_instruction: "Including {{commentators_list_hebrew}} and {{prompt_commentators_desc}}"
 polishing_instruction: "Including {{commentators_list_short}} and {{tts_abbreviations}}"
 relations_instruction: "In {{hebrew_name}} with {{prompt_commentators_desc}}"
+pronunciation:
+  always_vocalize: []
+  never_vocalize: []
 generator:
   engine: "gemini"
 tts:

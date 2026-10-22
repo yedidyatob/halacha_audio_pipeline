@@ -109,7 +109,7 @@ class BaseScriptGenerator(ABC):
         """
         Generic single-shot completion (system instruction + user prompt) at this
         generator's configured temperature. Used by auxiliary stages such as
-        the pronunciation stage. thinking_level is honoured by Gemini only (None = model default).
+        the transcript enhancer. thinking_level is honoured by Gemini only (None = model default).
         """
         raise NotImplementedError(f"{type(self).__name__} does not implement generate_text().")
 
@@ -314,7 +314,7 @@ class GeminiScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
 
 
 def build_gemini_client(api_key: Optional[str], ssl_verify: bool) -> genai.Client:
-    """The Gemini client for every Gemini text call (generator, pronunciation, enhancer)."""
+    """The Gemini client for every Gemini text call (generator, enhancer)."""
     kwargs = {}
     if api_key:
         kwargs["api_key"] = api_key

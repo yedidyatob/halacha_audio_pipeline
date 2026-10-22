@@ -8,11 +8,17 @@ Nikkud / pronunciation fixes for TTS.
 - NO_PREFIX_NIKKUD_DICT: the letter names הא / הי / וו / פא / צדי. Replaced only as a whole
   word, never with a prefix, and only in a letter-name context (see LETTER-NAME CONTEXT below).
   A value may RESPELL the name, not only vocalize it: הא -> הֵי (ElevenLabs v4 reads הֵא wrongly).
-- LETTER_NAME_MISVOCALIZATIONS: known wrong vocalizations of those letter names (הֵא), repaired
-  to the name's entry under the same rules. The only already-vocalized words that are matched.
 - additional_nikkud_corrections: list of (plain, nikkuded) pairs; the same prefixes are allowed.
 
 All prefixed entries share ONE prefix set, DEFAULT_PREFIXES (generated from a single rule).
+
+The input may already be vocalized (the polish vocalizes the script). Matching IGNORES NIKKUD:
+every key, prefix and letter-name context word matches its letters with any nikkud on them
+(כחל, כְּחָל, כֹּחַל; ובכחל, וּבִכְחָל; הא, הֵא; רמב"ם, רַמְבַּ"ם). The dictionary always wins:
+a matched word gets the entry's value whatever nikkud it had. A prefix is kept exactly as
+written, including any nikkud on it (וּבִכְחָל -> וּבִכְּחָל), since the entry vocalizes only the
+word. Words not in the dictionary keep their nikkud. apply_nikkud_with_overrides also reports
+each matched word that had nikkud of its own and was changed (NikkudOverride).
 
 Matching is done with ONE compiled regex (see ``_build_matcher``) using word-boundary
 lookarounds, so replacements work at the start/end of the text or a line, next to
@@ -25,8 +31,9 @@ NBSP (``_BLANK``+), never a line break (\\n, \\r); the output is the dict value 
 from __future__ import annotations
 
 import re
+import unicodedata
 from functools import lru_cache
-from typing import Callable, Iterable
+from typing import Callable, Iterable, NamedTuple
 
 # ---------------------------------------------------------------------------
 # Hebrew prefixes (shared by every prefixable entry)
@@ -86,7 +93,7 @@ additional_nikkud_corrections: list[tuple[str, str]] = [
     ("שפתי כהן", "שִׂפְתֵי כהן"),
     ("נבילה", "נְבֵילָה"),
     ("בעין", "בָּעַיִן"),
-    ("בית יוסף", "בֵּית יוֹסֵף"),
+    ("בית יוסף", "בֵּית יוֹסֵף"),
     ("פרווה", "פַּרְוֶה"),
     ("קדירה", "קְדֵרָה"),
     ("קדרה", "קְדֵרָה"),
@@ -204,27 +211,6 @@ NO_PREFIX_NIKKUD_DICT = {
     'צדי': 'צָדִי',
 }
 
-# Known wrong vocalizations of a NO_PREFIX_NIKKUD_DICT letter name, e.g. a polish output that
-# wrote the letter ה as הֵא. Being vocalized, no other entry matches them; each one is repaired
-# to its letter name's entry (the name = the word without nikkud), as a standalone word in a
-# letter-name context only, like the entry itself. See _letter_name_repairs.
-LETTER_NAME_MISVOCALIZATIONS: tuple[str, ...] = ('הֵא',)
-
-
-def _letter_name_repairs() -> list[tuple[str, str]]:
-    """(wrong form, NO_PREFIX_NIKKUD_DICT value) for every LETTER_NAME_MISVOCALIZATIONS entry."""
-    repairs = []
-    for wrong in LETTER_NAME_MISVOCALIZATIONS:
-        name = _POINTS_RE.sub("", wrong)
-        if name == wrong or name not in NO_PREFIX_NIKKUD_DICT:
-            raise ValueError(f"LETTER_NAME_MISVOCALIZATIONS entry {wrong!r} is not a vocalized "
-                             f"NO_PREFIX_NIKKUD_DICT letter name")
-        if wrong == NO_PREFIX_NIKKUD_DICT[name]:
-            raise ValueError(f"LETTER_NAME_MISVOCALIZATIONS entry {wrong!r} is the correct form")
-        repairs.append((wrong, NO_PREFIX_NIKKUD_DICT[name]))
-    return repairs
-
-
 # ---------------------------------------------------------------------------
 # Regex matcher
 # ---------------------------------------------------------------------------
@@ -270,13 +256,21 @@ def _canon(key: str) -> str:
 
 
 def _norm(text: str) -> str:
-    """Canonical form used for dict lookups: canon quotes + each run of blanks -> one ASCII space."""
-    return _BLANK_RUN.sub(" ", _canon(text))
+    """
+    Canonical form used for dict lookups: nikkud removed, canon quotes, each run of blanks -> one
+    ASCII space. So a vocalized word looks up the same entry as its letters.
+    """
+    return _BLANK_RUN.sub(" ", _canon(_POINTS_RE.sub("", text)))
+
+
+# nikkud a letter of a key / prefix / context word may carry in the text
+_ANY_POINTS = f"[{_POINTS}]*"
 
 
 def _key_to_regex(key: str) -> str:
     """
-    Escapes ``key`` for a regex, letting " match ״ as well and ' match ׳.
+    Escapes ``key`` for a regex, letting " match ״ as well and ' match ׳, and letting every
+    letter carry any nikkud (the key's own nikkud is ignored).
 
     A space in the key matches a run of one or more blanks (space / tab / NBSP), never a
     line break, so "אבן העזר" also matches "אבן  העזר" and "אבן\u00A0העזר" but not "אבן\nהעזר".
@@ -289,6 +283,8 @@ def _key_to_regex(key: str) -> str:
             out.append("['\u05F3]")
         elif ch == " ":
             out.append(_BLANK + "+")
+        elif "\u05D0" <= ch <= "\u05EA":
+            out.append(ch + _ANY_POINTS)
         else:
             out.append(re.escape(ch))
     return "".join(out)
@@ -301,7 +297,7 @@ def _alternation(keys: Iterable[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# LETTER-NAME CONTEXT (NO_PREFIX_NIKKUD_DICT entries and LETTER_NAME_MISVOCALIZATIONS)
+# LETTER-NAME CONTEXT (NO_PREFIX_NIKKUD_DICT entries; all words below match with any nikkud)
 #
 # These are ordinary Hebrew/Aramaic words too (הא דתניא, הא קמ"ל, הי מינייהו, הֵא לך), so they
 # are replaced only when the text clearly means a letter name used as a number (סימן צדי הא, אות פא):
@@ -309,8 +305,7 @@ def _alternation(keys: Iterable[str]) -> str:
 #      carrying a prefix (בסימן, לסעיף, ובאות ...) - with only whitespace, quotes, a
 #      colon, a dash or a bracket between them (not . , ; ? ! - those end the phrase), or
 #   2. directly adjacent (separated only by blank space) to another letter-name word
-#      (LETTER_NAMES or a LETTER_NAME_MISVOCALIZATIONS form), before or after: "צדי הא",
-#      "פא זין", "הא ריש", "צדי הֵא".
+#      (LETTER_NAMES), before or after: "צדי הא", "פא זין", "הא ריש", "צָדִי הֵא".
 # A trailing geresh (הא' = "the first", an ordinal) is never a boundary for these entries,
 # unless the word is wrapped in quotes ('הא').
 # Anything else - "הא דתניא", a sentence-initial "הא" - is left unchanged.
@@ -332,13 +327,24 @@ _WORD_CLASS = f"[{_WORD_CHARS}]"
 _LOOKBACK = 48  # chars of the current line examined before a match (keeps matching O(n))
 
 
+def _prefix_alternation(prefixes: Iterable[str]) -> str:
+    """The non-empty prefixes, longest first, each letter allowing any nikkud."""
+    return "|".join(_key_to_regex(p) for p in sorted({p for p in prefixes if p}, key=lambda p: (-len(p), p)))
+
+
+class NikkudOverride(NamedTuple):
+    """A matched word that already had nikkud and got the dictionary's instead."""
+    model: str       # the word as it was in the text (prefix included)
+    dictionary: str  # the replacement (prefix kept as written + the entry's value)
+    start: int       # offset of the replacement in the output text
+
+
 @lru_cache(maxsize=None)
 def _letter_context_regexes(prefixes: tuple[str, ...]):
     """Compiled (context_before, name_before, name_after) regexes for the context rule."""
     ctx = "|".join(_key_to_regex(w) for w in sorted(LETTER_NAME_CONTEXT_WORDS, key=lambda w: (-len(w), w)))
-    names = "|".join(_key_to_regex(n) for n in sorted(LETTER_NAMES + LETTER_NAME_MISVOCALIZATIONS,
-                                                       key=lambda w: (-len(w), w)))
-    pre = "|".join(re.escape(p) for p in sorted({p for p in prefixes if p}, key=lambda p: (-len(p), p)))
+    names = "|".join(_key_to_regex(n) for n in sorted(LETTER_NAMES, key=lambda w: (-len(w), w)))
+    pre = _prefix_alternation(prefixes)
     context_before = re.compile(
         f"(?<![{_WORD_CHARS}])(?:{pre})?(?:{ctx}){_CONTEXT_GAP}$"
     )
@@ -369,9 +375,9 @@ def _build_matcher(
     prefixable: tuple[tuple[str, str], ...],
     standalone: tuple[tuple[str, str], ...],
     prefixes: tuple[str, ...],
-) -> Callable[[str], str]:
+) -> Callable[[str], tuple[str, list[NikkudOverride]]]:
     """
-    Compiles ONE combined regex (cached) and returns a ``text -> text`` function.
+    Compiles ONE combined regex (cached) and returns a ``text -> (text, overrides)`` function.
 
     At each position the regex first tries a bare key (any entry, longest first), and
     only then ``prefix + key`` (prefixable entries only, longest prefix first, with
@@ -385,18 +391,17 @@ def _build_matcher(
     for plain, nikkuded in prefixable:  # prefixable entries win on a clash
         replacements[_norm(plain)] = nikkuded
     if not replacements:
-        return lambda text: text
+        return lambda text: (text, [])
     prefix_keys = [_norm(p) for p, _ in prefixable]
     context_only = {_norm(p) for p, _ in standalone} - set(prefix_keys)
 
-    prefix_list = sorted({p for p in prefixes if p}, key=lambda p: (-len(p), p))
     alternatives = [f"(?P<bare>{_alternation(replacements)})"]
-    if prefix_keys and prefix_list:
-        pre = "|".join(re.escape(p) for p in prefix_list)
+    pre = _prefix_alternation(prefixes)
+    if prefix_keys and pre:
         alternatives.append(f"(?P<pre>{pre})(?P<key>{_alternation(prefix_keys)})")
     pattern = re.compile(_BEFORE + "(?:" + "|".join(alternatives) + ")" + _AFTER)
 
-    def _sub(match: re.Match) -> str:
+    def _replacement(match: re.Match) -> str:
         bare = match.group("bare")
         if bare is not None:
             key = _norm(bare)
@@ -407,29 +412,44 @@ def _build_matcher(
             return replacements[key]
         return match.group("pre") + replacements[_norm(match.group("key"))]
 
-    return lambda text: pattern.sub(_sub, text)
+    def apply(text: str) -> tuple[str, list[NikkudOverride]]:
+        overrides = []
+        shift = 0  # output length minus input length so far
+
+        def _sub(match: re.Match) -> str:
+            nonlocal shift
+            found, new = match.group(0), _replacement(match)
+            if _POINTS_RE.search(found) and unicodedata.normalize("NFC", new) != unicodedata.normalize("NFC", found):
+                overrides.append(NikkudOverride(found, new, match.start() + shift))
+            shift += len(new) - len(found)
+            return new
+
+        return pattern.sub(_sub, text), overrides
+
+    return apply
 
 
-def apply_nikkud_to_abbreviations(text: str) -> str:
+def apply_nikkud_with_overrides(text: str) -> tuple[str, list[NikkudOverride]]:
     """
-    Replaces Rabbinic acronyms / additional word corrections with their nikkud forms.
+    Replaces Rabbinic acronyms / additional word corrections with their nikkud forms, and
+    returns the text and the overrides (matched words whose own nikkud was replaced).
 
-    Each entry matches as a whole word (see the boundary rule above), optionally preceded
-    by one of DEFAULT_PREFIXES, which is preserved; UNQUOTED_ABBREVIATIONS also match
-    without their gershayim. Letter entries (NO_PREFIX_NIKKUD_DICT, and the known wrong
-    vocalizations in LETTER_NAME_MISVOCALIZATIONS) match only as standalone words and only in
-    a letter-name context. Already-nikkuded text (other than those wrong forms) is not matched,
-    and no output is a key, so the function is idempotent.
+    Each entry matches as a whole word (see the boundary rule above), with any nikkud,
+    optionally preceded by one of DEFAULT_PREFIXES, which is kept as written;
+    UNQUOTED_ABBREVIATIONS also match without their gershayim. Letter entries
+    (NO_PREFIX_NIKKUD_DICT) match only as standalone words and only in a letter-name context.
+    A matched word always gets the entry's value, so the function is idempotent.
     """
     prefixable = tuple(
         list(RABBINIC_NIKKUD_DICT.items()) + _unquoted_variants() + list(additional_nikkud_corrections)
     )
-    matcher = _build_matcher(
-        prefixable,
-        tuple(list(NO_PREFIX_NIKKUD_DICT.items()) + _letter_name_repairs()),
-        tuple(DEFAULT_PREFIXES),
-    )
+    matcher = _build_matcher(prefixable, tuple(NO_PREFIX_NIKKUD_DICT.items()), tuple(DEFAULT_PREFIXES))
     return matcher(text)
+
+
+def apply_nikkud_to_abbreviations(text: str) -> str:
+    """apply_nikkud_with_overrides without the overrides."""
+    return apply_nikkud_with_overrides(text)[0]
 
 
 if __name__ == "__main__":
