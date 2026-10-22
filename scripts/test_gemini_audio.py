@@ -11,7 +11,7 @@ def main():
         sys.exit(1)
         
     client = genai.Client(api_key=config.gemini_api_key)
-    model_name = "gemini-2.5-flash-preview-tts"
+    model_name = config.native_audio_model_name
     
     print(f"Requesting native audio generation from {model_name}...")
     
@@ -20,11 +20,11 @@ def main():
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                    voice_name="Puck"
+                    voice_name=config.native_audio_voice_name
                 )
             )
         ),
-        temperature=0.3
+        temperature=config.native_audio_temperature
     )
     
     prompt = (
