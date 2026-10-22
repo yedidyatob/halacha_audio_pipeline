@@ -419,6 +419,23 @@ class PipelineConfig:
         return ", ".join(words) if words else "אין"
 
     @property
+    def single_pass_user_prompt(self) -> str:
+        """
+        --single-pass: the Stage 3 user prompt for a siman's raw Sefaria sources (instead of a Stage 1 draft),
+        with {gematria_siman} and {sources} placeholders (fill with format_single_pass_user_prompt).
+        """
+        value = self.config_data.get("single_pass_user_prompt")
+        if not _non_empty_str(value):
+            raise ValueError("Missing required configuration parameter 'single_pass_user_prompt' in config.yaml.")
+        for placeholder in ("{gematria_siman}", "{sources}"):
+            if placeholder not in value:
+                raise ValueError(f"'single_pass_user_prompt' in config.yaml must contain {placeholder}.")
+        return value
+
+    def format_single_pass_user_prompt(self, gematria_siman: str, sources: str) -> str:
+        return self.single_pass_user_prompt.format(gematria_siman=gematria_siman, sources=sources)
+
+    @property
     def polishing_instruction(self) -> str:
         """
         The Stage 3 system instruction (polish + nikkud): polishing_instruction with the section's
