@@ -215,7 +215,7 @@ class FakeGenerator(BatchCapableGenerator):
         self.sync_thinking.append(("relations", None, thinking_name))
         return self._sync("relations", tuple(drafts))
 
-    def polish_siman_script(self, script_text, relations_text, polishing_instruction, thinking_name):
+    def polish_siman_script(self, script_text, relations_text, polishing_instruction, temperature, thinking_name):
         self.sync_thinking.append(("polish", None, thinking_name))
         return self._sync("polish", script_text)
 

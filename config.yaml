@@ -21,6 +21,9 @@ generator:
   # Gemini thinking level for the Stage 1 draft calls, sync and batch (low, medium or high).
   # Ignored for openai.
   draft_thinking_level: "high"
+  # Temperature for the Stage 3 polish calls, sync and batch (low: high fidelity to the draft).
+  # Ignored for openai reasoning models (o1/o3).
+  polish_temperature: 0.1
 
   gemini:
     model_name: "gemini-3.1-pro-preview"
@@ -166,7 +169,7 @@ pronunciation:
   # Filled into {always_vocalize} / {never_vocalize} in pronunciation_instruction (joined with ", ";
   # an empty list renders as "אין").
   # An always_vocalize entry is a word, or a word with its readings (one or more), rendered as
-  # 'כחל (כְּחָל = עטין של בהמה; כֹּחַל = צבע איפור)'. Each reading needs a nikkud and a meaning; the
+  # 'למה (לְמָה = אל מה; לָמָּה = מדוע)'. Each reading needs a nikkud and a meaning; the
   # nikkud must be the word's letters (ו / י may be added or removed, except as the first letter),
   # checked at startup.
   always_vocalize:
@@ -178,10 +181,10 @@ pronunciation:
         - {nikkud: "לְמָה", meaning: 'אל מה, לאיזו כוונה, כמו "למה התכוון"'}
         - {nikkud: "לָמָּה", meaning: 'מדוע, כמו "למה צריך"'}
     - "שה"
-    - word: "כחל"
+    - word: "גזרה"
       readings:
-        - {nikkud: "כְּחָל", meaning: "עטין של בהמה"}
-        - {nikkud: "כֹּחַל", meaning: "צבע איפור"}
+        - {nikkud: "גְּזֵרָה", meaning: "צו או תקנה"}
+        - {nikkud: "גִּזְרָה", meaning: 'חיתוך, צורה או סוג, כמו "גזרה שווה"'}
   never_vocalize: ["דאורייתא", "דרבנן"]
 
 pronunciation_instruction: |

@@ -405,7 +405,9 @@ def test_real_config_yaml_has_pronunciation():
     assert "ניקוד" in instruction and "phoneme" not in instruction and "IPA" not in instruction
     assert "{always_vocalize}" not in instruction and "{never_vocalize}" not in instruction
     assert "תמיד לנקד (כשמופיעות קריאות בסוגריים, בחר לפי ההקשר): עובר בהמה, כותח" in instruction
-    assert "כחל (כְּחָל = עטין של בהמה; כֹּחַל = צבע איפור)" in instruction
+    assert ("גזרה (גְּזֵרָה = צו או תקנה; גִּזְרָה = חיתוך, צורה או סוג, כמו \"גזרה שווה\")"
+            in instruction)
+    assert "כחל" not in instruction  # in the nikkud dictionary (apply_nikkud) instead
     assert ('למה (לְמָה = אל מה, לאיזו כוונה, כמו "למה התכוון"; לָמָּה = מדוע, כמו "למה צריך"), שה'
             in instruction)  # readings keep the entry's position
     assert "לעולם לא לנקד: דאורייתא, דרבנן" in instruction
@@ -626,7 +628,7 @@ def test_gemini_batch_request_carries_thinking_level():
 def test_gemini_other_calls_unaffected_by_thinking_level():
     gen, client = _gemini_gen()
     with patch("pipeline.generator.log_gemini_usage"):
-        gen.polish_siman_script("draft", "rel", "instr")
+        gen.polish_siman_script("draft", "rel", "instr", temperature=0.1)
     assert client.models.generate_content_stream.call_count == 1
     for call in client.models.generate_content_stream.call_args_list:
         assert call.kwargs["config"].thinking_config.thinking_level is None
@@ -695,7 +697,7 @@ def _run_main_sync(tmp_path, monkeypatch, polish):
 
 
 def test_main_continues_after_siman_failure_and_exits_nonzero(tmp_path, monkeypatch, caplog):
-    def polish(draft, rel, instr, thinking_name):
+    def polish(draft, rel, instr, temperature, thinking_name):
         if draft == "draft 94":
             raise RuntimeError("LLM down")
         return "polished"
@@ -709,7 +711,7 @@ def test_main_continues_after_siman_failure_and_exits_nonzero(tmp_path, monkeypa
 
 
 def test_main_all_succeed_exits_zero(tmp_path, monkeypatch, caplog):
-    _run_main_sync(tmp_path, monkeypatch, lambda d, r, i, thinking_name: "polished")
+    _run_main_sync(tmp_path, monkeypatch, lambda d, r, i, temperature, thinking_name: "polished")
     assert "Succeeded (2/2): 94, 95" in caplog.text
 
 

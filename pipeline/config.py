@@ -260,6 +260,16 @@ class PipelineConfig:
         return _max_retries(value, "generator.max_retries")
 
     @property
+    def polish_temperature(self) -> float:
+        """Temperature for the Stage 3 polish calls, sync and batch. Required: no code default."""
+        value = (self.config_data.get("generator") or {}).get("polish_temperature")
+        if value is None:
+            raise ValueError("Missing required configuration parameter 'polish_temperature' under 'generator' in config.yaml.")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"'generator.polish_temperature' must be a number, got {value!r}.")
+        return float(value)
+
+    @property
     def draft_thinking_level(self) -> str:
         """Gemini thinking level for the Stage 1 draft calls (sync and batch). Required for engine gemini."""
         if self.generator_engine != "gemini":

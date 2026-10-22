@@ -403,14 +403,14 @@ def polish_simanim(drafts: dict, relations_text: str, generator, config, args, s
         summary, drafts, STAGE_POLISH,
         call=lambda siman, draft: generator.polish_siman_script(
             draft, relations_text, config.polishing_instruction,
-            thinking_name=polish_base_name(config, siman, model_suffix)),
+            temperature=config.polish_temperature, thinking_name=polish_base_name(config, siman, model_suffix)),
         max_retries=config.generator_max_retries, args=args,
         batch=BatchCalls(
             generator,
             submit=lambda siman, draft: generator.submit_batch(
                 system_instruction=config.polishing_instruction,
                 user_prompt=generator._get_polishing_user_prompt(draft, relations_text),
-                temperature=0.1,
+                temperature=config.polish_temperature,
                 custom_id=f"stage3_siman_{siman}",
                 cache_dir=config.cache_dir
             ),

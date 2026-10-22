@@ -196,6 +196,19 @@ def test_specific_prefix_examples():
     assert apply("מהשפתי כהן") == "מה" + SHAFTEI
 
 
+def test_placenta_spelling_variants_share_one_vocalization():
+    assert apply("שליה") == apply("שלייה") == "שִׁלְיָה"
+    assert apply("בשלייה") == "בשִׁלְיָה"
+
+
+def test_udder_gets_its_dictionary_nikkud_with_prefixes():
+    assert apply("כחל") == "כְּחָל"
+    # the prefix is kept as written: ב + כְּחָל (read bi-khchal; the dagesh is the bare word's)
+    assert apply("בכחל של בהמה") == "בכְּחָל של בהמה"
+    assert apply("והכחל") == "והכְּחָל"
+    assert apply("כחלים") == "כחלים"  # never inside a longer word
+
+
 @pytest.mark.parametrize("text", [
     "הבשפתי כהן",   # not a valid prefix combination
     "שפתי כהנים",   # longer word

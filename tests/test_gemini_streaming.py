@@ -20,7 +20,7 @@ def _thinking_files(directory):
 @pytest.mark.parametrize("call", [
     lambda g: g.generate_siman_script(94, "ctx", "sys", thinking_name="N"),
     lambda g: g.analyze_cross_relations({94: "d"}, "sys", thinking_name="N"),
-    lambda g: g.polish_siman_script("d", "rel", "sys", thinking_name="N"),
+    lambda g: g.polish_siman_script("d", "rel", "sys", temperature=0.1, thinking_name="N"),
     lambda g: g.generate_text("sys", "user", thinking_name="N"),
 ])
 def test_every_sync_call_streams_and_returns_only_answer_text(tmp_path, call):
@@ -88,7 +88,7 @@ def test_early_finish_discards_partial_text_but_keeps_thinking_file(tmp_path):
         chunk(("text", "partial"), finish_reason=types.FinishReason.MAX_TOKENS, usage=usage()),
     ]
     with pytest.raises(ValueError, match=r"finish_reason MAX_TOKENS.*7 chars of partial text discarded"):
-        gen.polish_siman_script("d", "", "sys", thinking_name="P")
+        gen.polish_siman_script("d", "", "sys", temperature=0.1, thinking_name="P")
     assert (tmp_path / "P_thinking.txt").read_text(encoding="utf-8") == "long thinking"
 
 
@@ -204,6 +204,16 @@ def test_draft_thinking_level():
     assert _config(BASE + 'generator:\n  engine: "openai"\n').draft_thinking_level is None
 
 
+def test_polish_temperature():
+    assert _config(BASE + 'generator:\n  polish_temperature: 0.1\n').polish_temperature == 0.1
+    assert _config(BASE + 'generator:\n  polish_temperature: 0\n').polish_temperature == 0.0
+    with pytest.raises(ValueError, match="'polish_temperature' under 'generator'"):
+        _config(BASE + 'generator:\n  engine: "gemini"\n').polish_temperature
+    for bad in ('"0.1"', 'true'):
+        with pytest.raises(ValueError, match="'generator.polish_temperature' must be a number"):
+            _config(BASE + f'generator:\n  polish_temperature: {bad}\n').polish_temperature
+
+
 PRICING = """gemini_pricing:
   pro:
     input_per_million: 2
@@ -247,6 +257,7 @@ def test_repo_config_prices_every_configured_gemini_model():
     with patch("os.makedirs"):
         cfg = PipelineConfig("config.yaml")
     assert cfg.draft_thinking_level == "high"
+    assert cfg.polish_temperature == 0.1
     assert cfg.gemini_price(cfg.gemini_model_name)["output_per_million"] == 12.0
     assert cfg.gemini_price(cfg.pronunciation_model_name)
     assert cfg.gemini_price("gemini-3.1-flash-lite")  # enhance_transcript.py default --model

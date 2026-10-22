@@ -97,6 +97,7 @@ class BaseScriptGenerator(ABC):
 
     @abstractmethod
     def polish_siman_script(self, script_text: str, relations_text: str, polishing_instruction: str,
+                            temperature: float,
                             thinking_name: Optional[str] = None) -> str:
         """
         Refines a draft script to ensure it is 100% optimized for TTS pronunciation.
@@ -232,11 +233,12 @@ class GeminiScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
         return relations_text
 
     def polish_siman_script(self, script_text: str, relations_text: str, polishing_instruction: str,
+                            temperature: float,
                             thinking_name: Optional[str] = None) -> str:
         logger.info("Polishing generated script for TTS compliance via Gemini...")
         user_prompt = self._get_polishing_user_prompt(script_text, relations_text)
         try:
-            polished_text = self._generate(polishing_instruction, user_prompt, 0.1, None,
+            polished_text = self._generate(polishing_instruction, user_prompt, temperature, None,
                                            "Gemini polish call", thinking_name)
         except Exception as e:
             logger.error(f"Error during Gemini script polish call: {e}")
@@ -521,6 +523,7 @@ class OpenAIScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
             raise
 
     def polish_siman_script(self, script_text: str, relations_text: str, polishing_instruction: str,
+                            temperature: float,
                             thinking_name: Optional[str] = None) -> str:
         logger.info("Polishing generated script for TTS compliance via OpenAI...")
         
@@ -542,7 +545,7 @@ class OpenAIScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
                 "messages": messages,
             }
             if not is_reasoning_model:
-                kwargs["temperature"] = 0.1
+                kwargs["temperature"] = temperature
             if self.service_tier:
                 kwargs["service_tier"] = self.service_tier
 

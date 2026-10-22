@@ -100,7 +100,7 @@ attempt is logged as a warning with its reason.
 `{always_vocalize}` / `{never_vocalize}` placeholders of the instruction (joined with ", "; an empty
 list renders as "אין"). An `always_vocalize` entry may also give the word's readings, one or more
 (`word` + `readings: [{nikkud, meaning}, ...]`), rendered as
-`כחל (כְּחָל = עטין של בהמה; כֹּחַל = צבע איפור)`; at startup each reading must have a meaning, and its
+`למה (לְמָה = אל מה; לָמָּה = מדוע)`; at startup each reading must have a meaning, and its
 nikkud must be the word's letters (ו / י may be added or removed except as the first letter, as in
 the validation below).
 
