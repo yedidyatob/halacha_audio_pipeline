@@ -4,7 +4,7 @@ from pipeline.extractor import SefariaExtractor
 
 @pytest.fixture
 def extractor():
-    return SefariaExtractor(base_url="https://fake-sefaria.org", timeout=5, retries=2)
+    return SefariaExtractor(section_name="Yoreh De'ah", base_url="https://fake-sefaria.org", timeout=5, retries=2, ssl_verify=True)
 
 def test_clean_html_text(extractor):
     raw_html = "<b>שלום</b> <i data-commentator=\"test\">עולם</i> &quot;ציטוט&quot;"
@@ -118,7 +118,7 @@ def test_compile_simanim_context_with_target_simanim(mock_get, extractor):
 @patch("requests.get")
 def test_fetch_text_ssl_disabled(mock_get):
     # Test that SefariaExtractor passes verify=False when ssl_verify=False
-    extractor_no_ssl = SefariaExtractor(base_url="https://fake-sefaria.org", timeout=5, retries=1, ssl_verify=False)
+    extractor_no_ssl = SefariaExtractor(section_name="Yoreh De'ah", base_url="https://fake-sefaria.org", timeout=5, retries=1, ssl_verify=False)
     
     mock_response = MagicMock()
     mock_response.status_code = 200
@@ -133,14 +133,14 @@ def test_fetch_text_ssl_disabled(mock_get):
 
 
 def test_extractor_section_name():
-    extractor_oc = SefariaExtractor(section_name="Orach Chayim", base_url="https://fake-sefaria.org", timeout=5, retries=1)
+    extractor_oc = SefariaExtractor(section_name="Orach Chayim", base_url="https://fake-sefaria.org", timeout=5, retries=1, ssl_verify=True)
     assert extractor_oc.works["Tur"] == "Tur, Orach Chayim"
     assert extractor_oc.works["Magen Avraham"] == "Magen Avraham"
     assert extractor_oc.works["Taz"] == "Turei Zahav on Shulchan Arukh, Orach Chayim"
     assert extractor_oc.works["Mishna Berura"] == "Mishnah Berurah"
     
     with pytest.raises(ValueError):
-        SefariaExtractor(section_name="Invalid Section")
+        SefariaExtractor(section_name="Invalid Section", base_url="https://fake-sefaria.org", timeout=5, retries=1, ssl_verify=True)
 
 
 

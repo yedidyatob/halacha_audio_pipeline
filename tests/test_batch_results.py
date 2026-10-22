@@ -122,9 +122,15 @@ def test_call_with_retries_raises_last_reason():
 
 BASE_YAML = """
 halachic_section: "Yoreh De'ah"
+sefaria:
+  base_url: "https://www.sefaria.org/api"
+  timeout_seconds: 15
+  retries: 3
+  ssl_verify: true
 directories:
   thinking_dir: "./output/thinking"
 tts:
+  engine: "elevenlabs"
   chunk_gap_paragraph_ms: 0
   chunk_gap_sentence_ms: 0
   elevenlabs:
@@ -206,7 +212,7 @@ class FakeGenerator(BatchCapableGenerator):
         self.sync_calls.append((kind, key))
         return self._answer(self.sync(kind, key))
 
-    def generate_siman_script(self, siman, master_context, system_instruction, commentators_desc,
+    def generate_siman_script(self, siman, master_context, system_instruction,
                               thinking_level, thinking_name):
         self.sync_thinking.append((siman, thinking_level, thinking_name))
         return self._sync("draft", siman)
@@ -219,7 +225,7 @@ class FakeGenerator(BatchCapableGenerator):
         self.sync_thinking.append(("polish", None, thinking_name))
         return self._sync("polish", script_text)
 
-    def _get_generation_user_prompt(self, gematria_siman, master_context, commentators_desc):
+    def _get_generation_user_prompt(self, gematria_siman, master_context):
         return master_context
 
     def _get_relations_user_prompt(self, drafts):

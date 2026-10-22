@@ -62,7 +62,9 @@ tts:
   gemini:
     model_name: "gemini-3.1-flash-tts-preview"
     voice_name: "Achird"
-    temperature: 0.3
+    pitch: 0
+    speaking_rate: 1
+    language_code: "he-il"
 ```
 
 ## Environment Variables

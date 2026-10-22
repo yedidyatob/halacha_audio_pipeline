@@ -336,12 +336,11 @@ def generate_drafts(simanim: list, extractor, generator, config, args, model_suf
         summary, {siman: siman for siman in simanim}, STAGE_DRAFTS,
         lambda siman, _: extractor.compile_simanim_context([siman], target_simanim=[siman])
     )
-    commentators = config.section_metadata["prompt_commentators_desc"]
     drafts = run_llm_stage(
         summary, contexts, STAGE_DRAFTS,
         call=lambda siman, context: generator.generate_siman_script(
             siman=siman, master_context=context,
-            system_instruction=config.gemini_system_instruction, commentators_desc=commentators,
+            system_instruction=config.gemini_system_instruction,
             thinking_level=config.draft_thinking_level,
             thinking_name=draft_base_name(config, siman, model_suffix),
         ),
@@ -350,7 +349,7 @@ def generate_drafts(simanim: list, extractor, generator, config, args, model_suf
             generator,
             submit=lambda siman, context: generator.submit_batch(
                 system_instruction=config.gemini_system_instruction,
-                user_prompt=generator._get_generation_user_prompt(int_to_gematria(siman), context, commentators),
+                user_prompt=generator._get_generation_user_prompt(int_to_gematria(siman), context),
                 temperature=generator.temperature,
                 custom_id=f"stage1_siman_{siman}",
                 cache_dir=config.cache_dir,
@@ -440,7 +439,8 @@ class RunPlan:
     relations_path: str           # file it is loaded from, or where the generated map is saved
     relations_text: str           # "" when it will be generated
     draft_paths: dict             # {siman: cache path} for every draft needed
-    drafts: dict                  # {siman: text} loaded from cache
+    drafts: dict                  # {siman: text} loaded from cache or --draft-file
+    draft_files: list             # simanim whose draft comes from --draft-file
     missing_drafts: list          # simanim whose Stage 1 draft will be generated
     polish_paths: dict            # {siman: Stage 3 polish path} for every target siman
     polished: dict                # {siman: text} Stage 3 polish loaded from cache
@@ -505,8 +505,26 @@ def resolve_run_plan(args, config, simanim_list: list, context_list: list, model
         drafts_needed = context_list
         logger.info(f"Relations map needs to be generated. Resolving drafts for entire context range: {drafts_needed}")
 
-    draft_paths, drafts, missing = {}, {}, []
+    unused = sorted(set(args.draft_file) - set(drafts_needed))
+    if unused:
+        raise PlanError(f"--draft-file given for Simanim {unused}, which this run does not need drafts for "
+                        f"(drafts needed: {drafts_needed}).")
+
+    draft_paths, drafts, missing, draft_files = {}, {}, [], []
     for siman in drafts_needed:
+        if siman in args.draft_file:
+            draft_path = args.draft_file[siman]
+            if not os.path.exists(draft_path):
+                raise PlanError(f"Draft file for Siman {siman} not found at: {draft_path}")
+            try:
+                drafts[siman] = _read_text(draft_path)
+            except Exception as e:
+                raise PlanError(f"Failed to read draft file for Siman {siman}: {e}") from e
+            draft_paths[siman] = draft_path
+            draft_files.append(siman)
+            logger.info(f"Loaded Stage 1 draft for Siman {siman} from --draft-file {draft_path} "
+                        f"({len(drafts[siman])} chars).")
+            continue
         draft_path = os.path.join(config.drafts_dir, draft_base_name(config, siman, model_suffix) + ".txt")
         draft_paths[siman] = draft_path
         if os.path.exists(draft_path) and not args.overwrite_cache:
@@ -537,7 +555,7 @@ def resolve_run_plan(args, config, simanim_list: list, context_list: list, model
     return RunPlan(context_simanim=context_list, target_simanim=target_simanim,
                    relations_source=relations_source, relations_path=relations_path,
                    relations_text=relations_text, draft_paths=draft_paths, drafts=drafts,
-                   missing_drafts=missing, polish_paths=polish_paths, polished=polished)
+                   draft_files=draft_files, missing_drafts=missing, polish_paths=polish_paths, polished=polished)
 
 
 def format_run_plan(plan: RunPlan, args, config, generator, model_suffix: str) -> str:
@@ -561,8 +579,11 @@ def format_run_plan(plan: RunPlan, args, config, generator, model_suffix: str) -
     else:
         lines.append(f"Stage 2 relations map: will be GENERATED ({'a batch job' if args.batch else 'a synchronous call'}) "
                      f"from the drafts of {plan.drafts_needed} and saved to {plan.relations_path}")
-    cached = [s for s in plan.drafts_needed if s in plan.drafts]
+    cached = [s for s in plan.drafts_needed if s in plan.drafts and s not in plan.draft_files]
     lines.append(f"Stage 1 drafts needed: {plan.drafts_needed}")
+    if plan.draft_files:
+        lines.append(f"  from --draft-file ({len(plan.draft_files)}): {plan.draft_files}")
+        lines += [f"    Siman {s}: {plan.draft_paths[s]}" for s in plan.draft_files]
     lines.append(f"  from cache ({len(cached)}): {cached or 'none'}")
     lines += [f"    Siman {s}: {plan.draft_paths[s]}" for s in cached]
     lines.append(f"  to be GENERATED ({len(plan.missing_drafts)}, as {calls}, after a Sefaria fetch each): "
@@ -678,6 +699,20 @@ def run_lesson_stages(target_simanim: list, drafts: dict, cached_polish: dict, r
     return summary
 
 
+def parse_draft_file_arg(value: str) -> tuple:
+    """'SIMAN=PATH' -> (siman, path); SIMAN is a number or Hebrew gematria, as in --simanim."""
+    siman_text, sep, path = value.partition("=")
+    if not sep or not siman_text.strip() or not path.strip():
+        raise argparse.ArgumentTypeError(f"expected SIMAN=PATH, got '{value}'")
+    try:
+        simanim = parse_simanim_string(siman_text.strip())
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from e
+    if len(simanim) != 1:
+        raise argparse.ArgumentTypeError(f"expected a single siman, got '{siman_text}'")
+    return simanim[0], path.strip()
+
+
 def parse_arguments():
     parser = argparse.ArgumentParser(
         description="Halacha Audio Lesson Generation Pipeline - End to End."
@@ -740,6 +775,15 @@ def parse_arguments():
         help="Path to a pre-existing cross-relations map file. If specified, Stage 2 relations analysis is skipped."
     )
     parser.add_argument(
+        "--draft-file",
+        type=parse_draft_file_arg,
+        action="append",
+        default=[],
+        metavar="SIMAN=PATH",
+        help="Use an existing Stage 1 draft file for a siman instead of the cache or a new Stage 1 call "
+             "(e.g. a draft made with another model). Repeat for several simanim. Never overwritten."
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print the run plan (relations map, drafts and Stage 3 polish loaded from cache vs generated, simanim "
@@ -750,7 +794,14 @@ def parse_arguments():
         action="store_true",
         help="Only run Stage 1 (Data Extraction) and exit."
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    draft_files = {}
+    for siman, path in args.draft_file:
+        if siman in draft_files:
+            parser.error(f"--draft-file given twice for Siman {siman}")
+        draft_files[siman] = path
+    args.draft_file = draft_files
+    return args
 
 def main():
     args = parse_arguments()

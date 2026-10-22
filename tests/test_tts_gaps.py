@@ -153,7 +153,7 @@ def test_engine_explicit_gaps():
     g = GoogleCloudTTS(credentials_path=None, voice_name="v", language_code="he-IL", speaking_rate=1.0, pitch=0.0, chunk_size=2000, chunk_gap_paragraph_ms=10, chunk_gap_sentence_ms=20)
     assert (g.chunk_gap_paragraph_ms, g.chunk_gap_sentence_ms) == (10, 20)
     with patch("google.auth.default", side_effect=Exception("no creds")):
-        gem = GeminiTTS("m", "v", chunk_size=2000, chunk_gap_paragraph_ms=11, chunk_gap_sentence_ms=22)
+        gem = GeminiTTS("m", "v", pitch=0, speaking_rate=1, language_code="he-il", chunk_size=2000, chunk_gap_paragraph_ms=11, chunk_gap_sentence_ms=22)
     assert (gem.chunk_gap_paragraph_ms, gem.chunk_gap_sentence_ms) == (11, 22)
     with pytest.raises(ValueError):
         OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy", chunk_size=4000, chunk_gap_paragraph_ms=-5, chunk_gap_sentence_ms=0)
@@ -190,17 +190,17 @@ def test_config_chunk_gap_missing_raises_clear_error(missing):
     del keys[missing]
     lines = "".join(f"  {k}: {v}\n" for k, v in keys.items())
     with pytest.raises(ValueError, match=missing):
-        _load_config('halachic_section: "Yoreh De\'ah"\ndirectories:\n  thinking_dir: "./output/thinking"\ntts:\n  engine: "openai"\n' + lines)
+        _load_config('halachic_section: "Yoreh De\'ah"\nsefaria:\n  base_url: "u"\n  timeout_seconds: 15\n  retries: 3\n  ssl_verify: true\ngenerator:\n  engine: "gemini"\ndirectories:\n  thinking_dir: "./output/thinking"\ntts:\n  engine: "openai"\n' + lines)
 
 
-def test_config_chunk_gap_missing_tts_section_raises():
-    with pytest.raises(ValueError, match="chunk_gap_paragraph_ms"):
-        _load_config('halachic_section: "Yoreh De\'ah"\ndirectories:\n  thinking_dir: "./output/thinking"\n')
+def test_config_missing_tts_section_raises():
+    with pytest.raises(ValueError, match="'engine' under 'tts'"):
+        _load_config('halachic_section: "Yoreh De\'ah"\nsefaria:\n  base_url: "u"\n  timeout_seconds: 15\n  retries: 3\n  ssl_verify: true\ngenerator:\n  engine: "gemini"\ndirectories:\n  thinking_dir: "./output/thinking"\n')
 
 
 def test_config_chunk_gap_explicit_values():
     config = _load_config(
-        'halachic_section: "Yoreh De\'ah"\ndirectories:\n  thinking_dir: "./output/thinking"\n'
+        'halachic_section: "Yoreh De\'ah"\nsefaria:\n  base_url: "u"\n  timeout_seconds: 15\n  retries: 3\n  ssl_verify: true\ngenerator:\n  engine: "gemini"\ndirectories:\n  thinking_dir: "./output/thinking"\n'
         'tts:\n  engine: "openai"\n  chunk_gap_paragraph_ms: 1000\n  chunk_gap_sentence_ms: 0\n'
         '  openai:\n    chunk_size: 4000\n'
     )
@@ -211,7 +211,7 @@ def test_config_chunk_gap_explicit_values():
 def test_config_chunk_gap_invalid_raises():
     with pytest.raises(ValueError):
         _load_config(
-            'halachic_section: "Yoreh De\'ah"\ndirectories:\n  thinking_dir: "./output/thinking"\ntts:\n  chunk_gap_paragraph_ms: -10\n  chunk_gap_sentence_ms: 0\n'
+            'halachic_section: "Yoreh De\'ah"\nsefaria:\n  base_url: "u"\n  timeout_seconds: 15\n  retries: 3\n  ssl_verify: true\ngenerator:\n  engine: "gemini"\ndirectories:\n  thinking_dir: "./output/thinking"\ntts:\n  chunk_gap_paragraph_ms: -10\n  chunk_gap_sentence_ms: 0\n'
         )
 
 
@@ -244,6 +244,7 @@ def test_factory_passes_gaps_to_gemini():
     config.tts_chunk_size = {"elevenlabs":8000,"google":2000,"openai":4000,"gemini":2000}["gemini"]
     config.gemini_tts_model = "m"
     config.gemini_tts_voice = "Achird"
+    config.gemini_tts_pitch, config.gemini_tts_speaking_rate, config.gemini_tts_language_code = 0, 1, "he-il"
     config.gemini_api_key = "k"
     config.tts_chunk_gap_paragraph_ms = 640
     config.tts_chunk_gap_sentence_ms = 0
@@ -269,7 +270,7 @@ def test_gemini_silence_pcm_length_and_even():
 
 def test_gemini_assemble_pcm_inserts_gaps():
     with patch("google.auth.default", side_effect=Exception("no creds")):
-        gem = GeminiTTS("m", "v", chunk_size=2000, chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=0)
+        gem = GeminiTTS("m", "v", pitch=0, speaking_rate=1, language_code="he-il", chunk_size=2000, chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=0)
     out = gem._assemble_pcm([b"\x01\x01", b"\x02\x02", b"\x03\x03"], [1000, 0])
     assert out == b"\x01\x01" + bytes(48000) + b"\x02\x02" + b"\x03\x03"
     assert gem._assemble_pcm([b"\x01\x01"], []) == b"\x01\x01"

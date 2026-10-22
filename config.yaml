@@ -19,7 +19,7 @@ generator:
   max_retries: 1
   # Gemini thinking level for the Stage 1 draft calls, sync and batch (low, medium or high).
   # Ignored for openai.
-  draft_thinking_level: "high"
+  draft_thinking_level: "medium"
   # Temperature for the Stage 3 polish calls, sync and batch (low: high fidelity to the draft).
   # Ignored for openai reasoning models (o1/o3).
   polish_temperature: 0.1
@@ -205,7 +205,10 @@ tts:
   gemini:
     model_name: "gemini-3.1-flash-tts-preview"
     voice_name: "Achird" # Options: Puck, Charon, Kore, Fenrir, Aoede, Achird
-    temperature: 0.3
+    # Cloud Text-to-Speech request fields (the API has no temperature for these voices)
+    pitch: 0             # audioConfig.pitch, semitones, -20 to 20
+    speaking_rate: 1     # audioConfig.speakingRate, 0.25 to 2.0 (1 = native speed)
+    language_code: "he-il"  # voice.languageCode (BCP-47)
     chunk_size: 2000  # max characters per request
 
   elevenlabs:
@@ -235,11 +238,6 @@ tts:
     speed: 1.0
     chunk_size: 4000  # max characters per request (OpenAI hard limit is 4096)
 
-# enhance_transcript.py (ElevenLabs audio-tag enhancement); --model / --temperature override these.
-enhancer:
-  model_name: "gemini-3.1-flash-lite"
-  temperature: 0.2  # high fidelity to the source text
-
 # Standalone experiments in scripts/ (test_gemini_audio.py, run_gemini_native_audio.py):
 # Gemini native audio generation, outside the pipeline.
 experiments:
@@ -259,7 +257,7 @@ directories:
 # Gemini text-model prices for the cost tracker, USD per 1M tokens (paid tier, standard / non-batch).
 # Thinking tokens are billed as output. Optional long_context: the rates for a request whose prompt
 # exceeds threshold_tokens (the whole request is billed at that tier). Every Gemini model used for a
-# text call (generator, enhance_transcript.py --model) needs an entry here.
+# text call (generator) needs an entry here.
 # Source: https://ai.google.dev/gemini-api/docs/pricing (checked 2026-10-22).
 gemini_pricing:
   # Introductory prices through 2026-11-30; from 2026-12-01: input 4.00, output 20.00. No long-context tier.
@@ -273,6 +271,3 @@ gemini_pricing:
       threshold_tokens: 200000
       input_per_million: 4.00
       output_per_million: 18.00
-  gemini-3.1-flash-lite:
-    input_per_million: 0.25
-    output_per_million: 1.50
