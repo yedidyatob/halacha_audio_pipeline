@@ -13,7 +13,7 @@ def _cfg(tmp_path):
 
 
 def _args(**kw):
-    defaults = dict(relations_file=None, overwrite_cache=False, limit_lessons=None, batch=False,
+    defaults = dict(relations_file=None, draft_file={}, overwrite_cache=False, limit_lessons=None, batch=False,
                     stage_1_only=False, skip_tts=False)
     return MagicMock(**{**defaults, **kw})
 
@@ -60,7 +60,25 @@ def test_plan_relations_file_and_limit_lessons(cache):
     assert plan.target_simanim == [95] and plan.drafts_needed == [95] and plan.missing_drafts == [95]
 
 
+def test_plan_draft_file_overrides_cache_and_overwrite_cache(cache):
+    mine = cache / "gemini3_draft.txt"
+    mine.write_text("mine 94", encoding="utf-8")
+    plan = main_mod.resolve_run_plan(_args(draft_file={94: str(mine)}, overwrite_cache=True), _cfg(cache),
+                                     [94], [94, 95, 96], "m")
+    assert plan.drafts == {94: "mine 94"} and plan.draft_files == [94]
+    assert plan.draft_paths[94] == str(mine) and plan.missing_drafts == [95, 96]
+
+
+def test_plan_draft_file_with_cached_others(cache):
+    mine = cache / "d95.txt"
+    mine.write_text("mine 95", encoding="utf-8")
+    plan = main_mod.resolve_run_plan(_args(draft_file={95: str(mine)}), _cfg(cache), [94, 95, 96], [94, 95, 96], "m")
+    assert plan.drafts == {94: "draft 94", 95: "mine 95", 96: "draft 96"} and plan.missing_drafts == []
+
+
 @pytest.mark.parametrize("kw, message", [
+    (dict(draft_file={94: "nope.txt"}), "Draft file for Siman 94 not found"),
+    (dict(draft_file={95: "x.txt"}), r"does not need drafts for"),
     (dict(relations_file="nope.txt"), "Relations file not found"),
     (dict(limit_lessons=0), "greater than zero"),
 ])
@@ -115,3 +133,25 @@ def test_main_dry_run_stage_1_only_and_skip_tts(cache, monkeypatch, caplog):
     _main_dry_run(cache, monkeypatch, ["95", "--stage-1-only"])
     assert "not generated (--stage-1-only)" in caplog.text
     assert "stops after Stage 1" in caplog.text and "Stage 3 polish" not in caplog.text
+
+
+def test_parse_draft_file_arg():
+    assert main_mod.parse_draft_file_arg("96=C:\\d\\x=y.txt") == (96, "C:\\d\\x=y.txt")
+    for bad in ("96", "=p.txt", "96=", "94-96=p.txt"):
+        with pytest.raises(main_mod.argparse.ArgumentTypeError):
+            main_mod.parse_draft_file_arg(bad)
+
+
+def test_draft_file_given_twice_is_rejected(monkeypatch):
+    monkeypatch.setattr("sys.argv", ["main.py", "94", "--draft-file", "94=a", "--draft-file", "94=b"])
+    with pytest.raises(SystemExit) as exc:
+        main_mod.parse_arguments()
+    assert exc.value.code == 2
+
+
+def test_dry_run_reports_draft_file(cache, monkeypatch, caplog):
+    mine = cache / "d94.txt"
+    mine.write_text("mine", encoding="utf-8")
+    with caplog.at_level("INFO"):
+        _main_dry_run(cache, monkeypatch, ["94", "--draft-file", f"94={mine}"])
+    assert f"from --draft-file (1): [94]" in caplog.text and str(mine) in caplog.text
