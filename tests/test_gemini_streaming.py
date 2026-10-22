@@ -1,3 +1,4 @@
+import re
 """Synchronous Gemini calls: streamed, thought summaries to a separate file, cost incl. thinking tokens."""
 import logging
 import os
@@ -170,6 +171,11 @@ def test_enhancer_client_honours_ssl_verify(tmp_path):
 # --- config -------------------------------------------------------------------------
 
 BASE = """halachic_section: "Yoreh De'ah"
+sefaria:
+  base_url: "u"
+  timeout_seconds: 15
+  retries: 3
+  ssl_verify: true
 directories:
   thinking_dir: "./out/thinking"
 tts:
@@ -183,7 +189,12 @@ tts:
 
 
 def _config(yaml_text):
+    """PipelineConfig from BASE + the test's sections; generator.engine (required) defaults to gemini here."""
     from pipeline.config import PipelineConfig
+    if "\ngenerator:\n" not in yaml_text:
+        yaml_text += 'generator:\n  engine: "gemini"\n'
+    elif not re.search(r"\ngenerator:\n(?:  .*\n)*?  engine:", yaml_text):
+        yaml_text = yaml_text.replace("\ngenerator:\n", '\ngenerator:\n  engine: "gemini"\n', 1)
     with patch("builtins.open", mock_open(read_data=yaml_text)), \
          patch("os.path.exists", return_value=True), patch("os.makedirs"):
         return PipelineConfig("config.yaml")

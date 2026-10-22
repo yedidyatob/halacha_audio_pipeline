@@ -245,6 +245,18 @@ results can be fetched later.
 
 ## Configuration
 
+Every setting comes from `config.yaml`; there are no defaults in code, and a missing or invalid
+key stops the run at startup with a message naming it. This includes `generator.engine`,
+`tts.engine` and the `sefaria:` block:
+
+```yaml
+sefaria:
+  base_url: "https://www.sefaria.org/api"
+  timeout_seconds: 15   # per request
+  retries: 3            # attempts per request
+  ssl_verify: false
+```
+
 ### Generator Engine
 
 ```yaml
@@ -320,6 +332,9 @@ tts:
   gemini:
     voice_name: "Achird"  # Achird, Puck, Charon, Kore, Fenrir, Aoede
     chunk_size: 2000
+    pitch: 0              # Cloud TTS audioConfig.pitch (-20 to 20)
+    speaking_rate: 1      # Cloud TTS audioConfig.speakingRate (0.25 to 2.0)
+    language_code: "he-il"
     
   elevenlabs:
     voice_id: "lJylpTXX0sNdqq5EUv4M"

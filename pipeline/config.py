@@ -41,6 +41,31 @@ def _required_str(section: dict, key: str, path: str) -> str:
 THINKING_LEVELS = ("low", "medium", "high")
 
 
+def _number_in_range(value, key: str, low: float, high: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
+        raise ValueError(f"'{key}' must be a number between {low} and {high}, got {value!r}.")
+    return value
+
+
+def _positive_int(value, key: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"'{key}' must be a positive integer, got {value!r}.")
+    return value
+
+
+def _bool(value, key: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"'{key}' must be true or false, got {value!r}.")
+    return value
+
+
+def _engine(section: dict, path: str, choices: tuple) -> str:
+    value = _required_str(section, "engine", path).lower()
+    if value not in choices:
+        raise ValueError(f"Invalid {path}.engine choice: '{value}'. Must be one of: {', '.join(choices)}.")
+    return value
+
+
 def _non_empty_str(value) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
@@ -135,18 +160,19 @@ class PipelineConfig:
         self.elevenlabs_api_key = api_keys.get("elevenlabs_api_key") or os.environ.get("ELEVENLABS_API_KEY")
         self.google_tts_credentials = api_keys.get("google_tts_credentials") or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
         
-        # Sefaria settings
-        sefaria = self.config_data.get("sefaria", {})
-        self.sefaria_base_url = sefaria.get("base_url", "https://www.sefaria.org/api")
-        self.sefaria_timeout = sefaria.get("timeout_seconds", 15)
-        self.sefaria_retries = sefaria.get("retries", 3)
-        self.ssl_verify = sefaria.get("ssl_verify", True)
+        # Sefaria settings (required; no code defaults)
+        sefaria = self.config_data.get("sefaria")
+        self.sefaria_base_url = _required_str(sefaria, "base_url", "sefaria")
+        timeout = _required(sefaria, "timeout_seconds", "sefaria")
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
+            raise ValueError(f"'sefaria.timeout_seconds' must be a positive number, got {timeout!r}.")
+        self.sefaria_timeout = timeout
+        # attempts per request (the extractor tries each request this many times)
+        self.sefaria_retries = _positive_int(_required(sefaria, "retries", "sefaria"), "sefaria.retries")
+        self.ssl_verify = _bool(_required(sefaria, "ssl_verify", "sefaria"), "sefaria.ssl_verify")
 
         # Generator settings (unified or fallback)
-        generator = self.config_data.get("generator", {})
-        self.generator_engine = generator.get("engine", "gemini").lower()
-        if self.generator_engine not in ["gemini", "openai"]:
-            raise ValueError(f"Invalid generator engine choice: '{self.generator_engine}'. Must be 'gemini' or 'openai'.")
+        self.generator_engine = _engine(self.config_data.get("generator"), "generator", ("gemini", "openai"))
 
         # Load system instruction (shared at root or falling back to gemini section)
         raw_system_instruction = self.config_data.get("system_instruction") or self.config_data.get("gemini", {}).get("system_instruction", "")
@@ -164,10 +190,8 @@ class PipelineConfig:
 
 
         # TTS settings
-        tts = self.config_data.get("tts", {})
-        self.tts_engine = tts.get("engine", "elevenlabs").lower()
-        if self.tts_engine not in ["elevenlabs", "google", "openai", "gemini"]:
-            raise ValueError(f"Invalid TTS engine choice: '{self.tts_engine}'. Must be 'elevenlabs', 'google', 'openai', or 'gemini'.")
+        tts = self.config_data.get("tts") or {}
+        self.tts_engine = _engine(tts, "tts", ("elevenlabs", "google", "openai", "gemini"))
 
         self.elevenlabs_settings = tts.get("elevenlabs", {})
         self.google_tts_settings = tts.get("google", {})
@@ -232,6 +256,12 @@ class PipelineConfig:
                     f"Unsupported Gemini TTS voice: '{raw_voice}'. "
                     f"Supported prebuilt voices are: Puck, Charon, Kore, Fenrir, Aoede, Achird."
                 )
+            # Cloud Text-to-Speech request fields (audioConfig.pitch / speakingRate, voice.languageCode)
+            self.gemini_tts_pitch = _number_in_range(
+                _required(self.gemini_tts_settings, "pitch", "tts.gemini"), "tts.gemini.pitch", -20.0, 20.0)
+            self.gemini_tts_speaking_rate = _number_in_range(
+                _required(self.gemini_tts_settings, "speaking_rate", "tts.gemini"), "tts.gemini.speaking_rate", 0.25, 2.0)
+            self.gemini_tts_language_code = _required_str(self.gemini_tts_settings, "language_code", "tts.gemini")
                 
         # Directory setup
         dirs = self.config_data.get("directories", {})

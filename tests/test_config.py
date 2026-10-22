@@ -3,62 +3,80 @@ import os
 from unittest.mock import patch, mock_open
 from pipeline.config import PipelineConfig
 
-def test_pipeline_config_ssl_verify_default():
-    # Mock yaml data with ssl_verify missing
-    yaml_content = """
+REQUIRED_YAML = """
 halachic_section: "Yoreh De'ah"
-directories:
-  thinking_dir: "./output/thinking"
-api_keys:
-  gemini_api_key: "fake-gemini"
 sefaria:
   base_url: "https://www.sefaria.org/api"
-generator:
-  engine: "gemini"
-tts:
-  chunk_gap_paragraph_ms: 700
-  chunk_gap_sentence_ms: 300
-  elevenlabs:
-    chunk_size: 8000
-    context_chars: 500
-"""
-    with patch("builtins.open", mock_open(read_data=yaml_content)), \
-         patch("os.path.exists", return_value=True), \
-         patch("os.makedirs"):
-        config = PipelineConfig("config.yaml")
-        assert config.ssl_verify is True
-
-def test_pipeline_config_ssl_verify_false():
-    # Mock yaml data with ssl_verify set to false
-    yaml_content = """
-halachic_section: "Yoreh De'ah"
-directories:
-  thinking_dir: "./output/thinking"
-api_keys:
-  gemini_api_key: "fake-gemini"
-sefaria:
-  base_url: "https://www.sefaria.org/api"
+  timeout_seconds: 15
+  retries: 3
   ssl_verify: false
+directories:
+  thinking_dir: "./output/thinking"
 generator:
   engine: "gemini"
 tts:
+  engine: "elevenlabs"
   chunk_gap_paragraph_ms: 700
   chunk_gap_sentence_ms: 300
   elevenlabs:
     chunk_size: 8000
     context_chars: 500
 """
+
+
+def _load(yaml_content):
     with patch("builtins.open", mock_open(read_data=yaml_content)), \
          patch("os.path.exists", return_value=True), \
          patch("os.makedirs"):
-        config = PipelineConfig("config.yaml")
-        assert config.ssl_verify is False
+        return PipelineConfig("config.yaml")
+
+
+def test_sefaria_and_engine_settings_are_read():
+    config = _load(REQUIRED_YAML)
+    assert (config.sefaria_base_url, config.sefaria_timeout, config.sefaria_retries, config.ssl_verify) == \
+        ("https://www.sefaria.org/api", 15, 3, False)
+    assert (config.generator_engine, config.tts_engine) == ("gemini", "elevenlabs")
+    assert _load(REQUIRED_YAML.replace("ssl_verify: false", "ssl_verify: true")).ssl_verify is True
+
+
+@pytest.mark.parametrize("line, message", [
+    ('  base_url: "https://www.sefaria.org/api"\n', "'base_url' under 'sefaria'"),
+    ("  timeout_seconds: 15\n", "'timeout_seconds' under 'sefaria'"),
+    ("  retries: 3\n", "'retries' under 'sefaria'"),
+    ("  ssl_verify: false\n", "'ssl_verify' under 'sefaria'"),
+    ('generator:\n  engine: "gemini"\n', "'engine' under 'generator'"),
+    ('  engine: "elevenlabs"\n', "'engine' under 'tts'"),
+])
+def test_sefaria_and_engine_settings_are_required(line, message):
+    assert REQUIRED_YAML.count(line) == 1
+    with pytest.raises(ValueError, match=message):
+        _load(REQUIRED_YAML.replace(line, ""))
+
+
+@pytest.mark.parametrize("old, new, message", [
+    ('base_url: "https://www.sefaria.org/api"', 'base_url: ""', "sefaria.base_url' must be a non-empty string"),
+    ("timeout_seconds: 15", "timeout_seconds: 0", "sefaria.timeout_seconds' must be a positive number"),
+    ("timeout_seconds: 15", 'timeout_seconds: "15"', "sefaria.timeout_seconds' must be a positive number"),
+    ("retries: 3", "retries: 0", "sefaria.retries' must be a positive integer"),
+    ("retries: 3", "retries: 1.5", "sefaria.retries' must be a positive integer"),
+    ("ssl_verify: false", 'ssl_verify: "no"', "sefaria.ssl_verify' must be true or false"),
+    ('engine: "gemini"', 'engine: "claude"', "Invalid generator.engine choice: 'claude'"),
+    ('engine: "elevenlabs"', 'engine: "azure"', "Invalid tts.engine choice: 'azure'"),
+])
+def test_sefaria_and_engine_settings_are_validated(old, new, message):
+    with pytest.raises(ValueError, match=message):
+        _load(REQUIRED_YAML.replace(old, new, 1))
 
 
 def test_pipeline_config_prompt_formatting():
     # Mock yaml data with the instruction templates
     yaml_content = """
 halachic_section: "{section}"
+sefaria:
+  base_url: "https://www.sefaria.org/api"
+  timeout_seconds: 15
+  retries: 3
+  ssl_verify: true
 directories:
   thinking_dir: "./output/thinking"
 system_instruction: "Including {{commentators_list_hebrew}} and {{prompt_commentators_desc}}"
@@ -70,6 +88,7 @@ pronunciation:
 generator:
   engine: "gemini"
 tts:
+  engine: "elevenlabs"
   chunk_gap_paragraph_ms: 700
   chunk_gap_sentence_ms: 300
   elevenlabs:

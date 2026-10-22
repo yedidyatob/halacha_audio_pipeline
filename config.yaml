@@ -205,7 +205,10 @@ tts:
   gemini:
     model_name: "gemini-3.1-flash-tts-preview"
     voice_name: "Achird" # Options: Puck, Charon, Kore, Fenrir, Aoede, Achird
-    temperature: 0.3
+    # Cloud Text-to-Speech request fields (the API has no temperature for these voices)
+    pitch: 0             # audioConfig.pitch, semitones, -20 to 20
+    speaking_rate: 1     # audioConfig.speakingRate, 0.25 to 2.0 (1 = native speed)
+    language_code: "he-il"  # voice.languageCode (BCP-47)
     chunk_size: 2000  # max characters per request
 
   elevenlabs:

@@ -88,11 +88,17 @@ def test_dictionary_respells_letter_name_he_in_letter_context():
 
 BASE_YAML = """
 halachic_section: "Yoreh De'ah"
+sefaria:
+  base_url: "https://www.sefaria.org/api"
+  timeout_seconds: 15
+  retries: 3
+  ssl_verify: true
 directories:
   thinking_dir: "./output/thinking"
 generator:
   engine: "gemini"
 tts:
+  engine: "elevenlabs"
   chunk_gap_paragraph_ms: 700
   chunk_gap_sentence_ms: 300
   elevenlabs:

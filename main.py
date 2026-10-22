@@ -336,12 +336,11 @@ def generate_drafts(simanim: list, extractor, generator, config, args, model_suf
         summary, {siman: siman for siman in simanim}, STAGE_DRAFTS,
         lambda siman, _: extractor.compile_simanim_context([siman], target_simanim=[siman])
     )
-    commentators = config.section_metadata["prompt_commentators_desc"]
     drafts = run_llm_stage(
         summary, contexts, STAGE_DRAFTS,
         call=lambda siman, context: generator.generate_siman_script(
             siman=siman, master_context=context,
-            system_instruction=config.gemini_system_instruction, commentators_desc=commentators,
+            system_instruction=config.gemini_system_instruction,
             thinking_level=config.draft_thinking_level,
             thinking_name=draft_base_name(config, siman, model_suffix),
         ),
@@ -350,7 +349,7 @@ def generate_drafts(simanim: list, extractor, generator, config, args, model_suf
             generator,
             submit=lambda siman, context: generator.submit_batch(
                 system_instruction=config.gemini_system_instruction,
-                user_prompt=generator._get_generation_user_prompt(int_to_gematria(siman), context, commentators),
+                user_prompt=generator._get_generation_user_prompt(int_to_gematria(siman), context),
                 temperature=generator.temperature,
                 custom_id=f"stage1_siman_{siman}",
                 cache_dir=config.cache_dir,

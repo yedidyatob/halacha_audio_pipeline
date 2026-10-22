@@ -31,8 +31,7 @@ class BaseScriptGenerator(ABC):
     def _get_generation_user_prompt(
         self, 
         gematria_siman: str, 
-        master_context: str, 
-        commentators_desc: str = 'השפתי כהן (הש"ך) והטורי זהב (הט"ז) והמקורות שהם מביאים'
+        master_context: str,
     ) -> str:
         return (
             f"להלן קובץ המקורות עבור סימן {gematria_siman}:\n"
@@ -78,7 +77,6 @@ class BaseScriptGenerator(ABC):
         siman: int, 
         master_context: str, 
         system_instruction: str,
-        commentators_desc: str = 'השפתי כהן (הש"ך) והטורי זהב (הט"ז) והמקורות שהם מביאים',
         thinking_level: Optional[str] = None,
         thinking_name: Optional[str] = None,
     ) -> str:
@@ -202,14 +200,13 @@ class GeminiScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
         siman: int, 
         master_context: str, 
         system_instruction: str,
-        commentators_desc: str = 'השפתי כהן (הש"ך) והטורי זהב (הט"ז) והמקורות שהם מביאים',
         thinking_level: Optional[str] = None,
         thinking_name: Optional[str] = None,
     ) -> str:
         gematria_siman = int_to_gematria(siman)
         logger.info(f"Generating script for Siman {siman} ({gematria_siman}) using Gemini model {self.model_name}"
                     + (f" (thinking_level {thinking_level})" if thinking_level else "") + "...")
-        user_prompt = self._get_generation_user_prompt(gematria_siman, master_context, commentators_desc)
+        user_prompt = self._get_generation_user_prompt(gematria_siman, master_context)
         try:
             script_text = self._generate(system_instruction, user_prompt, self.temperature, thinking_level,
                                          f"Gemini script generation for Siman {siman}", thinking_name)
@@ -446,13 +443,12 @@ class OpenAIScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
         siman: int, 
         master_context: str, 
         system_instruction: str,
-        commentators_desc: str = 'השפתי כהן (הש"ך) והטורי זהב (הט"ז) והמקורות שהם מביאים',
         thinking_level: Optional[str] = None,
         thinking_name: Optional[str] = None,
     ) -> str:
         gematria_siman = int_to_gematria(siman)
         logger.info(f"Generating script for Siman {siman} ({gematria_siman}) using OpenAI model {self.model_name}...")
-        user_prompt = self._get_generation_user_prompt(gematria_siman, master_context, commentators_desc)
+        user_prompt = self._get_generation_user_prompt(gematria_siman, master_context)
 
         messages = []
         is_reasoning_model = self.model_name.startswith("o1") or self.model_name.startswith("o3")
