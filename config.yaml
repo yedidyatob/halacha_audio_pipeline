@@ -233,7 +233,7 @@ tts:
     chunk_size: 2000  # max characters per request
 
   elevenlabs:
-    voice_id: "vKaxWReVD8llVRJRbBf5"  # jack - Default voice
+    voice_id: "aTTiK3YzK3dXETpuDE2h"  # Ben - Effortless and Casual
     model_id: "eleven_v4"
     stability: 0.5
     similarity_boost: 0.75
