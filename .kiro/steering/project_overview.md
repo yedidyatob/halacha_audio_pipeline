@@ -32,7 +32,6 @@ halacha_audio_pipeline/
 │   ├── extractor.py         # Sefaria API client
 │   ├── generator.py         # Gemini/OpenAI script generators
 │   ├── tts.py               # TTS engine abstraction
-│   ├── evaluator.py         # Heuristic quality checks
 │   ├── gematria.py          # Hebrew numeral converter
 │   └── input_parser.py      # Simanim string parser
 └── output/                   # Generated transcripts & audio

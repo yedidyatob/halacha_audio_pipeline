@@ -51,7 +51,7 @@ class FakeBatchGenerator(BatchCapableGenerator):
 
 def _config(tmp_path):
     return MagicMock(output_dir=str(tmp_path), generator_max_retries=0, section_slug="YD", cache_dir=str(tmp_path),
-                     polishing_instruction="POLISH")
+                     polishing_instruction="POLISH", polish_temperature=0.15)
 
 
 def _args(batch):
@@ -75,11 +75,12 @@ def _transcripts(tmp_path):
 def test_batch_pronunciation_success(tmp_path):
     polish_gen = FakeBatchGenerator(lambda cid, prompt: prompt)
     voc_gen = FakeBatchGenerator(lambda cid, prompt: vocalized(prompt), temperature=0.35)
-    summary = _run(tmp_path, polish_gen, PronunciationVocalizer(voc_gen, "VOC", "low", 0), batch=True)
+    summary = _run(tmp_path, polish_gen, PronunciationVocalizer(voc_gen, "VOC", "low", 0, [], 0.02), batch=True)
     assert summary.succeeded == [94, 95, 96, 97] and not summary.failed
     assert [r["custom_id"] for r in voc_gen.submitted] == [f"stage3_5_siman_{s}" for s in DRAFTS]
     assert all(r["system_instruction"] == "VOC" and r["temperature"] == 0.35 and r["thinking_level"] == "low"
                for r in voc_gen.submitted)
+    assert all(r["system_instruction"] == "POLISH" and r["temperature"] == 0.15 for r in polish_gen.submitted)
     assert TET in (tmp_path / "YD_Siman_94_m_transcript.txt").read_text(encoding="utf-8")
     assert (tmp_path / "YD_Siman_94_m_pronunciation_changes.txt").read_text(encoding="utf-8").splitlines()[1] == \
         f"no\tטית\t{TET}\t1\t1\t[{TET}] 94"
@@ -89,7 +90,7 @@ def test_batch_pronunciation_success(tmp_path):
 def test_batch_pronunciation_failed_job_fails_that_siman(tmp_path):
     polish_gen = FakeBatchGenerator(lambda cid, prompt: prompt)
     voc_gen = FakeBatchGenerator(lambda cid, prompt: vocalized(prompt), failed_ids={"stage3_5_siman_95"})
-    summary = _run(tmp_path, polish_gen, PronunciationVocalizer(voc_gen, "VOC", None, 0), batch=True)
+    summary = _run(tmp_path, polish_gen, PronunciationVocalizer(voc_gen, "VOC", None, 0, [], 0.02), batch=True)
     assert summary.failed == {95: (main_mod.STAGE_PRONUNCIATION, "batch job failed (job_id: stage3_5_siman_95) (after 1 attempt(s))")}
     assert _transcripts(tmp_path) == [94, 96, 97]
     assert not (tmp_path / "YD_Siman_95_m_pronunciation_changes.txt").exists()
@@ -103,7 +104,7 @@ def test_batch_pronunciation_validation_failure_and_empty_result(tmp_path):
             raise BatchResultError("Gemini batch returned empty text response.")
         return vocalized(prompt)
     polish_gen = FakeBatchGenerator(lambda cid, prompt: prompt)
-    summary = _run(tmp_path, polish_gen, PronunciationVocalizer(FakeBatchGenerator(respond), "VOC", None, 0), batch=True)
+    summary = _run(tmp_path, polish_gen, PronunciationVocalizer(FakeBatchGenerator(respond), "VOC", None, 0, [], 0.02), batch=True)
     assert set(summary.failed) == {95, 96}
     stage, reason = summary.failed[95]
     assert stage == main_mod.STAGE_PRONUNCIATION and "95 -> 99 (letters changed" in reason
@@ -123,7 +124,7 @@ def test_batch_pronunciation_rejected_results_resubmitted_as_batch(tmp_path, cap
         return vocalized(prompt)
     voc_gen = FakeBatchGenerator(respond)
     polish_gen = FakeBatchGenerator(lambda cid, prompt: prompt)
-    summary = _run(tmp_path, polish_gen, PronunciationVocalizer(voc_gen, "VOC", None, 1), batch=True)
+    summary = _run(tmp_path, polish_gen, PronunciationVocalizer(voc_gen, "VOC", None, 1, [], 0.02), batch=True)
     assert summary.succeeded == [94, 95, 97]
     stage, reason = summary.failed[96]
     assert stage == main_mod.STAGE_PRONUNCIATION and "96 -> 99" in reason and "(after 2 attempt(s))" in reason
@@ -139,7 +140,7 @@ def test_batch_mixed_simanim_summary(tmp_path, caplog):
     voc_gen = FakeBatchGenerator(lambda cid, prompt: prompt.replace("טית", "<b>טית</b>") if cid.endswith("_96")
                                  else vocalized(prompt))
     drafts = {94: "טית 94", 95: "טית 95", 96: "טית 96"}
-    summary = _run(tmp_path, polish_gen, PronunciationVocalizer(voc_gen, "VOC", None, 0), batch=True,
+    summary = _run(tmp_path, polish_gen, PronunciationVocalizer(voc_gen, "VOC", None, 0, [], 0.02), batch=True,
                    drafts=drafts, targets=[93, 94, 95, 96])
     assert summary.succeeded == [94]
     assert summary.failed[93] == (main_mod.STAGE_POLISH, "Stage 1 draft is missing")
@@ -164,11 +165,11 @@ def test_batch_pronunciation_disabled_passes_text_through(tmp_path):
 
 def test_sync_mode_vocalizes_each_siman_synchronously(tmp_path):
     gen = MagicMock()
-    gen.polish_siman_script.side_effect = lambda draft, rel, instr, thinking_name: draft
+    gen.polish_siman_script.side_effect = lambda draft, rel, instr, temperature, thinking_name: draft
     voc_gen = MagicMock(model_name="m", temperature=0.2)
     voc_gen.generate_text.side_effect = lambda instr, text, thinking_level: (
         text.replace("95", "99") if "95" in text else vocalized(text))
-    summary = _run(tmp_path, gen, PronunciationVocalizer(voc_gen, "VOC", "high", 0), batch=False)
+    summary = _run(tmp_path, gen, PronunciationVocalizer(voc_gen, "VOC", "high", 0, [], 0.02), batch=False)
     assert summary.succeeded == [94, 96, 97]
     assert summary.failed[95][0] == main_mod.STAGE_PRONUNCIATION
     assert voc_gen.generate_text.call_count == 4
@@ -178,13 +179,38 @@ def test_sync_mode_vocalizes_each_siman_synchronously(tmp_path):
     assert _transcripts(tmp_path) == [94, 96, 97]
 
 
+@pytest.mark.parametrize("batch", [True, False])
+def test_reverted_words_reported_the_same_in_sync_and_batch(tmp_path, batch, caplog):
+    def respond(text):  # 96: the model drops the ו of a conjunction (reverted); others vocalized
+        return vocalized(text).replace("ועוד", "עוֹד")
+
+    drafts = {94: "טית 94", 96: "טית 96 ועוד"}
+    if batch:
+        gen = FakeBatchGenerator(lambda cid, prompt: prompt)
+        voc_gen = FakeBatchGenerator(lambda cid, prompt: respond(prompt))
+    else:
+        gen = MagicMock()
+        gen.polish_siman_script.side_effect = lambda draft, rel, instr, temperature, thinking_name: draft
+        voc_gen = MagicMock(model_name="m", temperature=0.2)
+        voc_gen.generate_text.side_effect = lambda instr, text, thinking_level: respond(text)
+    with caplog.at_level("WARNING"):
+        summary = _run(tmp_path, gen, PronunciationVocalizer(voc_gen, "VOC", None, 0, [], 0.5), batch=batch,
+                       drafts=drafts)
+    assert summary.succeeded == [94, 96] and summary.reverted == {94: 0, 96: 1}
+    assert "Pronunciation words reverted (1): 94: 0, 96: 1" in summary.format()
+    assert (tmp_path / "YD_Siman_96_m_transcript.txt").read_text(encoding="utf-8") == f"{TET} 96 ועוד"
+    review = (tmp_path / "YD_Siman_96_m_pronunciation_changes.txt").read_text(encoding="utf-8").splitlines()
+    assert review[-1] == f"ועוד\tעוֹד\tו/י added or removed at the start of the word\t1\t{TET} 96 [עוֹד]"
+    assert any("reverted עוֹד -> ועוד" in m for m in caplog.messages)
+
+
 # --- startup check ------------------------------------------------------------------
 
 def test_batch_with_non_batch_pronunciation_engine_errors_at_startup(tmp_path, monkeypatch, caplog):
     cfg = MagicMock(section_slug="YD", drafts_dir=str(tmp_path), relations_dir=str(tmp_path),
                     output_dir=str(tmp_path), pronunciation_enabled=True, pronunciation_engine="custom")
     monkeypatch.setattr("sys.argv", ["main.py", "94", "--batch"])
-    non_batch_vocalizer = PronunciationVocalizer(object(), "VOC", None, 0)
+    non_batch_vocalizer = PronunciationVocalizer(object(), "VOC", None, 0, [], 0.02)
     with patch.object(main_mod, "PipelineConfig", return_value=cfg), \
          patch.object(main_mod, "create_generator_engine", return_value=FakeBatchGenerator(None)), \
          patch.object(main_mod, "create_pronunciation_vocalizer", return_value=non_batch_vocalizer), \
@@ -198,10 +224,10 @@ def test_batch_with_non_batch_pronunciation_engine_errors_at_startup(tmp_path, m
 
 def test_dictionary_nikkud_runs_before_llm_stage(tmp_path):
     gen = MagicMock()
-    gen.polish_siman_script.side_effect = lambda draft, rel, instr, thinking_name: draft + ' סימן הא והש"ך'
+    gen.polish_siman_script.side_effect = lambda draft, rel, instr, temperature, thinking_name: draft + ' סימן הא והש"ך'
     voc_gen = MagicMock(model_name="m", temperature=0.2)
     voc_gen.generate_text.side_effect = lambda instr, text, thinking_level: text
-    summary = _run(tmp_path, gen, PronunciationVocalizer(voc_gen, "VOC", None, 0), batch=False, drafts={94: "טית 94"})
+    summary = _run(tmp_path, gen, PronunciationVocalizer(voc_gen, "VOC", None, 0, [], 0.02), batch=False, drafts={94: "טית 94"})
     assert summary.succeeded == [94]
     sent = voc_gen.generate_text.call_args.args[1]
     assert sent == "טית 94 סימן הֵי והשַׁךְ"  # respelling + dictionary nikkud already applied

@@ -133,20 +133,20 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         type=str,
-        default="gemini-3.1-flash-lite",
-        help="Gemini model to use for enhancement (default: gemini-3.1-flash-lite).",
+        default=None,
+        help="Gemini model to use for enhancement (default: enhancer.model_name in the config).",
     )
     parser.add_argument(
         "--config",
         type=str,
         default="config.yaml",
-        help="Pipeline config (ssl_verify, thinking_dir, gemini_pricing; default: config.yaml).",
+        help="Pipeline config (enhancer, ssl_verify, thinking_dir, gemini_pricing; default: config.yaml).",
     )
     parser.add_argument(
         "--temperature",
         type=float,
-        default=0.2,
-        help="Generation temperature (default: 0.2 — high fidelity to source text).",
+        default=None,
+        help="Generation temperature (default: enhancer.temperature in the config).",
     )
 
     return parser.parse_args()
@@ -197,12 +197,14 @@ def main() -> None:
         config = PipelineConfig(args.config)
         if not config.gemini_api_key:
             raise ValueError("No Gemini API key (api_keys.gemini_api_key in config.yaml or GEMINI_API_KEY).")
+        model_name = args.model if args.model is not None else config.enhancer_model_name
+        temperature = args.temperature if args.temperature is not None else config.enhancer_temperature
         enhancer = ElevenLabsEnhancer(GeminiScriptGenerator(
             api_key=config.gemini_api_key,
-            model_name=args.model,
-            temperature=args.temperature,
+            model_name=model_name,
+            temperature=temperature,
             ssl_verify=config.ssl_verify,
-            pricing=config.gemini_price(args.model),
+            pricing=config.gemini_price(model_name),
             thinking_dir=config.thinking_dir,
         ))
     except Exception as e:

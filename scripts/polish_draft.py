@@ -50,7 +50,8 @@ def main(argv=None):
     generator = create_generator_engine(config)  # a Gemini model without a gemini_pricing entry fails here
 
     print(f"Polishing {args.draft} via {config.generator_engine} / {generator.model_name} (thinking level: model default)...")
-    result = generator.polish_siman_script(draft, relations, config.polishing_instruction)
+    result = generator.polish_siman_script(draft, relations, config.polishing_instruction,
+                                          temperature=config.polish_temperature)
 
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as f:

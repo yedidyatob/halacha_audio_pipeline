@@ -26,14 +26,13 @@ def main():
         
     client = genai.Client(api_key=config.gemini_api_key)
     
-    # We will use gemini-2.5-flash-preview-tts which is verified to support native audio generation
-    model_name = "gemini-2.5-flash-preview-tts"
+    model_name = config.native_audio_model_name
     
     with open(context_path, "r", encoding="utf-8") as f:
         master_context = f.read()
         
     print(f"Hey! Let's generate some audio with {model_name}...")
-    print("Using Voice: Puck (Upbeat Male)")
+    print(f"Using Voice: {config.native_audio_voice_name}")
     
     # Configure the native audio generation request
     generate_config = types.GenerateContentConfig(
@@ -41,12 +40,12 @@ def main():
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                    voice_name="Puck"
+                    voice_name=config.native_audio_voice_name
                 )
             )
         ),
         system_instruction=config.gemini_system_instruction,
-        temperature=0.3
+        temperature=config.native_audio_temperature
     )
     
     # Ask for the lesson directly. The model will generate the audio directly

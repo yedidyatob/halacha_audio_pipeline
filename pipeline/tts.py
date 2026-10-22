@@ -1,6 +1,7 @@
 import os
 import re
 import tempfile
+from typing import Optional
 from abc import ABC, abstractmethod
 from pipeline.logger import get_logger
 from openai import OpenAI
@@ -523,11 +524,11 @@ class GoogleCloudTTS(BaseTTS):
 
     def __init__(
         self,
-        credentials_path: str = None,
-        voice_name: str = "he-IL-Neural2-M",
-        language_code: str = "he-IL",
-        speaking_rate: float = 1.0,
-        pitch: float = 0.0,
+        credentials_path: Optional[str],
+        voice_name: str,
+        language_code: str,
+        speaking_rate: float,
+        pitch: float,
         *,
         chunk_size: int,
         chunk_gap_paragraph_ms: int,
@@ -605,11 +606,11 @@ class OpenAITTS(BaseTTS):
 
     def __init__(
         self,
-        api_key: str = None,
-        voice: str = "alloy",
-        model: str = "tts-1",
-        speed: float = 1.0,
-        ssl_verify: bool = True,
+        api_key: Optional[str],
+        voice: str,
+        model: str,
+        speed: float,
+        ssl_verify: bool,
         *,
         chunk_size: int,
         chunk_gap_paragraph_ms: int,

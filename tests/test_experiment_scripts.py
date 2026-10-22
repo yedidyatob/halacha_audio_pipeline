@@ -52,7 +52,7 @@ def test_real_config_combined_instruction():
     assert "תוספת: ניקוד לצורך הגייה" in out and "<" not in out
     assert "החזר את התסריט בדיוק כפי שהוא" not in out
     assert "{always_vocalize}" not in out and "תמיד לנקד" in out
-    assert "כחל (כְּחָל = עטין של בהמה; כֹּחַל = צבע איפור)" in out  # readings rendered as in Stage 3.5
+    assert 'גזרה (גְּזֵרָה = צו או תקנה, כמו "גזרה שווה"; גִּזְרָה = חיתוך, צורה)' in out  # readings rendered as in Stage 3.5
 
 
 # --- validation and the script ------------------------------------------------------
@@ -76,7 +76,8 @@ def _run_combined(tmp_path, monkeypatch, llm_text, extra_args=()):
     gen = MagicMock(model_name="m", supports_thinking_level=True)
     gen.polish_siman_script.return_value = llm_text
     cfg = MagicMock(polishing_instruction="POLISH", experiment_combined_addendum_header="HEADER",
-                    pronunciation_instruction=PRON, pronunciation_thinking_level="low", generator_engine="gemini")
+                    pronunciation_instruction=PRON, pronunciation_thinking_level="low", generator_engine="gemini",
+                    polish_temperature=0.15)
     monkeypatch.setattr("pipeline.config.PipelineConfig", lambda path: cfg)
     monkeypatch.setattr("pipeline.factory.create_generator_engine", lambda c: gen)
     script.main([str(draft), str(relations), *extra_args])
@@ -86,7 +87,7 @@ def _run_combined(tmp_path, monkeypatch, llm_text, extra_args=()):
 def test_combined_script_writes_outputs(tmp_path, monkeypatch, capsys):
     gen, draft = _run_combined(tmp_path, monkeypatch, f'שיעור על {TET} והש"ך.')
     call = gen.polish_siman_script.call_args
-    assert call.args[:2] == ("טיוטה", "קשרים") and call.kwargs == {"thinking_level": "low"}
+    assert call.args[:2] == ("טיוטה", "קשרים") and call.kwargs == {"temperature": 0.15, "thinking_level": "low"}
     assert call.args[2].startswith("POLISH\n\nHEADER\n") and "בדיוק כפי שהוא" not in call.args[2]
     out = tmp_path / "YD_Siman_94_m_draft_combined_vocalized.txt"
     assert out.read_text(encoding="utf-8") == f"שיעור על {TET} והשַׁךְ."  # dictionary nikkud applied after
@@ -112,16 +113,16 @@ def test_polish_draft_script_uses_pipeline_polish(tmp_path, monkeypatch):
     (tmp_path / "r.txt").write_text("קשרים", encoding="utf-8")
     gen = MagicMock(model_name="m")
     gen.polish_siman_script.return_value = "מלוטש"
-    cfg = MagicMock(polishing_instruction="POLISH", generator_engine="gemini")
+    cfg = MagicMock(polishing_instruction="POLISH", generator_engine="gemini", polish_temperature=0.15)
     monkeypatch.setattr("pipeline.config.PipelineConfig", lambda path: cfg)
     monkeypatch.setattr("pipeline.factory.create_generator_engine", lambda c: gen)
     script.main([str(tmp_path / "d_draft.txt"), str(tmp_path / "r.txt")])
-    gen.polish_siman_script.assert_called_once_with("טיוטה", "קשרים", "POLISH")
+    gen.polish_siman_script.assert_called_once_with("טיוטה", "קשרים", "POLISH", temperature=0.15)
     assert (tmp_path / "d_draft_polished.txt").read_text(encoding="utf-8") == "מלוטש"
 
 
 def test_gemini_polish_passes_thinking_level_and_logs_cost(caplog):
-    """The combined call is the pipeline's polish request (temperature 0.1) plus a thinking_level;
+    """The combined call is the pipeline's polish request (generator.polish_temperature) plus a thinking_level;
     its usage and cost are logged from gemini_pricing like every Gemini call."""
     from unittest.mock import patch
     from types import SimpleNamespace
@@ -135,7 +136,7 @@ def test_gemini_polish_passes_thinking_level_and_logs_cost(caplog):
     response = MagicMock(usage_metadata=usage)
     with patch("pipeline.generator._collect_stream", return_value=(response, "")), \
          patch("pipeline.generator._gemini_response_text", return_value="out"), caplog.at_level("INFO"):
-        assert gen.polish_siman_script("draft", "rel", "COMBINED", thinking_level="high") == "out"
+        assert gen.polish_siman_script("draft", "rel", "COMBINED", temperature=0.1, thinking_level="high") == "out"
     config = gen.client.models.generate_content_stream.call_args.kwargs["config"]
     assert config.system_instruction == "COMBINED" and config.temperature == 0.1
     assert config.thinking_config.thinking_level.lower() == "high"

@@ -8,9 +8,10 @@ Usage (from the repo root):
 
 Writes:
   <output>                  the vocalized script (default: <input stem>_vocalized.txt next to the input)
-  <output stem>_changes.txt   the review list of words the LLM changed (pipeline.pronunciation.format_changes:
-                              one tab-separated line per distinct original/vocalized pair, with count,
-                              first line and a context sample; words vocalized more than one way first)
+  <output stem>_changes.txt   the review file (pipeline.pronunciation.format_review): the words the LLM
+                              changed (one tab-separated line per distinct original/vocalized pair, with
+                              count, first line and a context sample; words vocalized more than one way
+                              first), then the reverted section (each invalid word the original was kept for)
 Runs regardless of pronunciation.enabled (calling the script is the explicit request).
 A failed attempt (LLM error, or output rejected by validation) is retried up to
 pronunciation.max_retries times; if every attempt fails nothing is written and the script
@@ -55,7 +56,7 @@ def main(argv=None):
     load_dotenv(dotenv_path=REPO_ROOT.parent / ".env")  # .env lives in the folder above the repo
 
     from pipeline.config import PipelineConfig
-    from pipeline.pronunciation import create_pronunciation_vocalizer, format_changes, PronunciationError
+    from pipeline.pronunciation import create_pronunciation_vocalizer, format_review, PronunciationError
     from pipeline.apply_nikkud import apply_nikkud_to_abbreviations
 
     if not os.path.exists(args.input):
@@ -69,7 +70,7 @@ def main(argv=None):
     print(f"Vocalizing {args.input} ({len(text)} chars) via {config.pronunciation_engine} / {vocalizer.generator.model_name}...")
 
     try:
-        vocalized, changes = vocalizer.vocalize(text)
+        result = vocalizer.vocalize(text)
     except PronunciationError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         print("Nothing was written.", file=sys.stderr)
@@ -77,14 +78,14 @@ def main(argv=None):
 
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as f:
-        f.write(vocalized)
+        f.write(result.text)
     changes_path = changes_path_for(args.output)
     with open(changes_path, "w", encoding="utf-8") as f:
-        f.write(format_changes(changes))
+        f.write(format_review(result))
 
     print(f"Vocalized script saved to: {args.output}")
-    print(f"Changed words saved to:    {changes_path}")
-    print(f"Words vocalized: {len(changes)}")
+    print(f"Review file saved to:      {changes_path}")
+    print(f"Words vocalized: {len(result.changes)}, reverted: {len(result.reverted)}")
 
 
 if __name__ == "__main__":

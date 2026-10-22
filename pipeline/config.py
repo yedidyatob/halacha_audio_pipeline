@@ -17,6 +17,27 @@ def _max_retries(value, key: str) -> int:
     return value
 
 
+def _temperature(value, key: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"'{key}' must be a number, got {value!r}.")
+    return float(value)
+
+
+def _required(section: dict, key: str, path: str):
+    """section[key], or a ValueError naming the missing 'key' under 'path' in config.yaml."""
+    value = (section or {}).get(key)
+    if value is None:
+        raise ValueError(f"Missing required configuration parameter '{key}' under '{path}' in config.yaml.")
+    return value
+
+
+def _required_str(section: dict, key: str, path: str) -> str:
+    value = _required(section, key, path)
+    if not _non_empty_str(value):
+        raise ValueError(f"'{path}.{key}' must be a non-empty string, got {value!r}.")
+    return value
+
+
 THINKING_LEVELS = ("low", "medium", "high")
 
 
@@ -126,17 +147,6 @@ class PipelineConfig:
         self.generator_engine = generator.get("engine", "gemini").lower()
         if self.generator_engine not in ["gemini", "openai"]:
             raise ValueError(f"Invalid generator engine choice: '{self.generator_engine}'. Must be 'gemini' or 'openai'.")
-
-        # Load gemini generator settings
-        gemini_settings = generator.get("gemini", {})
-        self.gemini_model_name = gemini_settings.get("model_name", "gemini-3.5-flash")
-        self.gemini_temperature = gemini_settings.get("temperature", 0.3)
-
-        # Load openai generator settings
-        openai_settings = generator.get("openai", {})
-        self.openai_model_name = openai_settings.get("model_name", "o1")
-        self.openai_temperature = openai_settings.get("temperature", 1.0)
-        self.openai_service_tier = openai_settings.get("service_tier", "flex")
 
         # Load system instruction (shared at root or falling back to gemini section)
         raw_system_instruction = self.config_data.get("system_instruction") or self.config_data.get("gemini", {}).get("system_instruction", "")
@@ -260,6 +270,67 @@ class PipelineConfig:
         return _max_retries(value, "generator.max_retries")
 
     @property
+    def polish_temperature(self) -> float:
+        """Temperature for the Stage 3 polish calls, sync and batch. Required: no code default."""
+        value = _required(self.config_data.get("generator"), "polish_temperature", "generator")
+        return _temperature(value, "generator.polish_temperature")
+
+    def _generator_engine_section(self, engine: str) -> dict:
+        return (self.config_data.get("generator") or {}).get(engine)
+
+    @property
+    def gemini_model_name(self) -> str:
+        return _required_str(self._generator_engine_section("gemini"), "model_name", "generator.gemini")
+
+    @property
+    def gemini_temperature(self) -> float:
+        value = _required(self._generator_engine_section("gemini"), "temperature", "generator.gemini")
+        return _temperature(value, "generator.gemini.temperature")
+
+    @property
+    def openai_model_name(self) -> str:
+        return _required_str(self._generator_engine_section("openai"), "model_name", "generator.openai")
+
+    @property
+    def openai_temperature(self) -> float:
+        """Ignored by OpenAI reasoning models (o1/o3), but still required."""
+        value = _required(self._generator_engine_section("openai"), "temperature", "generator.openai")
+        return _temperature(value, "generator.openai.temperature")
+
+    @property
+    def openai_service_tier(self) -> str:
+        """Shared by the generator and the pronunciation stage (engine openai)."""
+        return _required_str(self._generator_engine_section("openai"), "service_tier", "generator.openai")
+
+    @property
+    def enhancer_model_name(self) -> str:
+        """Gemini model for enhance_transcript.py (its --model flag overrides it)."""
+        return _required_str(self.config_data.get("enhancer"), "model_name", "enhancer")
+
+    @property
+    def enhancer_temperature(self) -> float:
+        """Temperature for enhance_transcript.py (its --temperature flag overrides it)."""
+        return _temperature(_required(self.config_data.get("enhancer"), "temperature", "enhancer"),
+                            "enhancer.temperature")
+
+    def _native_audio_section(self) -> dict:
+        return (self.config_data.get("experiments") or {}).get("gemini_native_audio")
+
+    @property
+    def native_audio_model_name(self) -> str:
+        """Model for the scripts/ Gemini native-audio experiments."""
+        return _required_str(self._native_audio_section(), "model_name", "experiments.gemini_native_audio")
+
+    @property
+    def native_audio_voice_name(self) -> str:
+        return _required_str(self._native_audio_section(), "voice_name", "experiments.gemini_native_audio")
+
+    @property
+    def native_audio_temperature(self) -> float:
+        value = _required(self._native_audio_section(), "temperature", "experiments.gemini_native_audio")
+        return _temperature(value, "experiments.gemini_native_audio.temperature")
+
+    @property
     def draft_thinking_level(self) -> str:
         """Gemini thinking level for the Stage 1 draft calls (sync and batch). Required for engine gemini."""
         if self.generator_engine != "gemini":
@@ -334,10 +405,7 @@ class PipelineConfig:
 
     @property
     def pronunciation_temperature(self) -> float:
-        value = self._pronunciation_value("temperature")
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError(f"'pronunciation.temperature' must be a number, got {value!r}.")
-        return float(value)
+        return _temperature(self._pronunciation_value("temperature"), "pronunciation.temperature")
 
     @property
     def pronunciation_thinking_level(self) -> str:
@@ -362,6 +430,14 @@ class PipelineConfig:
         if not isinstance(value, str) or not value.strip():
             raise ValueError("Missing 'experiment_combined_polish_vocalize.addendum_header' in config.yaml.")
         return value
+
+    @property
+    def pronunciation_max_reverted_ratio(self) -> float:
+        """Largest share of a siman's words the stage may revert before the whole output is rejected."""
+        value = self._pronunciation_value("max_reverted_ratio")
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+            raise ValueError(f"'pronunciation.max_reverted_ratio' must be a number between 0 and 1, got {value!r}.")
+        return float(value)
 
     @property
     def pronunciation_always_vocalize(self) -> list:

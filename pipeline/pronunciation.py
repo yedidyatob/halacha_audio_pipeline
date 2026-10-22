@@ -6,19 +6,25 @@ as letters). The output is plain Hebrew text; there is no markup.
 It runs after the dictionary nikkud stage (apply_nikkud), so its input may already contain
 vocalized words; the LLM must leave those exactly as they are.
 
-Validation (strict), word by word:
-  - words, whitespace and lines must be unchanged (only trailing whitespace and line endings
-    may differ);
-  - a word that already had nikkud in the input must be byte-identical in the output;
-  - any other word, with nikkud removed, must equal the input word, except that ו / י may be
-    added or removed (standard voweled spelling, e.g. עובר -> עֻבָּר, הקילו -> הֵקֵלּוּ) anywhere
-    but at the start of the word;
-  - no markup, no empty output.
-A violation or an LLM call failure fails the attempt; it is retried up to
-pronunciation.max_retries times (each failure is logged), then PronunciationError is raised
-with the last reason: by the pipeline (main.run_llm_stage: new sync calls, or new batch jobs in
-batch mode) or by vocalize (pipeline.retry). There is no fallback: the caller decides what
-to do (the pipeline fails that siman).
+Validation, the same in sync and batch mode.
+
+The whole output is rejected (the attempt fails) when:
+  - the call fails, or the output is empty or contains markup;
+  - the words do not line up with the input: line count or words per line differ (merged,
+    split, missing or extra words; only trailing whitespace and line endings may differ);
+  - more than pronunciation.max_reverted_ratio of the words had to be reverted (see below).
+A failed attempt is retried up to pronunciation.max_retries times (each failure is logged), then
+PronunciationError is raised with the last reason: by the pipeline (main.run_llm_stage: new sync
+calls, or new batch jobs in batch mode) or by vocalize (pipeline.retry). There is no fallback:
+the caller decides what to do (the pipeline fails that siman).
+
+Otherwise each invalid word is REVERTED: the input word is put back exactly, and the revert is
+logged and listed in the review file. A word is invalid when (word_revert_reason):
+  - it already had nikkud in the input and is not byte-identical in the output;
+  - with nikkud removed, it differs from the input word other than by adding or removing ו / י
+    (standard voweled spelling, e.g. עובר -> עֻבָּר, הקילו -> הֵקֵלּוּ), or a ו / י was added or
+    removed at its first letter;
+  - it is a pronunciation.never_vocalize word and got nikkud.
 """
 
 from __future__ import annotations
@@ -26,7 +32,7 @@ from __future__ import annotations
 import difflib
 import re
 from collections import Counter
-from typing import Callable, NamedTuple, Optional
+from typing import NamedTuple, Optional
 
 from pipeline.logger import get_logger
 from pipeline.retry import call_with_retries
@@ -59,6 +65,22 @@ class Change(NamedTuple):
     vocalized: str  # output word, edge punctuation trimmed
     line: int       # 1-based line of the word in the vocalized text
     context: str    # up to CONTEXT_WORDS output words on each side (same line), the word in [brackets]
+
+
+class Revert(NamedTuple):
+    """One word whose model version was invalid and was replaced by the input word."""
+    original: str   # input word (put back), edge punctuation trimmed
+    model: str      # the model's version, edge punctuation trimmed
+    reason: str     # word_revert_reason
+    line: int       # 1-based line of the word in the output text
+    context: str    # up to CONTEXT_WORDS model-output words on each side (same line), the word in [brackets]
+
+
+class Vocalized(NamedTuple):
+    """An accepted pronunciation result: the text (reverts applied) and its review lists."""
+    text: str
+    changes: list   # [Change], the words vocalized in text
+    reverted: list  # [Revert], the model's invalid words that were put back
 
 
 class PronunciationError(RuntimeError):
@@ -100,14 +122,6 @@ def _layout(text: str) -> list[str]:
     return re.split(r"\S+", text)
 
 
-def _word_pairs(original: str, vocalized: str) -> list[tuple[str, str]]:
-    """
-    Aligned (input word, output word) pairs. Only valid once both texts are known to have the
-    same layout, so whitespace splitting yields the same number of words.
-    """
-    return list(zip(_normalize(original).split(), _normalize(vocalized).split()))
-
-
 def word_vocalization_error(original: str, output: str) -> Optional[str]:
     """Why `output` is not a valid rendering of the input word `original`, or None if it is."""
     if has_nikkud(original):
@@ -120,26 +134,60 @@ def word_vocalization_error(original: str, output: str) -> Optional[str]:
     return "letters changed beyond adding/removing ו/י"
 
 
-def validate_vocalized_output(original: str, vocalized: str) -> Optional[str]:
-    """Returns None if `vocalized` is a valid output for `original`, else a reason string."""
+NEVER_VOCALIZE_REASON = "never_vocalize word must not get nikkud"
+
+
+def word_revert_reason(original: str, output: str, never_vocalize: frozenset) -> Optional[str]:
+    """Why the model's `output` for the input word `original` must be reverted, or None if it may stay."""
+    if output == original:
+        return None
+    error = word_vocalization_error(original, output)
+    if error:
+        return error
+    if original.strip(_EDGE_PUNCT) in never_vocalize:
+        return NEVER_VOCALIZE_REASON
+    return None
+
+
+def validate_layout(original: str, vocalized: str) -> Optional[str]:
+    """
+    None if the output's words line up with the input's (same lines, words and whitespace between
+    them; trailing whitespace and line endings aside), has no markup and is not empty, else the
+    reason the whole output is rejected.
+    """
     if not vocalized or not vocalized.strip():
         return "LLM returned empty output"
     markup = [m for m in find_markup(vocalized) if m not in original]
     if markup:
         return f"markup in output: {markup[:5]}"
-    expected = strip_nikkud(_normalize(original))
-    actual = strip_nikkud(_normalize(vocalized))
+    expected, actual = strip_nikkud(_normalize(original)), strip_nikkud(_normalize(vocalized))
     if _layout(expected) != _layout(actual):
-        return "text changed (ignoring nikkud): " + _diff_summary(expected, actual)
-    rejected = [
-        f"{a} -> {b} ({error})"
-        for a, b in _word_pairs(original, vocalized)
-        if (error := word_vocalization_error(a, b))
-    ]
-    if rejected:
-        more = f" ... (+{len(rejected) - 5} more)" if len(rejected) > 5 else ""
-        return f"{len(rejected)} word(s) changed invalidly: " + " | ".join(rejected[:5]) + more
+        return "words do not line up with the input (ignoring nikkud): " + _diff_summary(expected, actual)
     return None
+
+
+def revert_invalid_words(original: str, vocalized: str, never_vocalize: frozenset) -> tuple[str, list[Revert]]:
+    """
+    `vocalized` with every invalid word (word_revert_reason) replaced by the input word, and the
+    reverts. Only valid once validate_layout passed. The output's whitespace is kept as written.
+    """
+    raw_lines = vocalized.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    # _normalize drops leading blank lines; line numbers refer to the output text as written
+    first = next((n for n, line in enumerate(raw_lines) if line.strip()), 0)
+    reverts = []
+    for offset, original_line in enumerate(_normalize(original).split("\n")):
+        index = first + offset
+        parts = re.split(r"(\s+)", raw_lines[index])  # words at the even indexes ("" at the ends)
+        word_slots = [i for i in range(0, len(parts), 2) if parts[i]]
+        output_words = [parts[i] for i in word_slots]
+        for k, (slot, a) in enumerate(zip(word_slots, original_line.split())):
+            reason = word_revert_reason(a, parts[slot], never_vocalize)
+            if reason:
+                reverts.append(Revert(a.strip(_EDGE_PUNCT), parts[slot].strip(_EDGE_PUNCT), reason, index + 1,
+                                      _marked_context(output_words, k)))
+                parts[slot] = a
+        raw_lines[index] = "".join(parts)
+    return "\n".join(raw_lines), reverts
 
 
 def _marked_context(words: list[str], index: int) -> str:
@@ -156,7 +204,7 @@ def _marked_context(words: list[str], index: int) -> str:
 def changed_words(original: str, vocalized: str) -> list[Change]:
     """
     Every word the stage changed, in order (see Change). Only valid once the texts are known to
-    have the same layout (validate_vocalized_output).
+    line up (validate_layout).
     """
     raw_lines = vocalized.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     # _normalize drops leading blank lines; line numbers refer to the vocalized text as written
@@ -173,6 +221,21 @@ def changed_words(original: str, vocalized: str) -> list[Change]:
 
 
 CHANGES_HEADER = "varies\toriginal\tvocalized\tcount\tfirst_line\tcontext"
+
+
+REVERTED_TITLE = "reverted (the model's version was invalid; the original word was kept)"
+REVERTED_HEADER = "original\tmodel\treason\tline\tcontext"
+
+
+def format_review(result: Vocalized) -> str:
+    """
+    The review file: the changed words (format_changes), a blank line, then the reverted section:
+    a REVERTED_TITLE line, a REVERTED_HEADER line and one tab-separated line per reverted word,
+    in text order (the context shows the model's version in [brackets]).
+    """
+    rows = [REVERTED_TITLE, REVERTED_HEADER]
+    rows += [f"{r.original}\t{r.model}\t{r.reason}\t{r.line}\t{r.context}" for r in result.reverted]
+    return format_changes(result.changes) + "\n" + "\n".join(rows) + "\n"
 
 
 def format_changes(changes: list[Change]) -> str:
@@ -202,31 +265,31 @@ def format_changes(changes: list[Change]) -> str:
     return "\n".join(rows) + "\n"
 
 
-def parse_vocalized_response(script_text: str, vocalized: str) -> tuple[str, list[Change]]:
+def parse_vocalized_response(script_text: str, vocalized: str, never_vocalize: frozenset,
+                             max_reverted_ratio: float) -> Vocalized:
     """
-    Validates an LLM response against the input script. Returns (text, changes); raises
-    PronunciationError if the output is invalid. Shared by sync and batch mode.
+    Validates an LLM response against the input script and reverts its invalid words (see the
+    module docstring). Raises PronunciationError if the whole output is rejected. Shared by sync
+    and batch mode.
     """
-    reason = validate_vocalized_output(script_text, vocalized)
+    reason = validate_layout(script_text, vocalized)
     if reason:
         raise PronunciationError(f"pronunciation output rejected: {reason}")
-    vocalized = vocalized.replace("\r\n", "\n")
-    changes = changed_words(script_text, vocalized)
+    text, reverted = revert_invalid_words(script_text, vocalized, never_vocalize)
+    total = len(_normalize(script_text).split())
+    if len(reverted) > max_reverted_ratio * total:
+        shown = " | ".join(f"{r.original} -> {r.model} ({r.reason})" for r in reverted[:5])
+        more = f" ... (+{len(reverted) - 5} more)" if len(reverted) > 5 else ""
+        raise PronunciationError(
+            f"pronunciation output rejected: {len(reverted)} of {total} word(s) invalid, more than "
+            f"max_reverted_ratio {max_reverted_ratio}: {shown}{more}")
+    for r in reverted:
+        logger.warning(f"Pronunciation stage: reverted {r.model} -> {r.original} on line {r.line} ({r.reason}).")
+    changes = changed_words(script_text, text)
     respelled = sum(strip_nikkud(c.vocalized) != c.original for c in changes)
-    logger.info(f"Pronunciation stage: {len(changes)} word(s) vocalized ({respelled} respelled with ו/י).")
-    return vocalized, changes
-
-
-def vocalize_pronunciation(script_text: str, generate: Callable[[str], str]) -> tuple[str, list[Change]]:
-    """
-    Sends the script to the LLM via `generate(script_text) -> text` and validates.
-    Returns (text, changes). Raises PronunciationError if the call fails or the output is invalid.
-    """
-    try:
-        vocalized = generate(script_text)
-    except Exception as e:
-        raise PronunciationError(f"pronunciation LLM call failed: {e}") from e
-    return parse_vocalized_response(script_text, vocalized)
+    logger.info(f"Pronunciation stage: {len(changes)} word(s) vocalized ({respelled} respelled with ו/י), "
+                f"{len(reverted)} reverted.")
+    return Vocalized(text, changes, reverted)
 
 
 class PronunciationVocalizer:
@@ -238,28 +301,36 @@ class PronunciationVocalizer:
     batch jobs in batch mode), vocalize retries itself.
     """
 
-    def __init__(self, generator, instruction: str, thinking_level: Optional[str], max_retries: int):
+    def __init__(self, generator, instruction: str, thinking_level: Optional[str], max_retries: int,
+                 never_vocalize: list, max_reverted_ratio: float):
         self.generator = generator
         self.instruction = instruction
         self.thinking_level = thinking_level
         self.max_retries = max_retries
+        self.never_vocalize = frozenset(never_vocalize)
+        self.max_reverted_ratio = max_reverted_ratio
+
+    def parse(self, script_text: str, vocalized: str) -> Vocalized:
+        """Validates a response (sync or batch); raises PronunciationError if it is rejected."""
+        return parse_vocalized_response(script_text, vocalized, self.never_vocalize, self.max_reverted_ratio)
 
     @property
     def supports_batch(self) -> bool:
         from pipeline.generator import BatchCapableGenerator
         return isinstance(self.generator, BatchCapableGenerator)
 
-    def vocalize(self, script_text: str) -> tuple[str, list[Change]]:
+    def vocalize(self, script_text: str) -> Vocalized:
         """Synchronous call with up to max_retries retries. Raises PronunciationError if every attempt fails."""
         return call_with_retries(lambda: self.vocalize_once(script_text), self.max_retries, "Pronunciation",
                                  retry_on=PronunciationError, error_type=PronunciationError)
 
-    def vocalize_once(self, script_text: str) -> tuple[str, list[Change]]:
-        """One synchronous call. Raises PronunciationError if it fails or the output is invalid."""
-        return vocalize_pronunciation(
-            script_text,
-            lambda text: self.generator.generate_text(self.instruction, text, thinking_level=self.thinking_level),
-        )
+    def vocalize_once(self, script_text: str) -> Vocalized:
+        """One synchronous call. Raises PronunciationError if it fails or the output is rejected."""
+        try:
+            vocalized = self.generator.generate_text(self.instruction, script_text, thinking_level=self.thinking_level)
+        except Exception as e:
+            raise PronunciationError(f"pronunciation LLM call failed: {e}") from e
+        return self.parse(script_text, vocalized)
 
     def submit_batch(self, script_text: str, custom_id: str, cache_dir: str) -> str:
         """Submits the request as a batch job; returns the job id."""
@@ -272,7 +343,7 @@ class PronunciationVocalizer:
             thinking_level=self.thinking_level,
         )
 
-    def batch_result(self, script_text: str, job_id: str) -> tuple[str, list[Change]]:
+    def batch_result(self, script_text: str, job_id: str) -> Vocalized:
         """
         Fetches and validates a completed batch job (one attempt). Raises BatchResultError if the
         job has no usable result or its output is rejected; any other exception means the fetch
@@ -281,7 +352,7 @@ class PronunciationVocalizer:
         from pipeline.generator import BatchResultError
         vocalized = self.generator.get_batch_result(job_id)
         try:
-            return parse_vocalized_response(script_text, vocalized)
+            return self.parse(script_text, vocalized)
         except PronunciationError as e:
             raise BatchResultError(str(e)) from e
 
@@ -293,4 +364,5 @@ def create_pronunciation_vocalizer(config, generator_factory=None) -> Pronunciat
     generator = generator_factory(config)
     logger.info(f"Pronunciation stage via {config.pronunciation_engine} ({generator.model_name}).")
     return PronunciationVocalizer(generator, config.pronunciation_instruction, config.pronunciation_thinking_level,
-                                  config.pronunciation_max_retries)
+                                  config.pronunciation_max_retries, config.pronunciation_never_vocalize,
+                                  config.pronunciation_max_reverted_ratio)

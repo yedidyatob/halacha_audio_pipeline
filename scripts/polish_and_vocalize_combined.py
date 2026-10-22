@@ -133,7 +133,8 @@ def main(argv=None):
     print(f"Combined polish + nikkud of {args.draft} via {config.generator_engine} / {generator.model_name} "
           f"(thinking level: {thinking_level or 'model default'})...")
 
-    result = generator.polish_siman_script(draft, relations, instruction, thinking_level=thinking_level)
+    result = generator.polish_siman_script(draft, relations, instruction, temperature=config.polish_temperature,
+                                          thinking_level=thinking_level)
     try:
         changes = validate_combined_output(result)
     except PronunciationError as e:

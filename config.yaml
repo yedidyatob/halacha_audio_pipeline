@@ -21,6 +21,9 @@ generator:
   # Gemini thinking level for the Stage 1 draft calls, sync and batch (low, medium or high).
   # Ignored for openai.
   draft_thinking_level: "high"
+  # Temperature for the Stage 3 polish calls, sync and batch (low: high fidelity to the draft).
+  # Ignored for openai reasoning models (o1/o3).
+  polish_temperature: 0.1
 
   gemini:
     model_name: "gemini-3.1-pro-preview"
@@ -163,10 +166,15 @@ pronunciation:
   # Retries after a failed attempt (LLM error / rejected output); 0 = no retry.
   # Sync mode retries with new calls; batch mode resubmits the failed simanim as new batch jobs.
   max_retries: 1
+  # A word the model changed invalidly (an already-vocalized word altered, a letter other than ו/י
+  # changed, ו/י added or removed at the first letter, nikkud on a never_vocalize word) is reverted
+  # to the original; the whole output is rejected (and retried) only if more than this share of
+  # the siman's words had to be reverted. Between 0 and 1.
+  max_reverted_ratio: 0.02
   # Filled into {always_vocalize} / {never_vocalize} in pronunciation_instruction (joined with ", ";
   # an empty list renders as "אין").
   # An always_vocalize entry is a word, or a word with its readings (one or more), rendered as
-  # 'כחל (כְּחָל = עטין של בהמה; כֹּחַל = צבע איפור)'. Each reading needs a nikkud and a meaning; the
+  # 'למה (לְמָה = אל מה; לָמָּה = מדוע)'. Each reading needs a nikkud and a meaning; the
   # nikkud must be the word's letters (ו / י may be added or removed, except as the first letter),
   # checked at startup.
   always_vocalize:
@@ -178,10 +186,10 @@ pronunciation:
         - {nikkud: "לְמָה", meaning: 'אל מה, לאיזו כוונה, כמו "למה התכוון"'}
         - {nikkud: "לָמָּה", meaning: 'מדוע, כמו "למה צריך"'}
     - "שה"
-    - word: "כחל"
+    - word: "גזרה"
       readings:
-        - {nikkud: "כְּחָל", meaning: "עטין של בהמה"}
-        - {nikkud: "כֹּחַל", meaning: "צבע איפור"}
+        - {nikkud: "גְּזֵרָה", meaning: 'צו או תקנה, כמו "גזרה שווה"'}
+        - {nikkud: "גִּזְרָה", meaning: "חיתוך, צורה"}
   never_vocalize: ["דאורייתא", "דרבנן"]
 
 pronunciation_instruction: |
@@ -241,7 +249,7 @@ tts:
     chunk_size: 2000  # max characters per request
 
   elevenlabs:
-    voice_id: "vKaxWReVD8llVRJRbBf5"  # jack - Default voice
+    voice_id: "aTTiK3YzK3dXETpuDE2h"  # Ben - Effortless and Casual
     model_id: "eleven_v4"
     stability: 0.5
     similarity_boost: 0.75
@@ -266,6 +274,19 @@ tts:
     model: "tts-1" # Options: tts-1, tts-1-hd
     speed: 1.0
     chunk_size: 4000  # max characters per request (OpenAI hard limit is 4096)
+
+# enhance_transcript.py (ElevenLabs audio-tag enhancement); --model / --temperature override these.
+enhancer:
+  model_name: "gemini-3.1-flash-lite"
+  temperature: 0.2  # high fidelity to the source text
+
+# Standalone experiments in scripts/ (test_gemini_audio.py, run_gemini_native_audio.py):
+# Gemini native audio generation, outside the pipeline.
+experiments:
+  gemini_native_audio:
+    model_name: "gemini-2.5-flash-preview-tts"
+    voice_name: "Puck"
+    temperature: 0.3
 
 # Directory settings for output files
 directories:

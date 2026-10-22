@@ -27,7 +27,7 @@ from pipeline.factory import create_generator_engine, create_tts_engine
 from pipeline.generator import BatchResultError
 from pipeline.gematria import int_to_gematria
 from pipeline.apply_nikkud import apply_nikkud_to_abbreviations
-from pipeline.pronunciation import create_pronunciation_vocalizer, format_changes
+from pipeline.pronunciation import create_pronunciation_vocalizer, format_review
 
 logger = get_logger("halacha_pipeline_cli")
 
@@ -71,12 +71,16 @@ class RunSummary:
     def __init__(self):
         self.succeeded: list[int] = []
         self.failed: dict[int, tuple[str, str]] = {}
+        self.reverted: dict[int, int] = {}  # {siman: words the pronunciation stage reverted}
 
     def success(self, siman: int) -> None:
         self.succeeded.append(siman)
 
     def failure(self, siman: int, stage: str, reason: str) -> None:
         self.failed[siman] = (stage, reason)
+
+    def record_reverted(self, siman: int, count: int) -> None:
+        self.reverted[siman] = count
 
     @property
     def has_failures(self) -> bool:
@@ -93,6 +97,9 @@ class RunSummary:
         ]
         for siman, (stage, reason) in self.failed.items():
             lines.append(f"  - {item_label(siman)} | stage: {stage} | reason: {reason}")
+        if self.reverted:
+            lines.append(f"Pronunciation words reverted ({sum(self.reverted.values())}): "
+                         + ", ".join(f"{siman}: {count}" for siman, count in self.reverted.items()))
         return "\n".join(lines)
 
     def log(self) -> None:
@@ -403,14 +410,14 @@ def polish_simanim(drafts: dict, relations_text: str, generator, config, args, s
         summary, drafts, STAGE_POLISH,
         call=lambda siman, draft: generator.polish_siman_script(
             draft, relations_text, config.polishing_instruction,
-            thinking_name=polish_base_name(config, siman, model_suffix)),
+            temperature=config.polish_temperature, thinking_name=polish_base_name(config, siman, model_suffix)),
         max_retries=config.generator_max_retries, args=args,
         batch=BatchCalls(
             generator,
             submit=lambda siman, draft: generator.submit_batch(
                 system_instruction=config.polishing_instruction,
                 user_prompt=generator._get_polishing_user_prompt(draft, relations_text),
-                temperature=0.1,
+                temperature=config.polish_temperature,
                 custom_id=f"stage3_siman_{siman}",
                 cache_dir=config.cache_dir
             ),
@@ -427,12 +434,13 @@ def apply_dictionary_nikkud(polished: dict, summary: RunSummary) -> dict:
 
 def vocalize_simanim(texts: dict, vocalizer, config, args, summary: RunSummary) -> dict:
     """
-    Stage 3.5: {siman: text} -> {siman: (text, changes)}. changes is None when the
-    pronunciation stage is disabled (vocalizer is None) and the text passes through.
+    Stage 3.5: {siman: text} -> {siman: (text, review)}. review is the pronunciation.Vocalized
+    result (changed and reverted words), or None when the stage is disabled (vocalizer is None)
+    and the text passes through. Each siman's reverted-word count goes into the summary.
     """
     if vocalizer is None:
         return {siman: (text, None) for siman, text in texts.items()}
-    return run_llm_stage(
+    results = run_llm_stage(
         summary, texts, STAGE_PRONUNCIATION,
         call=lambda siman, text: vocalizer.vocalize_once(text),
         max_retries=vocalizer.max_retries, args=args,
@@ -444,6 +452,9 @@ def vocalize_simanim(texts: dict, vocalizer, config, args, summary: RunSummary) 
             fetch=lambda siman, text, job_id: vocalizer.batch_result(text, job_id),
         ),
     )
+    for siman, result in results.items():
+        summary.record_reverted(siman, len(result.reverted))
+    return {siman: (result.text, result) for siman, result in results.items()}
 
 
 class PlanError(ValueError):
@@ -589,7 +600,7 @@ def format_run_plan(plan: RunPlan, args, config, generator, vocalizer, model_suf
                  f"{plan.missing_drafts or 'none'}")
     lines += [f"    Siman {s} -> {plan.draft_paths[s]}" for s in plan.missing_drafts]
     if args.stage_1_only:
-        lines.append("--stage-1-only: the run stops after Stage 1 (and the heuristic evaluation).")
+        lines.append("--stage-1-only: the run stops after Stage 1.")
         return "\n".join(lines)
     pronunciation = (f"{config.pronunciation_engine} {vocalizer.generator.model_name}" if vocalizer is not None
                      else "disabled (pronunciation.enabled: false)")
@@ -612,18 +623,18 @@ def format_run_plan(plan: RunPlan, args, config, generator, vocalizer, model_suf
     return "\n".join(lines)
 
 
-def save_transcript(siman: int, text: str, changes, config, model_suffix: str) -> None:
+def save_transcript(siman: int, text: str, review, config, model_suffix: str) -> None:
     """
-    Stage 3.6: saves the final transcript and, if the pronunciation stage ran, the review list
-    of the words it vocalized (pronunciation.format_changes).
+    Stage 3.6: saves the final transcript and, if the pronunciation stage ran, the review file
+    of the words it vocalized and reverted (pronunciation.format_review).
     """
     base_name = lesson_base_name(config, siman, model_suffix)
-    if changes is not None:
+    if review is not None:
         save_output_file(
             directory=config.output_dir,
             base_name=f"{base_name}_pronunciation_changes",
             extension="txt",
-            content=format_changes(changes),
+            content=format_review(review),
             logger=logger,
             label=f"{STAGE_PRONUNCIATION} changes for Siman {siman}"
         )
@@ -657,9 +668,9 @@ def synthesize_siman_audio(siman: int, text: str, config, model_suffix: str) -> 
     )
 
 
-def finish_siman(siman: int, text: str, changes, config, args, model_suffix: str) -> None:
+def finish_siman(siman: int, text: str, review, config, args, model_suffix: str) -> None:
     """Stage 3.6 (transcript save) then TTS unless --skip-tts. Raises SimanStageError on failure."""
-    run_siman_stage(siman, STAGE_TRANSCRIPT, lambda: save_transcript(siman, text, changes, config, model_suffix))
+    run_siman_stage(siman, STAGE_TRANSCRIPT, lambda: save_transcript(siman, text, review, config, model_suffix))
     if args.skip_tts:
         logger.info("Skipping TTS synthesis as requested by --skip-tts.")
         return
@@ -851,7 +862,6 @@ def main():
         sys.exit(0)
     relations_text = plan.relations_text
     target_generation_simanim = plan.target_simanim
-    drafts_needed = plan.drafts_needed
     drafts = dict(plan.drafts)
     missing_simanim = plan.missing_drafts
 
@@ -872,30 +882,6 @@ def main():
     if missing_simanim:
         logger.info(f"Generating missing Stage 1 drafts for Simanim: {missing_simanim}...")
         drafts.update(generate_drafts(missing_simanim, extractor, generator, config, args, model_suffix))
-
-    # 7.5 Run Heuristic Evaluation for resolved drafts
-    logger.info("Executing Heuristic Evaluation on resolved drafts...")
-    from pipeline.evaluator import evaluate_draft
-    
-    for siman in drafts_needed:
-        if siman in drafts:
-            logger.info(f"Evaluating draft quality for Siman {siman}...")
-            try:
-                eval_res = evaluate_draft(siman, drafts[siman], config_path=args.config)
-                if not eval_res["success"]:
-                    logger.warning(
-                        f"\n"
-                        f"============================================================\n"
-                        f"⚠️⚠️⚠️ HEURISTIC EVALUATION WARNING FOR SIMAN {siman} ⚠️⚠️⚠️\n"
-                        f"============================================================\n"
-                        f"The generated Stage 1 draft failed heuristic coverage checks.\n\n"
-                        f"{eval_res['report']}\n"
-                        f"============================================================\n"
-                    )
-                else:
-                    logger.info(f"Heuristic coverage evaluation for Siman {siman} PASSED.")
-            except Exception as e:
-                logger.error(f"Failed to run heuristic evaluation for Siman {siman}: {e}")
 
     if args.stage_1_only:
         logger.info("Stage 1 completed. Exiting as requested by --stage-1-only.")

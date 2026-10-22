@@ -148,15 +148,15 @@ def test_validate_gap_ms():
 def test_engine_explicit_gaps():
     e = ElevenLabsTTS(chunk_size=8000, context_chars=500, api_key="k", chunk_gap_paragraph_ms=700, chunk_gap_sentence_ms=300)
     assert (e.chunk_gap_paragraph_ms, e.chunk_gap_sentence_ms) == (700, 300)
-    o = OpenAITTS(api_key="k", chunk_size=4000, chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=50)
+    o = OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy", chunk_size=4000, chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=50)
     assert (o.chunk_gap_paragraph_ms, o.chunk_gap_sentence_ms) == (0, 50)
-    g = GoogleCloudTTS(chunk_size=2000, chunk_gap_paragraph_ms=10, chunk_gap_sentence_ms=20)
+    g = GoogleCloudTTS(credentials_path=None, voice_name="v", language_code="he-IL", speaking_rate=1.0, pitch=0.0, chunk_size=2000, chunk_gap_paragraph_ms=10, chunk_gap_sentence_ms=20)
     assert (g.chunk_gap_paragraph_ms, g.chunk_gap_sentence_ms) == (10, 20)
     with patch("google.auth.default", side_effect=Exception("no creds")):
         gem = GeminiTTS("m", "v", chunk_size=2000, chunk_gap_paragraph_ms=11, chunk_gap_sentence_ms=22)
     assert (gem.chunk_gap_paragraph_ms, gem.chunk_gap_sentence_ms) == (11, 22)
     with pytest.raises(ValueError):
-        OpenAITTS(api_key="k", chunk_size=4000, chunk_gap_paragraph_ms=-5, chunk_gap_sentence_ms=0)
+        OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy", chunk_size=4000, chunk_gap_paragraph_ms=-5, chunk_gap_sentence_ms=0)
 
 
 def test_engines_require_gap_arguments():
@@ -164,13 +164,13 @@ def test_engines_require_gap_arguments():
     with pytest.raises(TypeError):
         ElevenLabsTTS(api_key="k")
     with pytest.raises(TypeError):
-        OpenAITTS(api_key="k")
+        OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy")
     with pytest.raises(TypeError):
-        GoogleCloudTTS()
+        GoogleCloudTTS(credentials_path=None, voice_name="v", language_code="he-IL", speaking_rate=1.0, pitch=0.0)
     with pytest.raises(TypeError):
         GeminiTTS("m", "v")
     with pytest.raises(ValueError):
-        OpenAITTS(api_key="k", chunk_size=4000, chunk_gap_paragraph_ms=None, chunk_gap_sentence_ms=0)
+        OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy", chunk_size=4000, chunk_gap_paragraph_ms=None, chunk_gap_sentence_ms=0)
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +230,7 @@ def test_factory_passes_gaps_to_engine(_mock_openai):
     config.tts_engine = "openai"
     config.tts_chunk_size = {"elevenlabs":8000,"google":2000,"openai":4000,"gemini":2000}["openai"]
     config.openai_api_key = "k"
-    config.openai_tts_settings = {"voice": "alloy", "model": "tts-1"}
+    config.openai_tts_settings = {"voice": "alloy", "model": "tts-1", "speed": 1.0}
     config.ssl_verify = True
     config.tts_chunk_gap_paragraph_ms = 900
     config.tts_chunk_gap_sentence_ms = 120
