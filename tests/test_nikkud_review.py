@@ -239,21 +239,21 @@ def _gemini_gen():
     return gen, client
 
 
-def test_gemini_generate_text_passes_thinking_level():
+def test_gemini_draft_call_passes_thinking_level():
     from google.genai import types
     gen, client = _gemini_gen()
     with patch("pipeline.generator.log_gemini_usage"):
-        assert gen.generate_text("sys", "user", thinking_level="low") == "out"
+        assert gen.generate_siman_script(94, "ctx", "sys", thinking_level="low") == "out"
     config = client.models.generate_content_stream.call_args.kwargs["config"]
     assert isinstance(config.thinking_config, types.ThinkingConfig)
     assert config.thinking_config.thinking_level.value.lower() == "low"
     assert config.temperature == 0.2 and config.system_instruction == "sys"
 
 
-def test_gemini_generate_text_without_level_sends_no_thinking_level():
+def test_gemini_draft_call_without_level_sends_no_thinking_level():
     gen, client = _gemini_gen()
     with patch("pipeline.generator.log_gemini_usage"):
-        gen.generate_text("sys", "user")
+        gen.generate_siman_script(94, "ctx", "sys")
     thinking = client.models.generate_content_stream.call_args.kwargs["config"].thinking_config
     assert thinking.thinking_level is None and thinking.include_thoughts is True
 

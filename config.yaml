@@ -238,11 +238,6 @@ tts:
     speed: 1.0
     chunk_size: 4000  # max characters per request (OpenAI hard limit is 4096)
 
-# enhance_transcript.py (ElevenLabs audio-tag enhancement); --model / --temperature override these.
-enhancer:
-  model_name: "gemini-3.1-flash-lite"
-  temperature: 0.2  # high fidelity to the source text
-
 # Standalone experiments in scripts/ (test_gemini_audio.py, run_gemini_native_audio.py):
 # Gemini native audio generation, outside the pipeline.
 experiments:
@@ -262,7 +257,7 @@ directories:
 # Gemini text-model prices for the cost tracker, USD per 1M tokens (paid tier, standard / non-batch).
 # Thinking tokens are billed as output. Optional long_context: the rates for a request whose prompt
 # exceeds threshold_tokens (the whole request is billed at that tier). Every Gemini model used for a
-# text call (generator, enhance_transcript.py --model) needs an entry here.
+# text call (generator) needs an entry here.
 # Source: https://ai.google.dev/gemini-api/docs/pricing (checked 2026-10-19).
 gemini_pricing:
   gemini-3.1-pro-preview:
@@ -272,6 +267,3 @@ gemini_pricing:
       threshold_tokens: 200000
       input_per_million: 4.00
       output_per_million: 18.00
-  gemini-3.1-flash-lite:
-    input_per_million: 0.25
-    output_per_million: 1.50

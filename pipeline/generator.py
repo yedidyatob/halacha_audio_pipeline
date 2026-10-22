@@ -102,15 +102,6 @@ class BaseScriptGenerator(ABC):
         """
         pass
 
-    def generate_text(self, system_instruction: str, user_prompt: str, thinking_level: str = None,
-                      thinking_name: Optional[str] = None) -> str:
-        """
-        Generic single-shot completion (system instruction + user prompt) at this
-        generator's configured temperature. Used by auxiliary stages such as
-        the transcript enhancer. thinking_level is honoured by Gemini only (None = model default).
-        """
-        raise NotImplementedError(f"{type(self).__name__} does not implement generate_text().")
-
 
 class BatchCapableGenerator(ABC):
     """
@@ -243,15 +234,6 @@ class GeminiScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
         logger.info(f"Successfully polished script ({len(polished_text)} chars).")
         return polished_text
 
-    def generate_text(self, system_instruction: str, user_prompt: str, thinking_level: str = None,
-                      thinking_name: Optional[str] = None) -> str:
-        logger.info(
-            f"Running Gemini text call via model {self.model_name} (temperature {self.temperature}"
-            + (f", thinking_level {thinking_level}" if thinking_level else "") + ")..."
-        )
-        return self._generate(system_instruction, user_prompt, self.temperature, thinking_level,
-                              "Gemini text call", thinking_name)
-
     def submit_batch(
         self,
         system_instruction: str,
@@ -311,7 +293,7 @@ class GeminiScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
 
 
 def build_gemini_client(api_key: Optional[str], ssl_verify: bool) -> genai.Client:
-    """The Gemini client for every Gemini text call (generator, enhancer)."""
+    """The Gemini client for every Gemini text call."""
     kwargs = {}
     if api_key:
         kwargs["api_key"] = api_key
@@ -557,26 +539,6 @@ class OpenAIScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
         except Exception as e:
             logger.error(f"Error during OpenAI script polish call: {e}")
             raise
-
-    def generate_text(self, system_instruction: str, user_prompt: str, thinking_level: str = None,
-                      thinking_name: Optional[str] = None) -> str:
-        # thinking_level is Gemini-only; ignored here.
-        logger.info(f"Running OpenAI text call via model {self.model_name}...")
-        is_reasoning_model = self.model_name.startswith("o1") or self.model_name.startswith("o3")
-        messages = [
-            {"role": "developer" if is_reasoning_model else "system", "content": system_instruction},
-            {"role": "user", "content": user_prompt},
-        ]
-        kwargs = {"model": self.model_name, "messages": messages}
-        if not is_reasoning_model:
-            kwargs["temperature"] = self.temperature
-        if self.service_tier:
-            kwargs["service_tier"] = self.service_tier
-        response = self.client.chat.completions.create(**kwargs)
-        text = response.choices[0].message.content
-        if not text:
-            raise ValueError("OpenAI API returned an empty text response.")
-        return text
 
     def submit_batch(
         self,

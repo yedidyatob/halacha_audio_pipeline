@@ -274,10 +274,9 @@ generator:
 ```
 
 Every generation setting (model names, temperatures, `service_tier`, `polish_temperature`, and the
-`enhancer` and `experiments.gemini_native_audio` sections) is required in `config.yaml`; there are no
+`experiments.gemini_native_audio` section) is required in `config.yaml`; there are no
 code defaults, and a missing or invalid value is a startup error. `generator.polish_temperature` is the
-temperature of the Stage 3 polish calls (sync and batch). `enhance_transcript.py` reads
-`enhancer.model_name` / `enhancer.temperature`; its `--model` / `--temperature` flags override them.
+temperature of the Stage 3 polish calls (sync and batch).
 
 `generator.max_retries` is the number of retries after a failed attempt in Stages 1-3 (API error,
 failed batch job or request, empty, blocked or cut-off response; 0 = no retry): new calls in sync
@@ -288,8 +287,7 @@ mode, new batch jobs in batch mode.
 
 ### Gemini calls: streaming and thinking files
 
-Every synchronous Gemini text call (Stages 1-3 and
-`enhance_transcript.py`) goes through one path, `GeminiScriptGenerator._generate`: it streams the
+Every synchronous Gemini text call (Stages 1-3) goes through one path, `GeminiScriptGenerator._generate`: it streams the
 response (`generate_content_stream`) with `thinking_config.include_thoughts` on, so bytes keep
 arriving while the model thinks. A long non-streaming call sends nothing until it finishes, and an
 idle connection can be cut by a proxy or front end (`Server disconnected without sending a
@@ -297,7 +295,7 @@ response` after a few minutes of thinking). Block / finish-reason checks are the
 results; usage is read from the final chunk.
 
 Only the answer text is returned, saved and passed on. The thought summaries of the Stage 1-3 calls
-(and of `enhance_transcript.py`) are written to `directories.thinking_dir`, one file per call named
+are written to `directories.thinking_dir`, one file per call named
 after that call's output plus `_thinking` (e.g. `{section}_Siman_{N}_{model}_draft_thinking.txt`,
 `{section}_Relations_{range}_{model}_thinking.txt`, `{section}_Siman_{N}_{model}_polish_thinking.txt`),
 with the usual timestamped history copy. They are for reading only and never feed a later stage.
@@ -310,8 +308,8 @@ Each synchronous Gemini call logs its tokens (input, output, thinking) and estim
 tokens are billed as output. Prices come from the `gemini_pricing:` section of `config.yaml` (USD per
 1M tokens, paid tier, standard / non-batch, from https://ai.google.dev/gemini-api/docs/pricing); an
 optional `long_context` tier applies to the whole request when the prompt exceeds
-`threshold_tokens`. Every Gemini model used for a text call (generator,
-`enhancer.model_name` or `enhance_transcript.py --model`) needs an entry; a missing one is a startup error.
+`threshold_tokens`. Every Gemini model used for a text call (the generator's
+`model_name`) needs an entry; a missing one is a startup error.
 
 ```yaml
 gemini_pricing:

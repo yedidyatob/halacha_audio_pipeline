@@ -327,17 +327,6 @@ class PipelineConfig:
         """The generator's OpenAI service tier (engine openai)."""
         return _required_str(self._generator_engine_section("openai"), "service_tier", "generator.openai")
 
-    @property
-    def enhancer_model_name(self) -> str:
-        """Gemini model for enhance_transcript.py (its --model flag overrides it)."""
-        return _required_str(self.config_data.get("enhancer"), "model_name", "enhancer")
-
-    @property
-    def enhancer_temperature(self) -> float:
-        """Temperature for enhance_transcript.py (its --temperature flag overrides it)."""
-        return _temperature(_required(self.config_data.get("enhancer"), "temperature", "enhancer"),
-                            "enhancer.temperature")
-
     def _native_audio_section(self) -> dict:
         return (self.config_data.get("experiments") or {}).get("gemini_native_audio")
 

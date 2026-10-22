@@ -7,7 +7,6 @@ from unittest.mock import MagicMock, mock_open, patch
 import pytest
 from google.genai import types
 
-from pipeline.enhancer import ElevenLabsEnhancer
 from pipeline.utils import gemini_cost, log_gemini_usage
 from tests.gemini_fakes import PRICE, answer_stream, chunk, make_gemini_generator, usage
 
@@ -16,13 +15,17 @@ def _thinking_files(directory):
     return sorted(p for p in os.listdir(directory)) if os.path.isdir(directory) else []
 
 
+def _call(gen, thinking_name=None):
+    """One synchronous call through the shared streaming path (GeminiScriptGenerator._generate)."""
+    return gen._generate("sys", "user", gen.temperature, None, "test call", thinking_name)
+
+
 # --- the shared streaming path ------------------------------------------------------
 
 @pytest.mark.parametrize("call", [
     lambda g: g.generate_siman_script(94, "ctx", "sys", thinking_name="N"),
     lambda g: g.analyze_cross_relations({94: "d"}, "sys", thinking_name="N"),
     lambda g: g.polish_siman_script("d", "rel", "sys", temperature=0.1, thinking_name="N"),
-    lambda g: g.generate_text("sys", "user", thinking_name="N"),
 ])
 def test_every_sync_call_streams_and_returns_only_answer_text(tmp_path, call):
     gen, client = make_gemini_generator(tmp_path)
@@ -41,7 +44,7 @@ def test_thoughts_never_leak_into_answer_even_when_interleaved(tmp_path):
         chunk(("text", "A"), ("thought", "T2")),
         chunk(("text", "B"), finish_reason=types.FinishReason.STOP, usage=usage()),
     ]
-    assert gen.generate_text("sys", "user", thinking_name="X") == "AB"
+    assert _call(gen, "X") == "AB"
     assert (tmp_path / "X_thinking.txt").read_text(encoding="utf-8") == "T1 T2"
     assert len(_thinking_files(tmp_path)) == 2  # timestamped history copy + latest copy
 
@@ -60,9 +63,9 @@ def test_thinking_file_path_logged_once(tmp_path, caplog):
 def test_no_thinking_file_without_name_or_without_thoughts(tmp_path):
     gen, client = make_gemini_generator(tmp_path / "th")
     client.models.generate_content_stream.return_value = answer_stream("a", thought="t")
-    gen.generate_text("sys", "user")  # no thinking_name
+    _call(gen)  # no thinking_name
     client.models.generate_content_stream.return_value = answer_stream("a", thought="")
-    gen.generate_text("sys", "user", thinking_name="N")  # no thoughts in the stream
+    _call(gen, "N")  # no thoughts in the stream
     assert _thinking_files(tmp_path / "th") == []
 
 
@@ -79,7 +82,7 @@ def test_prompt_blocked_raises(tmp_path):
     client.models.generate_content_stream.return_value = [chunk(prompt_feedback=types.GenerateContentResponsePromptFeedback(
         block_reason=types.BlockedReason.SAFETY, block_reason_message="nope"))]
     with pytest.raises(ValueError, match=r"prompt blocked \(SAFETY\): nope"):
-        gen.generate_text("sys", "user")
+        _call(gen)
 
 
 def test_early_finish_discards_partial_text_but_keeps_thinking_file(tmp_path):
@@ -98,14 +101,14 @@ def test_thoughts_only_response_is_an_error(tmp_path):
     client.models.generate_content_stream.return_value = [
         chunk(("thought", "hmm"), finish_reason=types.FinishReason.STOP, usage=usage())]
     with pytest.raises(ValueError, match="response has no text"):
-        gen.generate_text("sys", "user")
+        _call(gen)
 
 
 def test_empty_stream_is_an_error(tmp_path):
     gen, client = make_gemini_generator(tmp_path)
     client.models.generate_content_stream.return_value = []
     with pytest.raises(ValueError, match="no candidates"):
-        gen.generate_text("sys", "user")
+        _call(gen)
 
 
 def test_usage_from_final_chunk_is_logged_with_thinking_cost(tmp_path, caplog):
@@ -116,7 +119,7 @@ def test_usage_from_final_chunk_is_logged_with_thinking_cost(tmp_path, caplog):
               usage=usage(prompt=1_000_000, output=100_000, thoughts=400_000)),
     ]
     with caplog.at_level(logging.INFO):
-        gen.generate_text("sys", "user")
+        _call(gen)
     line = next(r.getMessage() for r in caplog.records if "Cost Tracker" in r.getMessage())
     assert "Input=1000000, Output=100000, Thinking=400000" in line
     # long-context tier (prompt > 200k): 1,000,000 * $4/1M + (100,000 + 400,000 thinking) * $18/1M = 4 + 9
@@ -149,18 +152,9 @@ def test_log_gemini_usage_without_usage_is_silent(caplog):
     assert "Cost Tracker" not in caplog.text
 
 
-# --- enhancer -----------------------------------------------------------------------
+# --- client ------------------------------------------------------------------------
 
-def test_enhancer_goes_through_shared_generator(tmp_path):
-    gen, client = make_gemini_generator(tmp_path, model_name="gemini-3.1-flash-lite", ssl_verify=False)
-    client.models.generate_content_stream.return_value = answer_stream("[warm] טקסט", thought="why")
-    enhancer = ElevenLabsEnhancer(gen)
-    path = enhancer.enhance_and_save("טקסט", str(tmp_path / "out"), "T_enhanced")
-    assert open(path, encoding="utf-8").read() == "[warm] טקסט"
-    assert (tmp_path / "T_enhanced_thinking.txt").read_text(encoding="utf-8") == "why"
-
-
-def test_enhancer_client_honours_ssl_verify(tmp_path):
+def test_gemini_client_honours_ssl_verify(tmp_path):
     with patch("pipeline.generator.genai.Client") as client_cls:
         from pipeline.generator import GeminiScriptGenerator
         GeminiScriptGenerator(api_key="k", model_name="m", temperature=0.2, ssl_verify=False,
@@ -221,8 +215,6 @@ def test_draft_thinking_level():
     ("openai_model_name", "generator:\n  openai:\n", "model_name"),
     ("openai_temperature", "generator:\n  openai:\n", "temperature"),
     ("openai_service_tier", "generator:\n  openai:\n", "service_tier"),
-    ("enhancer_model_name", "enhancer:\n", "model_name"),
-    ("enhancer_temperature", "enhancer:\n", "temperature"),
     ("native_audio_model_name", "experiments:\n  gemini_native_audio:\n", "model_name"),
     ("native_audio_voice_name", "experiments:\n  gemini_native_audio:\n", "voice_name"),
     ("native_audio_temperature", "experiments:\n  gemini_native_audio:\n", "temperature"),
@@ -296,8 +288,6 @@ def test_repo_config_prices_every_configured_gemini_model():
     assert cfg.draft_thinking_level == "high"
     assert cfg.polish_temperature == 0.1
     assert (cfg.gemini_temperature, cfg.openai_temperature, cfg.openai_service_tier) == (0.3, 1.0, "auto")
-    assert (cfg.enhancer_model_name, cfg.enhancer_temperature) == ("gemini-3.1-flash-lite", 0.2)
     assert (cfg.native_audio_model_name, cfg.native_audio_voice_name, cfg.native_audio_temperature) == \
         ("gemini-2.5-flash-preview-tts", "Puck", 0.3)
     assert cfg.gemini_price(cfg.gemini_model_name)["output_per_million"] == 12.0
-    assert cfg.gemini_price(cfg.enhancer_model_name)  # enhance_transcript.py default --model
