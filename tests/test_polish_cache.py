@@ -5,9 +5,8 @@ import pytest
 
 import main as main_mod
 from pipeline.generator import GeminiScriptGenerator
-from pipeline.pronunciation import PronunciationVocalizer
 from tests.test_dry_run import _args as _plan_args, _main_dry_run
-from tests.test_stage3_flow import DRAFTS, TET, FakeBatchGenerator, _run, _transcripts, vocalized
+from tests.test_stage3_flow import DRAFTS, FakeBatchGenerator, _run, _transcripts
 
 
 def _polish_file(directory, siman):
@@ -17,7 +16,7 @@ def _polish_file(directory, siman):
 def _plan_cfg(tmp_path):
     return MagicMock(section_slug="YD", drafts_dir=str(tmp_path / "drafts"), relations_dir=str(tmp_path / "rel"),
                      output_dir=str(tmp_path / "out"), generator_max_retries=1, generator_engine="gemini",
-                     tts_engine="gemini", pronunciation_enabled=False)
+                     tts_engine="gemini")
 
 
 @pytest.fixture
@@ -70,7 +69,7 @@ def test_dry_run_shows_polish_per_siman(out, monkeypatch, caplog):
 def test_sync_cache_hit_skips_polish_call(tmp_path):
     gen = MagicMock()
     gen.polish_siman_script.side_effect = lambda draft, rel, instr, **_: f"polished {draft}"
-    summary = _run(tmp_path, gen, None, batch=False, cached_polish={94: "cached טית 94", 96: "cached 96"})
+    summary = _run(tmp_path, gen, batch=False, cached_polish={94: "cached טית 94", 96: "cached 96"})
     assert summary.succeeded == list(DRAFTS)
     assert [c.args[0] for c in gen.polish_siman_script.call_args_list] == [DRAFTS[95], DRAFTS[97]]
     # the cached polish goes on through the later stages; only the new ones are saved as polish
@@ -80,34 +79,30 @@ def test_sync_cache_hit_skips_polish_call(tmp_path):
 
 def test_sync_cache_hit_needs_no_draft(tmp_path):
     gen = MagicMock()
-    summary = _run(tmp_path, gen, None, batch=False, drafts={}, targets=[94], cached_polish={94: "cached 94"})
+    summary = _run(tmp_path, gen, batch=False, drafts={}, targets=[94], cached_polish={94: "cached 94"})
     assert summary.succeeded == [94] and not summary.failed
     gen.polish_siman_script.assert_not_called()
 
 
 def test_batch_polishes_only_uncached_simanim(tmp_path):
     polish_gen = FakeBatchGenerator(lambda cid, prompt: prompt)
-    voc_gen = FakeBatchGenerator(lambda cid, prompt: vocalized(prompt))
-    summary = _run(tmp_path, polish_gen, PronunciationVocalizer(voc_gen, "VOC", None, 0), batch=True,
-                   cached_polish={95: "טית cached 95", 97: "טית cached 97"})
+    summary = _run(tmp_path, polish_gen, batch=True,
+                   cached_polish={95: "טֵית cached 95", 97: "טֵית cached 97"})
     assert summary.succeeded == list(DRAFTS)
     assert [r["custom_id"] for r in polish_gen.submitted] == ["stage3_siman_94", "stage3_siman_96"]
-    # Stage 3.5 covers every siman, cached or not, in target order
-    assert [r["custom_id"] for r in voc_gen.submitted] == [f"stage3_5_siman_{s}" for s in DRAFTS]
-    assert (tmp_path / "YD_Siman_95_m_transcript.txt").read_text(encoding="utf-8") == f"{TET} cached 95"
+    # the cached (already vocalized) polish goes on to the dictionary stage and the transcript as is
+    assert (tmp_path / "YD_Siman_95_m_transcript.txt").read_text(encoding="utf-8") == "טֵית cached 95"
 
 
 def test_batch_all_cached_submits_no_polish_job(tmp_path, caplog):
     polish_gen = FakeBatchGenerator(lambda cid, prompt: prompt)
-    voc_gen = FakeBatchGenerator(lambda cid, prompt: vocalized(prompt))
     cached = {s: f"cached {d}" for s, d in DRAFTS.items()}
     with caplog.at_level("INFO"):
-        summary = _run(tmp_path, polish_gen, PronunciationVocalizer(voc_gen, "VOC", None, 0), batch=True,
+        summary = _run(tmp_path, polish_gen, batch=True,
                        cached_polish=cached)
     assert summary.succeeded == list(DRAFTS) and polish_gen.submitted == []
-    assert len(voc_gen.submitted) == len(DRAFTS)
-    assert "Stage 3 (Polishing): no calls needed; every target siman's polish was loaded from cache." in caplog.messages
-    assert not [m for m in caplog.messages if "Stage 3 (Polishing) batch" in m]
+    assert "Stage 3 (Polishing and nikkud): no calls needed; every target siman's polish was loaded from cache." in caplog.messages
+    assert not [m for m in caplog.messages if "Stage 3 (Polishing and nikkud) batch" in m]
     assert _transcripts(tmp_path) == list(DRAFTS)
 
 
@@ -115,7 +110,7 @@ def test_batch_all_cached_submits_no_polish_job(tmp_path, caplog):
 
 def _main(tmp_path, monkeypatch, argv, gen):
     cfg = MagicMock(section_slug="YD", drafts_dir=str(tmp_path / "drafts"), relations_dir=str(tmp_path / "rel"),
-                    output_dir=str(tmp_path / "out"), generator_max_retries=0, pronunciation_enabled=False)
+                    output_dir=str(tmp_path / "out"), generator_max_retries=0)
     monkeypatch.setattr("sys.argv", ["main.py", *argv, "--skip-tts"])
     with patch.object(main_mod, "PipelineConfig", return_value=cfg), \
          patch.object(main_mod, "create_generator_engine", return_value=gen), \

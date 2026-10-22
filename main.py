@@ -26,17 +26,16 @@ from pipeline.utils import save_output_file
 from pipeline.factory import create_generator_engine, create_tts_engine
 from pipeline.generator import BatchResultError
 from pipeline.gematria import int_to_gematria
-from pipeline.apply_nikkud import apply_nikkud_to_abbreviations
-from pipeline.pronunciation import create_pronunciation_vocalizer, format_changes
+from pipeline.apply_nikkud import apply_nikkud_with_overrides
+from pipeline.nikkud_review import format_review
 
 logger = get_logger("halacha_pipeline_cli")
 
 STAGE_DRAFTS = "Stage 1 (Drafts)"
 STAGE_RELATIONS = "Stage 2 (Relations)"
-STAGE_POLISH = "Stage 3 (Polishing)"
-STAGE_NIKKUD = "Stage 3.4 (Dictionary nikkud)"
-STAGE_PRONUNCIATION = "Stage 3.5 (Pronunciation nikkud)"
-STAGE_TRANSCRIPT = "Stage 3.6 (Transcript save)"
+STAGE_POLISH = "Stage 3 (Polishing and nikkud)"
+STAGE_NIKKUD = "Stage 3.1 (Dictionary nikkud)"
+STAGE_TRANSCRIPT = "Stage 3.2 (Transcript save)"
 STAGE_TTS = "TTS"
 
 
@@ -285,7 +284,7 @@ AUDIO_EXTENSION = "mp3"
 
 
 def lesson_base_name(config, siman: int, model_suffix: str) -> str:
-    """Base name of a siman's outputs in output_dir (transcript, pronunciation changes, audio)."""
+    """Base name of a siman's outputs in output_dir (transcript, nikkud review, audio)."""
     return f"{config.section_slug}_Siman_{siman}_{model_suffix}"
 
 
@@ -421,29 +420,11 @@ def polish_simanim(drafts: dict, relations_text: str, generator, config, args, s
 
 
 def apply_dictionary_nikkud(polished: dict, summary: RunSummary) -> dict:
-    """Stage 3.4: {siman: polished_text} -> {siman: text} with the dictionary nikkud applied."""
-    return run_per_siman(summary, polished, STAGE_NIKKUD, lambda siman, text: apply_nikkud_to_abbreviations(text))
-
-
-def vocalize_simanim(texts: dict, vocalizer, config, args, summary: RunSummary) -> dict:
     """
-    Stage 3.5: {siman: text} -> {siman: (text, changes)}. changes is None when the
-    pronunciation stage is disabled (vocalizer is None) and the text passes through.
+    Stage 3.1: {siman: polished_text} -> {siman: (text, overrides)}: the dictionary nikkud applied
+    over the polish's nikkud, and the places where it replaced the model's (apply_nikkud.NikkudOverride).
     """
-    if vocalizer is None:
-        return {siman: (text, None) for siman, text in texts.items()}
-    return run_llm_stage(
-        summary, texts, STAGE_PRONUNCIATION,
-        call=lambda siman, text: vocalizer.vocalize_once(text),
-        max_retries=vocalizer.max_retries, args=args,
-        batch=BatchCalls(
-            vocalizer.generator,
-            submit=lambda siman, text: vocalizer.submit_batch(
-                text, custom_id=f"stage3_5_siman_{siman}", cache_dir=config.cache_dir
-            ),
-            fetch=lambda siman, text, job_id: vocalizer.batch_result(text, job_id),
-        ),
-    )
+    return run_per_siman(summary, polished, STAGE_NIKKUD, lambda siman, text: apply_nikkud_with_overrides(text))
 
 
 class PlanError(ValueError):
@@ -559,15 +540,14 @@ def resolve_run_plan(args, config, simanim_list: list, context_list: list, model
                    missing_drafts=missing, polish_paths=polish_paths, polished=polished)
 
 
-def format_run_plan(plan: RunPlan, args, config, generator, vocalizer, model_suffix: str) -> str:
+def format_run_plan(plan: RunPlan, args, config, generator, model_suffix: str) -> str:
     """The --dry-run report: what a real run with these arguments would load, generate and write."""
     calls = "batch jobs" if args.batch else "synchronous calls"
     lines = [
         "===== Dry run: plan (no API / LLM / TTS / Sefaria calls were made) =====",
         f"Mode: {'batch' if args.batch else 'sync'} | generator: {config.generator_engine} {generator.model_name}"
         + (" | --overwrite-cache" if args.overwrite_cache else ""),
-        f"Failed LLM calls are retried as new {calls}: Stages 1-3 up to {config.generator_max_retries} time(s)"
-        + (f", Stage 3.5 up to {vocalizer.max_retries}" if vocalizer is not None else ""),
+        f"Failed LLM calls are retried as new {calls}: Stages 1-3 up to {config.generator_max_retries} time(s)",
         f"Target simanim (Stage 3+): {plan.target_simanim}"
         + (f" (--limit-lessons {args.limit_lessons})" if args.limit_lessons is not None else ""),
         f"Context simanim: {plan.context_simanim}",
@@ -591,17 +571,14 @@ def format_run_plan(plan: RunPlan, args, config, generator, vocalizer, model_suf
     if args.stage_1_only:
         lines.append("--stage-1-only: the run stops after Stage 1.")
         return "\n".join(lines)
-    pronunciation = (f"{config.pronunciation_engine} {vocalizer.generator.model_name}" if vocalizer is not None
-                     else "disabled (pronunciation.enabled: false)")
     cached_polish = [s for s in plan.target_simanim if s in plan.polished]
-    lines.append(f"Stage 3 polish -> 3.4 dictionary nikkud -> 3.5 pronunciation nikkud: {plan.target_simanim}")
+    lines.append(f"Stage 3 polish and nikkud -> 3.1 dictionary nikkud: {plan.target_simanim}")
     lines.append(f"  Stage 3 polish from cache ({len(cached_polish)}): {cached_polish or 'none'}")
     lines += [f"    Siman {s}: {plan.polish_paths[s]}" for s in cached_polish]
     lines.append(f"  Stage 3 polish to be GENERATED ({len(plan.missing_polish)}, as {calls}): "
                  f"{plan.missing_polish or 'none'}")
     lines += [f"    Siman {s} -> {plan.polish_paths[s]}" for s in plan.missing_polish]
     lines += [
-        f"  Stage 3.5 pronunciation: {pronunciation}",
         f"Transcripts / TTS (tts.engine {config.tts_engine}{', skipped: --skip-tts' if args.skip_tts else ''}):",
     ]
     for siman in plan.target_simanim:
@@ -612,21 +589,20 @@ def format_run_plan(plan: RunPlan, args, config, generator, vocalizer, model_suf
     return "\n".join(lines)
 
 
-def save_transcript(siman: int, text: str, changes, config, model_suffix: str) -> None:
+def save_transcript(siman: int, text: str, overrides: list, config, model_suffix: str) -> None:
     """
-    Stage 3.6: saves the final transcript and, if the pronunciation stage ran, the review list
-    of the words it vocalized (pronunciation.format_changes).
+    Stage 3.2: saves the final transcript and its nikkud review file (nikkud_review.format_review):
+    the vocalized words and the dictionary's overrides of the model's nikkud.
     """
     base_name = lesson_base_name(config, siman, model_suffix)
-    if changes is not None:
-        save_output_file(
-            directory=config.output_dir,
-            base_name=f"{base_name}_pronunciation_changes",
-            extension="txt",
-            content=format_changes(changes),
-            logger=logger,
-            label=f"{STAGE_PRONUNCIATION} changes for Siman {siman}"
-        )
+    save_output_file(
+        directory=config.output_dir,
+        base_name=f"{base_name}_pronunciation_changes",
+        extension="txt",
+        content=format_review(text, overrides),
+        logger=logger,
+        label=f"Nikkud review for Siman {siman}"
+    )
     save_output_file(
         directory=config.output_dir,
         base_name=f"{base_name}_transcript",
@@ -657,9 +633,9 @@ def synthesize_siman_audio(siman: int, text: str, config, model_suffix: str) -> 
     )
 
 
-def finish_siman(siman: int, text: str, changes, config, args, model_suffix: str) -> None:
-    """Stage 3.6 (transcript save) then TTS unless --skip-tts. Raises SimanStageError on failure."""
-    run_siman_stage(siman, STAGE_TRANSCRIPT, lambda: save_transcript(siman, text, changes, config, model_suffix))
+def finish_siman(siman: int, text: str, overrides: list, config, args, model_suffix: str) -> None:
+    """Stage 3.2 (transcript save) then TTS unless --skip-tts. Raises SimanStageError on failure."""
+    run_siman_stage(siman, STAGE_TRANSCRIPT, lambda: save_transcript(siman, text, overrides, config, model_suffix))
     if args.skip_tts:
         logger.info("Skipping TTS synthesis as requested by --skip-tts.")
         return
@@ -667,10 +643,10 @@ def finish_siman(siman: int, text: str, changes, config, args, model_suffix: str
 
 
 def run_lesson_stages(target_simanim: list, drafts: dict, cached_polish: dict, relations_text: str, generator,
-                      vocalizer, config, args, model_suffix: str) -> RunSummary:
+                      config, args, model_suffix: str) -> RunSummary:
     """
     Stage 3 onwards for every target siman, one stage at a time (sync or batch):
-    polish -> dictionary nikkud -> pronunciation nikkud (LLM) -> transcript save -> TTS.
+    polish and nikkud (one LLM call) -> dictionary nikkud -> transcript save -> TTS.
     A siman in cached_polish ({siman: text}, see resolve_run_plan) skips the polish call.
     A failure removes only that siman from the later stages.
     """
@@ -692,9 +668,9 @@ def run_lesson_stages(target_simanim: list, drafts: dict, cached_polish: dict, r
         logger.info(f"{STAGE_POLISH}: no calls needed; every target siman's polish was loaded from cache.")
     ready = {**cached_polish, **new_polish}
     polished = {siman: ready[siman] for siman in target_simanim if siman in ready}
-    vocalized = vocalize_simanim(apply_dictionary_nikkud(polished, summary), vocalizer, config, args, summary)
+    final = apply_dictionary_nikkud(polished, summary)
     finished = run_per_siman(
-        summary, vocalized, STAGE_TRANSCRIPT,
+        summary, final, STAGE_TRANSCRIPT,
         lambda siman, item: finish_siman(siman, *item, config, args, model_suffix)
     )
     for siman in finished:
@@ -767,7 +743,7 @@ def parse_arguments():
         "--dry-run",
         action="store_true",
         help="Print the run plan (relations map, drafts and Stage 3 polish loaded from cache vs generated, simanim "
-             "going through Stage 3/3.5/TTS, file paths) and exit without any API, LLM, TTS or Sefaria call."
+             "going through Stage 3/3.1/TTS, file paths) and exit without any API, LLM, TTS or Sefaria call."
     )
     parser.add_argument(
         "--stage-1-only",
@@ -821,21 +797,6 @@ def main():
             logger.error("Batch mode requires a generator engine that supports batch operations (Gemini or OpenAI).")
             sys.exit(1)
 
-    # 4. Pronunciation stage (Stage 3.5) with its own engine/model from config.yaml
-    try:
-        vocalizer = create_pronunciation_vocalizer(config) if config.pronunciation_enabled else None
-    except Exception as e:
-        logger.error(f"Pronunciation stage setup failed: {e}")
-        sys.exit(1)
-    if vocalizer is not None:
-        if args.batch and not vocalizer.supports_batch:
-            logger.error(
-                f"Batch mode requires a pronunciation engine that supports batch operations; "
-                f"'{config.pronunciation_engine}' does not (pronunciation.engine in config.yaml)."
-            )
-            sys.exit(1)
-    else:
-        logger.info("Pronunciation stage disabled (pronunciation.enabled: false); skipping Stage 3.5.")
     if args.batch:
         logger.info("Batch mode enabled. All stages will use the Batch API with polling.")
         
@@ -846,7 +807,7 @@ def main():
         logger.error(str(e))
         sys.exit(1)
     if args.dry_run:
-        for line in format_run_plan(plan, args, config, generator, vocalizer, model_suffix).split("\n"):
+        for line in format_run_plan(plan, args, config, generator, model_suffix).split("\n"):
             logger.info(line)
         sys.exit(0)
     relations_text = plan.relations_text
@@ -892,9 +853,9 @@ def main():
             label=f"{STAGE_RELATIONS} output for Simanim {plan.context_simanim}"
         )
 
-    # 9. Stage 3+: polish, dictionary nikkud, pronunciation nikkud, transcript, TTS (per-siman failures do not stop the run)
+    # 9. Stage 3+: polish and nikkud, dictionary nikkud, transcript, TTS (per-siman failures do not stop the run)
     summary = run_lesson_stages(target_generation_simanim, drafts, plan.polished, relations_text, generator,
-                                vocalizer, config, args, model_suffix)
+                                config, args, model_suffix)
 
     summary.log()
     if summary.has_failures:

@@ -1,11 +1,12 @@
-"""Stage 3+ flow in main.py: polish -> dictionary nikkud -> pronunciation nikkud -> transcript -> TTS."""
+"""Stage 3+ flow in main.py: polish and nikkud (one call) -> dictionary nikkud -> transcript (+ review) -> TTS."""
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 import main as main_mod
 from pipeline.generator import BatchCapableGenerator, BatchResultError
-from pipeline.pronunciation import PronunciationVocalizer
+from pipeline.nikkud_review import format_review
+from pipeline.apply_nikkud import apply_nikkud_with_overrides
 
 TET = "טֵית"
 
@@ -23,7 +24,6 @@ class FakeBatchGenerator(BatchCapableGenerator):
         self.temperature = temperature
         self.failed_ids = set(failed_ids)
         self.submitted = []
-        self.sync_prompts = []
         self._results = {}
 
     def submit_batch(self, system_instruction, user_prompt, temperature, custom_id, cache_dir="./cache",
@@ -38,11 +38,6 @@ class FakeBatchGenerator(BatchCapableGenerator):
 
     def get_batch_result(self, job_id):
         return self.respond(*self._results[job_id])
-
-    # synchronous pronunciation calls (custom_id "sync")
-    def generate_text(self, system_instruction, user_prompt, thinking_level=None):
-        self.sync_prompts.append(user_prompt)
-        return self.respond("sync", user_prompt)
 
     # Stage 3 polishing in batch mode builds its prompt through the generator
     def _get_polishing_user_prompt(self, draft, relations_text):
@@ -61,8 +56,8 @@ def _args(batch):
 DRAFTS = {94: "טית 94", 95: "טית 95", 96: "טית 96", 97: "טית 97"}
 
 
-def _run(tmp_path, generator, vocalizer, batch, drafts=DRAFTS, targets=None, cached_polish=None):
-    return main_mod.run_lesson_stages(targets or list(drafts), drafts, cached_polish or {}, "rel", generator, vocalizer,
+def _run(tmp_path, generator, batch, drafts=DRAFTS, targets=None, cached_polish=None):
+    return main_mod.run_lesson_stages(targets or list(drafts), drafts, cached_polish or {}, "rel", generator,
                                       _config(tmp_path), _args(batch), "m")
 
 
@@ -70,140 +65,84 @@ def _transcripts(tmp_path):
     return sorted(int(p.name.split("_")[2]) for p in tmp_path.glob("YD_Siman_*_m_transcript.txt"))
 
 
+def _review(tmp_path, siman):
+    return (tmp_path / f"YD_Siman_{siman}_m_pronunciation_changes.txt").read_text(encoding="utf-8")
+
+
 # --- batch -----------------------------------------------------------------------
 
-def test_batch_pronunciation_success(tmp_path):
-    polish_gen = FakeBatchGenerator(lambda cid, prompt: prompt)
-    voc_gen = FakeBatchGenerator(lambda cid, prompt: vocalized(prompt), temperature=0.35)
-    summary = _run(tmp_path, polish_gen, PronunciationVocalizer(voc_gen, "VOC", "low", 0), batch=True)
+def test_batch_combined_polish_success(tmp_path):
+    polish_gen = FakeBatchGenerator(lambda cid, prompt: vocalized(prompt))  # the polish vocalizes
+    summary = _run(tmp_path, polish_gen, batch=True)
     assert summary.succeeded == [94, 95, 96, 97] and not summary.failed
-    assert [r["custom_id"] for r in voc_gen.submitted] == [f"stage3_5_siman_{s}" for s in DRAFTS]
-    assert all(r["system_instruction"] == "VOC" and r["temperature"] == 0.35 and r["thinking_level"] == "low"
-               for r in voc_gen.submitted)
-    assert all(r["system_instruction"] == "POLISH" and r["temperature"] == 0.15 for r in polish_gen.submitted)
-    assert TET in (tmp_path / "YD_Siman_94_m_transcript.txt").read_text(encoding="utf-8")
-    assert (tmp_path / "YD_Siman_94_m_pronunciation_changes.txt").read_text(encoding="utf-8").splitlines()[1] == \
-        f"no\tטית\t{TET}\t1\t1\t[{TET}] 94"
+    # one LLM call per siman: the polish, with its own instruction and temperature
+    assert [r["custom_id"] for r in polish_gen.submitted] == [f"stage3_siman_{s}" for s in DRAFTS]
+    assert all(r["system_instruction"] == "POLISH" and r["temperature"] == 0.15 and r["thinking_level"] is None
+               for r in polish_gen.submitted)
+    assert (tmp_path / "YD_Siman_94_m_polish.txt").read_text(encoding="utf-8") == f"{TET} 94"  # vocalized polish
+    assert (tmp_path / "YD_Siman_94_m_transcript.txt").read_text(encoding="utf-8") == f"{TET} 94"
+    assert _review(tmp_path, 94).splitlines()[1] == f"no\tטית\t{TET}\t1\t1\t[{TET}] 94"
     assert _transcripts(tmp_path) == [94, 95, 96, 97]
 
 
-def test_batch_pronunciation_failed_job_fails_that_siman(tmp_path):
-    polish_gen = FakeBatchGenerator(lambda cid, prompt: prompt)
-    voc_gen = FakeBatchGenerator(lambda cid, prompt: vocalized(prompt), failed_ids={"stage3_5_siman_95"})
-    summary = _run(tmp_path, polish_gen, PronunciationVocalizer(voc_gen, "VOC", None, 0), batch=True)
-    assert summary.failed == {95: (main_mod.STAGE_PRONUNCIATION, "batch job failed (job_id: stage3_5_siman_95) (after 1 attempt(s))")}
+def test_batch_failed_polish_job_fails_that_siman(tmp_path):
+    polish_gen = FakeBatchGenerator(lambda cid, prompt: vocalized(prompt), failed_ids={"stage3_siman_95"})
+    summary = _run(tmp_path, polish_gen, batch=True)
+    assert summary.failed == {95: (main_mod.STAGE_POLISH, "batch job failed (job_id: stage3_siman_95) (after 1 attempt(s))")}
     assert _transcripts(tmp_path) == [94, 96, 97]
     assert not (tmp_path / "YD_Siman_95_m_pronunciation_changes.txt").exists()
 
 
-def test_batch_pronunciation_validation_failure_and_empty_result(tmp_path):
-    def respond(cid, prompt):
-        if cid.endswith("_95"):
-            return prompt.replace("95", "99")  # a word changed
-        if cid.endswith("_96"):
-            raise BatchResultError("Gemini batch returned empty text response.")
-        return vocalized(prompt)
-    polish_gen = FakeBatchGenerator(lambda cid, prompt: prompt)
-    summary = _run(tmp_path, polish_gen, PronunciationVocalizer(FakeBatchGenerator(respond), "VOC", None, 0), batch=True)
-    assert set(summary.failed) == {95, 96}
-    stage, reason = summary.failed[95]
-    assert stage == main_mod.STAGE_PRONUNCIATION and "95 -> 99 (letters changed" in reason
-    stage, reason = summary.failed[96]
-    assert stage == main_mod.STAGE_PRONUNCIATION and "empty text response" in reason
-    assert _transcripts(tmp_path) == [94, 97]
-
-
-def test_batch_pronunciation_rejected_results_resubmitted_as_batch(tmp_path, caplog):
-    submissions = {}
-    def respond(cid, prompt):
-        submissions[cid] = submissions.get(cid, 0) + 1
-        if cid.endswith("_95") and submissions[cid] == 1:
-            return prompt.replace("95", "99")  # rejected in round 1 only
-        if cid.endswith("_96"):
-            return prompt.replace("96", "99")  # rejected in both rounds
-        return vocalized(prompt)
-    voc_gen = FakeBatchGenerator(respond)
-    polish_gen = FakeBatchGenerator(lambda cid, prompt: prompt)
-    summary = _run(tmp_path, polish_gen, PronunciationVocalizer(voc_gen, "VOC", None, 1), batch=True)
-    assert summary.succeeded == [94, 95, 97]
-    stage, reason = summary.failed[96]
-    assert stage == main_mod.STAGE_PRONUNCIATION and "96 -> 99" in reason and "(after 2 attempt(s))" in reason
-    assert [r["custom_id"] for r in voc_gen.submitted] == (
-        [f"stage3_5_siman_{s}" for s in DRAFTS] + ["stage3_5_siman_95", "stage3_5_siman_96"])
-    assert voc_gen.sync_prompts == []  # batch mode never falls back to sync calls
-    assert TET in (tmp_path / "YD_Siman_95_m_transcript.txt").read_text(encoding="utf-8")
-    assert "Siman 95 Stage 3.5 (Pronunciation nikkud) attempt 1/2 failed" in caplog.text
-
-
-def test_batch_mixed_simanim_summary(tmp_path, caplog):
+def test_batch_mixed_simanim_summary(tmp_path):
     polish_gen = FakeBatchGenerator(lambda cid, prompt: prompt, failed_ids={"stage3_siman_95"})
-    voc_gen = FakeBatchGenerator(lambda cid, prompt: prompt.replace("טית", "<b>טית</b>") if cid.endswith("_96")
-                                 else vocalized(prompt))
     drafts = {94: "טית 94", 95: "טית 95", 96: "טית 96"}
-    summary = _run(tmp_path, polish_gen, PronunciationVocalizer(voc_gen, "VOC", None, 0), batch=True,
-                   drafts=drafts, targets=[93, 94, 95, 96])
+    real = apply_nikkud_with_overrides
+    def dictionary(text):
+        if "96" in text:
+            raise ValueError("bad text")
+        return real(text)
+    with patch.object(main_mod, "apply_nikkud_with_overrides", side_effect=dictionary):
+        summary = _run(tmp_path, polish_gen, batch=True, drafts=drafts, targets=[93, 94, 95, 96])
     assert summary.succeeded == [94]
     assert summary.failed[93] == (main_mod.STAGE_POLISH, "Stage 1 draft is missing")
     assert summary.failed[95] == (main_mod.STAGE_POLISH, "batch job failed (job_id: stage3_siman_95) (after 1 attempt(s))")
-    assert summary.failed[96][0] == main_mod.STAGE_PRONUNCIATION
-    assert "markup in output" in summary.failed[96][1]
-    # a siman that failed polish is never sent to the pronunciation stage
-    assert [r["custom_id"] for r in voc_gen.submitted] == ["stage3_5_siman_94", "stage3_5_siman_96"]
+    assert summary.failed[96] == (main_mod.STAGE_NIKKUD, "bad text")
     text = summary.format()
     assert "Succeeded (1/4): 94" in text and "Failed (3/4)" in text
-    assert "Siman 96 | stage: Stage 3.5 (Pronunciation nikkud) | reason: pronunciation output rejected" in text
+    assert "Siman 96 | stage: Stage 3.1 (Dictionary nikkud) | reason: bad text" in text
 
 
-def test_batch_pronunciation_disabled_passes_text_through(tmp_path):
-    polish_gen = FakeBatchGenerator(lambda cid, prompt: prompt)
-    summary = _run(tmp_path, polish_gen, None, batch=True)
-    assert summary.succeeded == list(DRAFTS)
-    assert not list(tmp_path.glob("*pronunciation*"))
+# --- sync ------------------------------------------------------------------------
 
-
-# --- sync (unchanged behaviour) -----------------------------------------------------
-
-def test_sync_mode_vocalizes_each_siman_synchronously(tmp_path):
+def test_sync_mode_polishes_each_siman_synchronously(tmp_path):
     gen = MagicMock()
-    gen.polish_siman_script.side_effect = lambda draft, rel, instr, temperature, thinking_name: draft
-    voc_gen = MagicMock(model_name="m", temperature=0.2)
-    voc_gen.generate_text.side_effect = lambda instr, text, thinking_level: (
-        text.replace("95", "99") if "95" in text else vocalized(text))
-    summary = _run(tmp_path, gen, PronunciationVocalizer(voc_gen, "VOC", "high", 0), batch=False)
+    gen.polish_siman_script.side_effect = lambda draft, rel, instr, temperature, thinking_name: (
+        _raise(RuntimeError("LLM down")) if "95" in draft else vocalized(draft))
+    summary = _run(tmp_path, gen, batch=False)
     assert summary.succeeded == [94, 96, 97]
-    assert summary.failed[95][0] == main_mod.STAGE_PRONUNCIATION
-    assert voc_gen.generate_text.call_count == 4
-    assert all(c.kwargs == {"thinking_level": "high"} for c in voc_gen.generate_text.call_args_list)
-    voc_gen.submit_batch.assert_not_called()
+    assert summary.failed[95] == (main_mod.STAGE_POLISH, "LLM down (after 1 attempt(s))")
+    assert gen.polish_siman_script.call_count == 4
+    assert all(c.args[2] == "POLISH" and c.kwargs["temperature"] == 0.15 for c in gen.polish_siman_script.call_args_list)
     gen.submit_batch.assert_not_called()
     assert _transcripts(tmp_path) == [94, 96, 97]
 
 
-# --- startup check ------------------------------------------------------------------
-
-def test_batch_with_non_batch_pronunciation_engine_errors_at_startup(tmp_path, monkeypatch, caplog):
-    cfg = MagicMock(section_slug="YD", drafts_dir=str(tmp_path), relations_dir=str(tmp_path),
-                    output_dir=str(tmp_path), pronunciation_enabled=True, pronunciation_engine="custom")
-    monkeypatch.setattr("sys.argv", ["main.py", "94", "--batch"])
-    non_batch_vocalizer = PronunciationVocalizer(object(), "VOC", None, 0)
-    with patch.object(main_mod, "PipelineConfig", return_value=cfg), \
-         patch.object(main_mod, "create_generator_engine", return_value=FakeBatchGenerator(None)), \
-         patch.object(main_mod, "create_pronunciation_vocalizer", return_value=non_batch_vocalizer), \
-         patch.object(main_mod, "SefariaExtractor") as extractor:
-        with pytest.raises(SystemExit) as exc:
-            main_mod.main()
-    assert exc.value.code == 1
-    assert "pronunciation engine that supports batch" in caplog.text
-    extractor.assert_not_called()  # failed before any stage ran
+def _raise(error):
+    raise error
 
 
-def test_dictionary_nikkud_runs_before_llm_stage(tmp_path):
+# --- dictionary nikkud over the polish's nikkud ------------------------------------
+
+def test_dictionary_overrides_the_polish_nikkud_and_is_reported(tmp_path):
     gen = MagicMock()
-    gen.polish_siman_script.side_effect = lambda draft, rel, instr, temperature, thinking_name: draft + ' סימן הא והש"ך'
-    voc_gen = MagicMock(model_name="m", temperature=0.2)
-    voc_gen.generate_text.side_effect = lambda instr, text, thinking_level: text
-    summary = _run(tmp_path, gen, PronunciationVocalizer(voc_gen, "VOC", None, 0), batch=False, drafts={94: "טית 94"})
+    gen.polish_siman_script.side_effect = lambda draft, rel, instr, temperature, thinking_name: (
+        draft + ' סימן הֵא והַשַׁ"ךְ אוסר בכֹּחַל ופַּת')
+    summary = _run(tmp_path, gen, batch=False, drafts={94: "טית 94"})
     assert summary.succeeded == [94]
-    sent = voc_gen.generate_text.call_args.args[1]
-    assert sent == "טית 94 סימן הֵי והשַׁךְ"  # respelling + dictionary nikkud already applied
-    assert (tmp_path / "YD_Siman_94_m_transcript.txt").read_text(encoding="utf-8") == sent
+    polish = (tmp_path / "YD_Siman_94_m_polish.txt").read_text(encoding="utf-8")
+    assert polish == 'טית 94 סימן הֵא והַשַׁ"ךְ אוסר בכֹּחַל ופַּת'  # the cache keeps the model's text
+    final, overrides = apply_nikkud_with_overrides(polish)
+    transcript = (tmp_path / "YD_Siman_94_m_transcript.txt").read_text(encoding="utf-8")
+    assert transcript == final and "הֵי" in transcript and "ופַּת" in transcript  # non-dictionary nikkud kept
+    assert [o.model for o in overrides] == ["הֵא", 'והַשַׁ"ךְ', "בכֹּחַל"]
+    assert _review(tmp_path, 94) == format_review(final, overrides)

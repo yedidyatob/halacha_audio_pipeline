@@ -3,7 +3,7 @@ import yaml
 from typing import Dict, Any
 from pipeline.logger import get_logger
 from pipeline.domain import SECTIONS_METADATA
-from pipeline.pronunciation import has_nikkud, word_vocalization_error
+from pipeline.nikkud_review import has_nikkud, word_vocalization_error
 from pipeline.tts import (
     validate_gap_ms, validate_chunk_size, validate_context_chars,
     GOOGLE_TTS_MAX_INPUT_BYTES, GOOGLE_TTS_ASSUMED_BYTES_PER_CHAR,
@@ -49,8 +49,8 @@ def _always_vocalize_entry(entry, key: str) -> str:
     """
     One pronunciation.always_vocalize entry, rendered for the prompt: a plain word as is, or
     {word, readings: [{nikkud, meaning}, ...]} as 'word (nikkud = meaning; ...)'. Each reading's
-    nikkud must be a valid vocalization of the word by the stage's own rule (same letters, ו / י
-    may be added or removed except as the first letter), so a typo is caught at startup.
+    nikkud must be a valid vocalization of the word (same letters, ו / י may be added or removed
+    except as the first letter), so a typo is caught at startup.
     """
     if isinstance(entry, str):
         if not entry.strip():
@@ -155,11 +155,6 @@ class PipelineConfig:
             prompt_commentators_desc=self.section_metadata.get("prompt_commentators_desc", "")
         ) if raw_system_instruction else ""
         
-        raw_polishing_instruction = self.config_data.get("polishing_instruction") or ""
-        self.polishing_instruction = raw_polishing_instruction.format(
-            commentators_list_short=self.section_metadata.get("commentators_list_short", ""),
-            tts_abbreviations=self.section_metadata.get("tts_abbreviations", "")
-        ) if raw_polishing_instruction else ""
         
         raw_relations_instruction = self.config_data.get("relations_instruction") or ""
         self.relations_instruction = raw_relations_instruction.format(
@@ -299,7 +294,7 @@ class PipelineConfig:
 
     @property
     def openai_service_tier(self) -> str:
-        """Shared by the generator and the pronunciation stage (engine openai)."""
+        """The generator's OpenAI service tier (engine openai)."""
         return _required_str(self._generator_engine_section("openai"), "service_tier", "generator.openai")
 
     @property
@@ -370,8 +365,8 @@ class PipelineConfig:
         return price
 
     # ------------------------------------------------------------------
-    # Pronunciation stage (LLM nikkud for ambiguous words). No defaults: every value
-    # must come from config.yaml; a missing key raises a clear ValueError.
+    # Stage 3 polish + nikkud prompt. No defaults: every value must come from config.yaml;
+    # a missing key raises a clear ValueError.
     # ------------------------------------------------------------------
     def _pronunciation_section(self) -> Dict[str, Any]:
         section = self.config_data.get("pronunciation")
@@ -384,43 +379,6 @@ class PipelineConfig:
         if section.get(key) is None:
             raise ValueError(f"Missing required configuration parameter '{key}' under 'pronunciation' in config.yaml.")
         return section[key]
-
-    @property
-    def pronunciation_enabled(self) -> bool:
-        value = self._pronunciation_value("enabled")
-        if not isinstance(value, bool):
-            raise ValueError(f"'pronunciation.enabled' must be true or false, got {value!r}.")
-        return value
-
-    @property
-    def pronunciation_engine(self) -> str:
-        engine = str(self._pronunciation_value("engine")).lower()
-        if engine not in ("gemini", "openai"):
-            raise ValueError(f"Invalid pronunciation engine: '{engine}'. Must be 'gemini' or 'openai'.")
-        return engine
-
-    @property
-    def pronunciation_model_name(self) -> str:
-        return self._pronunciation_value("model_name")
-
-    @property
-    def pronunciation_temperature(self) -> float:
-        return _temperature(self._pronunciation_value("temperature"), "pronunciation.temperature")
-
-    @property
-    def pronunciation_thinking_level(self) -> str:
-        """Gemini thinking level for the pronunciation call. Required for engine gemini; ignored for openai."""
-        if self.pronunciation_engine != "gemini":
-            return None
-        value = self._pronunciation_value("thinking_level")
-        if value not in THINKING_LEVELS:
-            raise ValueError(f"'pronunciation.thinking_level' must be one of low, medium, high, got {value!r}.")
-        return value
-
-    @property
-    def pronunciation_max_retries(self) -> int:
-        """Extra LLM calls after a failed pronunciation attempt (LLM error or rejected output)."""
-        return _max_retries(self._pronunciation_value("max_retries"), "pronunciation.max_retries")
 
     @property
     def pronunciation_always_vocalize(self) -> list:
@@ -442,11 +400,18 @@ class PipelineConfig:
         return ", ".join(words) if words else "אין"
 
     @property
-    def pronunciation_instruction(self) -> str:
-        """The prompt with {always_vocalize} / {never_vocalize} filled in (targeted replace; other braces untouched)."""
-        value = self.config_data.get("pronunciation_instruction")
-        if not value or not str(value).strip():
-            raise ValueError("Missing required configuration parameter 'pronunciation_instruction' in config.yaml.")
-        return (str(value)
-                .replace("{always_vocalize}", self._render_word_list(self.pronunciation_always_vocalize))
-                .replace("{never_vocalize}", self._render_word_list(self.pronunciation_never_vocalize)))
+    def polishing_instruction(self) -> str:
+        """
+        The Stage 3 system instruction (polish + nikkud): polishing_instruction with the section's
+        {commentators_list_short} / {tts_abbreviations} and the pronunciation lists
+        {always_vocalize} / {never_vocalize} filled in.
+        """
+        value = self.config_data.get("polishing_instruction")
+        if not _non_empty_str(value):
+            raise ValueError("Missing required configuration parameter 'polishing_instruction' in config.yaml.")
+        return value.format(
+            commentators_list_short=self.section_metadata.get("commentators_list_short", ""),
+            tts_abbreviations=self.section_metadata.get("tts_abbreviations", ""),
+            always_vocalize=self._render_word_list(self.pronunciation_always_vocalize),
+            never_vocalize=self._render_word_list(self.pronunciation_never_vocalize),
+        )

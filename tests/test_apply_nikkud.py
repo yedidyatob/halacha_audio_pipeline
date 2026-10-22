@@ -4,7 +4,6 @@ import pytest
 from pipeline import apply_nikkud as an
 from pipeline.apply_nikkud import (
     DEFAULT_PREFIXES,
-    LETTER_NAME_MISVOCALIZATIONS,
     NO_PREFIX_NIKKUD_DICT,
     RABBINIC_NIKKUD_DICT,
     additional_nikkud_corrections,
@@ -120,6 +119,73 @@ def test_every_entry_with_every_prefix(prefix):
             assert apply(f"סימן {prefix}{key} ב") == f"סימן {prefix}{key} ב", (prefix, key)
 
 
+# --- nikkud-agnostic matching: the text may already be vocalized (the polish vocalizes it) ---
+
+def _fake_vocalize(word, point="\u05B7"):
+    """word with `point` (patah by default) after every Hebrew letter: any vocalization must match."""
+    return "".join(ch + point if "\u05D0" <= ch <= "\u05EA" else ch for ch in word)
+
+
+@pytest.mark.parametrize("prefix", sorted(DEFAULT_PREFIXES))
+@pytest.mark.parametrize("vocalized_prefix", [False, True])
+@pytest.mark.parametrize("vocalized_word", [False, True])
+def test_every_entry_with_every_prefix_ignores_nikkud(prefix, vocalized_prefix, vocalized_word):
+    """Every generated prefix, with and without nikkud on the prefix and on the word: the entry's
+    value replaces the word, and the prefix is kept exactly as written (its nikkud included)."""
+    pre = _fake_vocalize(prefix, "\u05B4") if vocalized_prefix else prefix
+    prefixable = {**RABBINIC_NIKKUD_DICT, **dict(additional_nikkud_corrections)}
+    for key, value in prefixable.items():
+        word = _fake_vocalize(key) if vocalized_word else key
+        assert apply(f"א {pre}{word} ב") == f"א {pre}{value} ב", (pre, word)
+    for key, value in NO_PREFIX_NIKKUD_DICT.items():  # letter names: bare only, any nikkud
+        word = _fake_vocalize(key) if vocalized_word else key
+        expected = f"סימן {value} ב" if not prefix else f"סימן {pre}{word} ב"
+        assert apply(f"סימן {pre}{word} ב") == expected, (pre, word)
+
+
+KAHAL = dict(additional_nikkud_corrections)["כחל"]
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("כֹּחַל", KAHAL),                                   # the model's other reading: dictionary wins
+    ("כְּחָל", KAHAL),                                    # already the dictionary's
+    ("וּבִכְחָל", "וּבִ" + KAHAL),                          # vocalized prefix kept as written
+    ("ובכֹחַל", "וב" + KAHAL),
+    ("הָרַמְבַּ\"ם", "הָ" + RAMBAM),                       # vocalized abbreviation, ASCII quote
+    ("לָרַמְבַּ״ם", "לָ" + RAMBAM),                         # gershayim
+    ("וּמֵהָרַמְבַּ\"ם", "וּמֵהָ" + RAMBAM),
+    ("רַמְבַּם", RAMBAM),                                  # unquoted abbreviation, vocalized
+    ("סימן צָדִי הֵא", f"סימן {NO_PREFIX_NIKKUD_DICT['צדי']} {NO_PREFIX_NIKKUD_DICT['הא']}"),
+    ("סִימָן הָא", f"סִימָן {NO_PREFIX_NIKKUD_DICT['הא']}"),  # vocalized context word
+    ("צָדִי פֵא", f"{NO_PREFIX_NIKKUD_DICT['צדי']} {NO_PREFIX_NIKKUD_DICT['פא']}"),  # adjacent names
+])
+def test_vocalized_match_gets_the_dictionary_nikkud(text, expected):
+    assert apply(text) == expected
+    assert apply(expected) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "כְּחָלִים", "הַכֹּחַלִית", "קְכֹחַל",        # longer word / not a prefix
+    "הָא דְּתַנְיָא", "הֵא לָךְ", "בְּהֵא",          # letter name outside its context / with a prefix
+    "הָבְּשִׂפְתֵי כהן",                          # invalid prefix combination
+    "רַמְבַּ\"מִים",                              # quote glued inside a longer word
+    "שִׁלּוּחַ", "סֵפֶר",                         # not in the dictionary: the model's nikkud stays
+])
+def test_vocalized_non_matches_untouched(text):
+    assert apply(text) == text
+
+
+def test_overrides_report_only_vocalized_words_that_changed():
+    text = 'כחל וּבִכֹחַל\nהָרַמְבַּ"ם וכְּחָל סֵפֶר'
+    out, overrides = an.apply_nikkud_with_overrides(text)
+    assert out == f'{KAHAL} וּבִ{KAHAL}\nהָ{RAMBAM} ו{KAHAL} סֵפֶר'
+    # plain כחל was only vocalized; וכְּחָל already had the dictionary's nikkud: neither is an override
+    assert [(o.model, o.dictionary) for o in overrides] == [("וּבִכֹחַל", "וּבִ" + KAHAL),
+                                                            ('הָרַמְבַּ"ם', "הָ" + RAMBAM)]
+    for o in overrides:  # start is the replacement's offset in the output text
+        assert out[o.start:o.start + len(o.dictionary)] == o.dictionary
+
+
 @pytest.mark.parametrize("word", ['מהרמב"ם', 'שהרמב"ם', 'כשהרמב"ם', 'וכשהרמב"ם', 'שמהרמב"ם',
                                   'ולרמב"ם', 'וברמב"ם', 'כשברמב"ם',
                                   'בהרמב"ם', 'להרמב"ם', 'כהרמב"ם', 'ובהרמב"ם', 'ולהרמב"ם',
@@ -225,9 +291,9 @@ def test_not_replaced_inside_longer_word(text):
     assert apply(text) == text
 
 
-def test_already_nikkuded_words_are_not_touched():
+def test_already_nikkuded_entry_value_unchanged():
     assert apply(SHAFTEI) == SHAFTEI
-    assert apply("בשִׂפְתֵי כהן") == "בשִׂפְתֵי כהן"
+    assert apply("בשִׂפְתֵי כהן") == "ב" + SHAFTEI
 
 
 # ---------------------------------------------------------------------------
@@ -469,17 +535,6 @@ def test_he_and_vav_untouched_outside_letter_name_context(text):
     assert apply(text) == text
 
 
-def test_misvocalizations_repair_to_their_letter_name_entry():
-    assert an._letter_name_repairs() == [("הֵא", HEI)]
-
-
-@pytest.mark.parametrize("wrong", ["הא", "בֵּית", "הֵי"])  # not vocalized / not an entry / correct form
-def test_invalid_misvocalization_entry_rejected(monkeypatch, wrong):
-    monkeypatch.setattr(an, "LETTER_NAME_MISVOCALIZATIONS", (wrong,))
-    with pytest.raises(ValueError, match="LETTER_NAME_MISVOCALIZATIONS"):
-        an._letter_name_repairs()
-
-
 def test_letter_name_context_is_linear_on_long_lines():
     import time
     text = "הא דתניא " * 40000          # one 360K-char line, no context anywhere
@@ -499,7 +554,7 @@ def test_empty_and_plain_text():
 
 def test_idempotent_on_every_entry():
     entries = (
-        list(RABBINIC_NIKKUD_DICT) + list(NO_PREFIX_NIKKUD_DICT) + list(LETTER_NAME_MISVOCALIZATIONS)
+        list(RABBINIC_NIKKUD_DICT) + list(NO_PREFIX_NIKKUD_DICT)
         + [p for p, _ in additional_nikkud_corrections]
     )
     text = "\n".join(f"הנה סימן {key} כאן, ו{key}." for key in entries)
@@ -705,7 +760,7 @@ def test_context_regexes_and_letter_names_unaffected_by_blank_rule():
     assert apply("סימן צדי הא") == f"סימן {NO_PREFIX_NIKKUD_DICT['צדי']} {NO_PREFIX_NIKKUD_DICT['הא']}"
     assert apply("סימן  \t צדי") == f"סימן  \t {NO_PREFIX_NIKKUD_DICT['צדי']}"
     assert apply("סימן\nצדי") == "סימן\nצדי"
-    assert an._key_to_regex("סי'") == "סי['\u05F3]"
+    assert an._key_to_regex("סי'") == f"ס{an._ANY_POINTS}י{an._ANY_POINTS}['\u05F3]"
     assert an._key_to_regex("a b") == f"a{an._BLANK}+b"
     assert an._norm("אבן \t\u00A0 העזר\u05F4") == 'אבן העזר"'
 
