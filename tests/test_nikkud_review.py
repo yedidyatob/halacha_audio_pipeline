@@ -213,6 +213,17 @@ def test_real_config_yaml_combined_prompt():
     assert "לעולם לא לנקד: דאורייתא, דרבנן" in instruction
     assert "אתה עורך הגייה" not in instruction  # the separate stage's role paragraph is gone
 
+# The nikkud section of the rendered prompt, pinned byte for byte (it started as #20's combined
+# prompt; the "already vocalized", letter-name bullet and letter-name examples were since removed).
+NIKKUD_SECTION = '===== תוספת: ניקוד לצורך הגייה =====\nכל ההנחיות לעיל לעריכת השיעור נשארות בתוקף. בנוסף, בתסריט המלוטש שאתה כותב,\nהוסף ניקוד רק למילים שמנוע ה-TTS עלול לקרוא לא נכון, בלי שום תגיות או סימון.\nהכללים לבחירת המילים:\nנקד מילה רק אם קורא עברית בלי ניקוד עלול לקרוא אותה בשתי דרכים שונות, ובהקשר הזה נכונה דווקא אחת מהן:\n- אותן אותיות, משמעות והגייה אחרת: עובר (עֻבָּר / עוֹבֵר), פת, ספר, סופר, מבשר, כלי.\n- מילה שנוטים לקרוא בטעות: כותח, נבילה, הקילו.\nאל תנקד מילה רק בגלל שהיא ארמית או תורנית, אם יש לה קריאה מקובלת אחת (דאורייתא, דרבנן, מותר, אסור, בדיעבד).\nאם אינך בטוח, אל תנקד.\n\nתמיד לנקד (כשמופיעות קריאות בסוגריים, בחר לפי ההקשר): עובר בהמה, כותח, נבילה, למה (לְמָה = אל מה, לאיזו כוונה, כמו "למה התכוון"; לָמָּה = מדוע, כמו "למה צריך"), שה, גזרה (גְּזֵרָה = צו או תקנה, כמו "גזרה שווה"; גִּזְרָה = חיתוך, צורה)\nלעולם לא לנקד: דאורייתא, דרבנן\n\nנקד רק את המילה הדו-משמעית עצמה (כולל אותיות השימוש הצמודות לה), בניקוד מלא ומדויק לפי ההקשר, ואל תנקד את שאר המשפט.\n\nדוגמאות:\nעובר בהמה ← עֻבָּר בְּהֵמָה\nכותח ← כּוּתָח\nאכל פת ← אכל פַּת\nטעות סופר ← טעות סוֹפֵר\n'
+
+
+def test_real_config_nikkud_section_is_pinned():
+    from pipeline.config import PipelineConfig
+    with patch("os.makedirs"):
+        instruction = PipelineConfig("config.yaml").polishing_instruction
+    assert instruction[instruction.index("===== תוספת"):] == NIKKUD_SECTION
+
 
 def _gemini_gen():
     from pipeline.generator import GeminiScriptGenerator
