@@ -187,6 +187,7 @@ python main.py 94 --context-range 87-111
 | `--overwrite-cache` | Regenerate cached drafts, relations and Stage 3 polish |
 | `--relations-file PATH` | Use pre-existing relations map |
 | `--draft-file SIMAN=PATH` | Use an existing Stage 1 draft for a siman (any filename, e.g. from another model) instead of the cache or a new Stage 1 call; repeatable; not affected by `--overwrite-cache` |
+| `--single-pass` | Skip Stage 1 drafts and Stage 2 relations: polish each siman's raw Sefaria sources (the same sources Stage 1 gets) directly with `polishing_instruction` and `single_pass_user_prompt`, then dictionary nikkud, transcript and TTS as usual; outputs are named `..._<model>_single_pass_...` (own polish cache); cannot be combined with `--stage-1-only`, `--relations-file`, `--draft-file`, `--context-range` |
 | `--dry-run` | Print the run plan and exit (no API / LLM / TTS / Sefaria calls) |
 
 ### Dry Run

@@ -138,6 +138,14 @@ polishing_instruction: |
 
 
 # Shared Relations Instruction for Stage 2 (Cross-Siman Relations Analysis)
+# --single-pass (main.py): the Stage 3 user prompt (with polishing_instruction as the system instruction)
+# when the raw Sefaria sources of a siman are polished directly, without a Stage 1 draft or a relations map.
+# {gematria_siman}: the siman number in Hebrew letters; {sources}: the same sources Stage 1 receives.
+single_pass_user_prompt: |
+    להלן המקורות הגולמיים עבור סימן {gematria_siman}, כפי שהובאו מספריא (טקסט השולחן ערוך, שבו דברי הרמ"א מסומנים [רמ"א] ... [/רמ"א], והמפרשים). אין כאן מבנה נתונים מוקדם: חלץ בעצמך מן המקורות את הדינים, הדעות והנימוקים, ואנא כתוב מהם כעת שיעור שמע מלוטש לפי כל ההנחיות.
+
+    {sources}
+
 relations_instruction: |
     אתה משמש כחוקר תורני בכיר ועורך הלכתי מומחה, המנתח וממפה קשרים נושאיים ומושגיים בין סימנים שונים ב{hebrew_name}.
     

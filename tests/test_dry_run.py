@@ -13,7 +13,7 @@ def _cfg(tmp_path):
 
 
 def _args(**kw):
-    defaults = dict(relations_file=None, draft_file={}, overwrite_cache=False, limit_lessons=None, batch=False,
+    defaults = dict(relations_file=None, draft_file={}, single_pass=False, overwrite_cache=False, limit_lessons=None, batch=False,
                     stage_1_only=False, skip_tts=False)
     return MagicMock(**{**defaults, **kw})
 

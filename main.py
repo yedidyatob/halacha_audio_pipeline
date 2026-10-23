@@ -418,6 +418,43 @@ def polish_simanim(drafts: dict, relations_text: str, generator, config, args, s
     )
 
 
+SINGLE_PASS_SUFFIX = "single_pass"
+
+
+def single_pass_suffix(model_suffix: str) -> str:
+    """--single-pass outputs (polish cache, transcript, review, audio) are named apart from the normal run's."""
+    return f"{model_suffix}_{SINGLE_PASS_SUFFIX}"
+
+
+def polish_sources(sources: dict, generator, config, args, summary: RunSummary, model_suffix: str) -> dict:
+    """
+    --single-pass Stage 3: {siman: raw Sefaria sources} -> {siman: polished_text} in one polish call per siman
+    (config single_pass_user_prompt; sync or batch, with generator.max_retries).
+    """
+    def user_prompt(siman, text):
+        return config.format_single_pass_user_prompt(int_to_gematria(siman), text)
+
+    return run_llm_stage(
+        summary, sources, STAGE_POLISH,
+        call=lambda siman, text: generator.polish_with_prompt(
+            user_prompt(siman, text), config.polishing_instruction,
+            temperature=config.polish_temperature, thinking_name=polish_base_name(config, siman, model_suffix)),
+        max_retries=config.generator_max_retries, args=args,
+        batch=BatchCalls(
+            generator,
+            submit=lambda siman, text: generator.submit_batch(
+                system_instruction=config.polishing_instruction,
+                user_prompt=user_prompt(siman, text),
+                temperature=config.polish_temperature,
+                custom_id=f"stage3_single_pass_siman_{siman}",
+                cache_dir=config.cache_dir
+            ),
+            fetch=lambda siman, text, job_id: generator.get_batch_result(job_id),
+        ),
+        on_result=lambda siman, polished_text: save_polish(siman, polished_text, config, model_suffix),
+    )
+
+
 def apply_dictionary_nikkud(polished: dict, summary: RunSummary) -> dict:
     """
     Stage 3.1: {siman: polished_text} -> {siman: (text, overrides)}: the dictionary nikkud applied
@@ -435,7 +472,7 @@ class RunPlan:
     """What a run will load from cache and what it will generate; resolved before any API call."""
     context_simanim: list
     target_simanim: list          # Stage 3+ (after --limit-lessons)
-    relations_source: str         # "file" (--relations-file), "cache" or "generate"
+    relations_source: str         # "file" (--relations-file), "cache", "generate" or "none" (--single-pass)
     relations_path: str           # file it is loaded from, or where the generated map is saved
     relations_text: str           # "" when it will be generated
     draft_paths: dict             # {siman: cache path} for every draft needed
@@ -468,7 +505,9 @@ def resolve_run_plan(args, config, simanim_list: list, context_list: list, model
     Raises PlanError if the run cannot start.
     """
     relations_text, relations_source = "", "generate"
-    if args.relations_file:
+    if args.single_pass:
+        relations_path, relations_source = "", "none"
+    elif args.relations_file:
         relations_path = args.relations_file
         if not os.path.exists(relations_path):
             raise PlanError(f"Relations file not found at: {relations_path}")
@@ -496,7 +535,10 @@ def resolve_run_plan(args, config, simanim_list: list, context_list: list, model
         target_simanim = simanim_list[:args.limit_lessons]
         logger.info(f"[DEBUG LIMIT] Restricting Stage 3 styling to: {target_simanim}")
 
-    if relations_text:
+    if args.single_pass:
+        # the raw sources go straight to Stage 3: no drafts
+        drafts_needed = []
+    elif relations_text:
         # relations are available, so only the target simanim being polished need drafts
         drafts_needed = target_simanim
         logger.info(f"Relations map is already loaded. Resolving drafts only for target Simanim: {drafts_needed}")
@@ -570,7 +612,12 @@ def format_run_plan(plan: RunPlan, args, config, generator, model_suffix: str) -
         + (f" (--limit-lessons {args.limit_lessons})" if args.limit_lessons is not None else ""),
         f"Context simanim: {plan.context_simanim}",
     ]
-    if plan.relations_source == "file":
+    if args.single_pass:
+        lines.append("--single-pass: no Stage 1 drafts and no Stage 2 relations map; each target siman's raw "
+                     "Sefaria sources go straight to the Stage 3 polish (one Sefaria fetch per polish to generate)")
+    if plan.relations_source == "none":
+        pass
+    elif plan.relations_source == "file":
         lines.append(f"Stage 2 relations map: loaded from --relations-file {plan.relations_path}")
     elif plan.relations_source == "cache":
         lines.append(f"Stage 2 relations map: loaded from cache {plan.relations_path}")
@@ -580,7 +627,17 @@ def format_run_plan(plan: RunPlan, args, config, generator, model_suffix: str) -
         lines.append(f"Stage 2 relations map: will be GENERATED ({'a batch job' if args.batch else 'a synchronous call'}) "
                      f"from the drafts of {plan.drafts_needed} and saved to {plan.relations_path}")
     cached = [s for s in plan.drafts_needed if s in plan.drafts and s not in plan.draft_files]
-    lines.append(f"Stage 1 drafts needed: {plan.drafts_needed}")
+    if not args.single_pass:
+        lines += format_draft_plan(plan, cached, calls)
+    if args.stage_1_only:
+        lines.append("--stage-1-only: the run stops after Stage 1.")
+        return "\n".join(lines)
+    lines += format_lesson_plan(plan, args, config, calls, model_suffix)
+    return "\n".join(lines)
+
+
+def format_draft_plan(plan: RunPlan, cached: list, calls: str) -> list:
+    lines = [f"Stage 1 drafts needed: {plan.drafts_needed}"]
     if plan.draft_files:
         lines.append(f"  from --draft-file ({len(plan.draft_files)}): {plan.draft_files}")
         lines += [f"    Siman {s}: {plan.draft_paths[s]}" for s in plan.draft_files]
@@ -589,9 +646,11 @@ def format_run_plan(plan: RunPlan, args, config, generator, model_suffix: str) -
     lines.append(f"  to be GENERATED ({len(plan.missing_drafts)}, as {calls}, after a Sefaria fetch each): "
                  f"{plan.missing_drafts or 'none'}")
     lines += [f"    Siman {s} -> {plan.draft_paths[s]}" for s in plan.missing_drafts]
-    if args.stage_1_only:
-        lines.append("--stage-1-only: the run stops after Stage 1.")
-        return "\n".join(lines)
+    return lines
+
+
+def format_lesson_plan(plan: RunPlan, args, config, calls: str, model_suffix: str) -> list:
+    lines = []
     cached_polish = [s for s in plan.target_simanim if s in plan.polished]
     lines.append(f"Stage 3 polish and nikkud -> 3.1 dictionary nikkud: {plan.target_simanim}")
     lines.append(f"  Stage 3 polish from cache ({len(cached_polish)}): {cached_polish or 'none'}")
@@ -607,7 +666,7 @@ def format_run_plan(plan: RunPlan, args, config, generator, model_suffix: str) -
         lines.append(f"    Siman {siman}: {base}_transcript.txt"
                      + ("" if args.skip_tts else f", {base}.{AUDIO_EXTENSION}"))
     lines.append("(Each saved file also gets a timestamped history copy.)")
-    return "\n".join(lines)
+    return lines
 
 
 def save_transcript(siman: int, text: str, overrides: list, config, model_suffix: str) -> None:
@@ -665,12 +724,7 @@ def finish_siman(siman: int, text: str, overrides: list, config, args, model_suf
 
 def run_lesson_stages(target_simanim: list, drafts: dict, cached_polish: dict, relations_text: str, generator,
                       config, args, model_suffix: str) -> RunSummary:
-    """
-    Stage 3 onwards for every target siman, one stage at a time (sync or batch):
-    polish and nikkud (one LLM call) -> dictionary nikkud -> transcript save -> TTS.
-    A siman in cached_polish ({siman: text}, see resolve_run_plan) skips the polish call.
-    A failure removes only that siman from the later stages.
-    """
+    """Stage 3 onwards from the Stage 1 drafts and the relations map (see run_polished_stages)."""
     summary = RunSummary()
     available = {}
     for siman in target_simanim:
@@ -681,12 +735,42 @@ def run_lesson_stages(target_simanim: list, drafts: dict, cached_polish: dict, r
         else:
             logger.error(f"Cannot polish Siman {siman}: Stage 1 draft is missing.")
             summary.failure(siman, STAGE_POLISH, "Stage 1 draft is missing")
+    return run_polished_stages(
+        target_simanim, cached_polish, summary, config, args, model_suffix,
+        polish=lambda: polish_simanim(available, relations_text, generator, config, args, summary, model_suffix)
+        if available else {})
 
-    if available:
-        new_polish = polish_simanim(available, relations_text, generator, config, args, summary, model_suffix)
-    else:
-        new_polish = {}
+
+def run_single_pass_stages(target_simanim: list, cached_polish: dict, extractor, generator, config, args,
+                           model_suffix: str) -> RunSummary:
+    """--single-pass Stage 3 onwards: the raw Sefaria sources of each target siman are polished directly."""
+    summary = RunSummary()
+
+    def polish():
+        to_polish = [siman for siman in target_simanim if siman not in cached_polish]
+        sources = run_per_siman(
+            summary, {siman: siman for siman in to_polish}, STAGE_POLISH,
+            lambda siman, _: extractor.compile_simanim_context([siman], target_simanim=[siman])
+        )
+        return polish_sources(sources, generator, config, args, summary, model_suffix) if sources else {}
+
+    return run_polished_stages(target_simanim, cached_polish, summary, config, args, model_suffix, polish)
+
+
+def run_polished_stages(target_simanim: list, cached_polish: dict, summary: RunSummary, config, args,
+                        model_suffix: str, polish) -> RunSummary:
+    """
+    Stage 3 onwards for every target siman, one stage at a time (sync or batch):
+    polish and nikkud (one LLM call) -> dictionary nikkud -> transcript save -> TTS.
+    A siman in cached_polish ({siman: text}, see resolve_run_plan) skips the polish call.
+    A failure removes only that siman from the later stages.
+    polish() makes the Stage 3 calls for the simanim not in cached_polish and returns their {siman: text}.
+    """
+    if all(siman in cached_polish for siman in target_simanim):
         logger.info(f"{STAGE_POLISH}: no calls needed; every target siman's polish was loaded from cache.")
+        new_polish = {}
+    else:
+        new_polish = polish()
     ready = {**cached_polish, **new_polish}
     polished = {siman: ready[siman] for siman in target_simanim if siman in ready}
     final = apply_dictionary_nikkud(polished, summary)
@@ -784,6 +868,13 @@ def parse_arguments():
              "(e.g. a draft made with another model). Repeat for several simanim. Never overwritten."
     )
     parser.add_argument(
+        "--single-pass",
+        action="store_true",
+        help="Skip Stage 1 drafts and Stage 2 relations: polish each siman's raw Sefaria sources directly "
+             "(config single_pass_user_prompt), then dictionary nikkud, transcript and TTS as usual. Outputs are "
+             "named ..._<model>_single_pass_... so they never collide with a normal run's."
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print the run plan (relations map, drafts and Stage 3 polish loaded from cache vs generated, simanim "
@@ -801,6 +892,14 @@ def parse_arguments():
             parser.error(f"--draft-file given twice for Siman {siman}")
         draft_files[siman] = path
     args.draft_file = draft_files
+    if args.single_pass:
+        conflicts = [flag for flag, used in (("--stage-1-only", args.stage_1_only),
+                                             ("--relations-file", args.relations_file),
+                                             ("--draft-file", draft_files),
+                                             ("--context-range", args.context_range)) if used]
+        if conflicts:
+            parser.error(f"--single-pass has no Stage 1 drafts or Stage 2 relations map, so it cannot be combined "
+                         f"with {', '.join(conflicts)}")
     return args
 
 def main():
@@ -851,6 +950,9 @@ def main():
     if args.batch:
         logger.info("Batch mode enabled. All stages will use the Batch API with polling.")
         
+    if args.single_pass:
+        model_suffix = single_pass_suffix(model_suffix)
+
     # 5. Resolve the run plan: relations map, Stage 1 drafts and Stage 3 polish from cache, file or to be generated
     try:
         plan = resolve_run_plan(args, config, simanim_list, context_list, model_suffix)
@@ -879,6 +981,11 @@ def main():
         logger.error(f"Sefaria Extractor initialization failed: {e}")
         sys.exit(1)
 
+    if args.single_pass:
+        finish_run(run_single_pass_stages(target_generation_simanim, plan.polished, extractor, generator,
+                                          config, args, model_suffix))
+        return
+
     # 7. Generate the missing Stage 1 drafts (each saved as soon as it is ready; any failure aborts the run)
     if missing_simanim:
         logger.info(f"Generating missing Stage 1 drafts for Simanim: {missing_simanim}...")
@@ -905,9 +1012,11 @@ def main():
         )
 
     # 9. Stage 3+: polish and nikkud, dictionary nikkud, transcript, TTS (per-siman failures do not stop the run)
-    summary = run_lesson_stages(target_generation_simanim, drafts, plan.polished, relations_text, generator,
-                                config, args, model_suffix)
+    finish_run(run_lesson_stages(target_generation_simanim, drafts, plan.polished, relations_text, generator,
+                                 config, args, model_suffix))
 
+
+def finish_run(summary: RunSummary) -> None:
     summary.log()
     if summary.has_failures:
         logger.error("Pipeline finished with failures.")
