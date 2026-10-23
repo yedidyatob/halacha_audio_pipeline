@@ -285,9 +285,9 @@ def test_repo_config_prices_every_configured_gemini_model():
     from pipeline.config import PipelineConfig
     with patch("os.makedirs"):
         cfg = PipelineConfig("config.yaml")
-    assert cfg.draft_thinking_level == "high"
+    assert cfg.draft_thinking_level == "medium"
     assert cfg.polish_temperature == 0.1
     assert (cfg.gemini_temperature, cfg.openai_temperature, cfg.openai_service_tier) == (0.3, 1.0, "auto")
     assert (cfg.native_audio_model_name, cfg.native_audio_voice_name, cfg.native_audio_temperature) == \
         ("gemini-2.5-flash-preview-tts", "Puck", 0.3)
-    assert cfg.gemini_price(cfg.gemini_model_name)["output_per_million"] == 12.0
+    assert cfg.gemini_price(cfg.gemini_model_name) == {"input_per_million": 2.0, "output_per_million": 10.0}
