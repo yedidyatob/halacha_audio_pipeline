@@ -29,3 +29,12 @@ def int_to_gematria(num: int) -> str:
     elif len(res) == 1:
         return res + "'"
     return ""
+
+
+def gematria_to_int(text: str) -> int:
+    """Inverse of int_to_gematria (1-999); geresh / gershayim (ASCII or Hebrew) are optional."""
+    letters = text.strip().translate(str.maketrans("", "", "'\"\u05f3\u05f4"))
+    for num in range(1, 1000):
+        if int_to_gematria(num).translate(str.maketrans("", "", "'\"")) == letters:
+            return num
+    raise ValueError(f"Not a Hebrew number: '{text}'")
