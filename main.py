@@ -283,6 +283,11 @@ def abort_if_failed(summary: RunSummary, stage: str, note: str = "") -> None:
 AUDIO_EXTENSION = "mp3"
 
 
+def model_suffix_for(generator) -> str:
+    """The generator's model name as it appears in output and cache file names."""
+    return generator.model_name.replace('.', '_')
+
+
 def lesson_base_name(config, siman: int, model_suffix: str) -> str:
     """Base name of a siman's outputs in output_dir (transcript, nikkud review, audio)."""
     return f"{config.section_slug}_Siman_{siman}_{model_suffix}"
@@ -933,7 +938,7 @@ def main():
     # Determine model suffix for naming
     try:
         generator = create_generator_engine(config)
-        model_suffix = generator.model_name.replace('.', '_')
+        model_suffix = model_suffix_for(generator)
         logger.info(f"Stages 1-3 retry a failed call up to {config.generator_max_retries} time(s) "
                     f"(generator.max_retries).")
     except Exception as e:
