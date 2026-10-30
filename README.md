@@ -210,12 +210,13 @@ only the local cache files are read.
 ### Polish sample (prompt testing)
 
 ```bash
-python scripts/polish_sample.py 96 --seifim 1-2 [--draft-file PATH] [--relations-file PATH] [--config PATH]
+python scripts/polish_sample.py 96 --seifim 1-2 [--draft-file PATH] [--relations-file PATH] [--allow-no-relations] [--config PATH]
 ```
 Runs the real Stage 3 polish+nikkud call (current `polishing_instruction`) on only the given seifim
 (a seif, range or list) of the siman's cached Stage 1 draft for the current model (or `--draft-file`);
 it never generates a draft. The relations map is `--relations-file`, else the newest cached map of this
-model that includes the siman, else none. Saves the raw polish output (no dictionary nikkud, no TTS, no
+model that includes the siman. If neither exists it exits with an error before any API call, since the
+map changes the polished length a lot; `--allow-no-relations` polishes without one anyway. Saves the raw polish output (no dictionary nikkud, no TTS, no
 cache writes) as `<slug>_Siman_N_<model>_sample_seifim_<spec>.txt` in the output dir and prints word counts;
 tokens and cost appear in the `[Gemini Cost Tracker]` log line.
 

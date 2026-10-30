@@ -3,10 +3,12 @@ Cheap polish-prompt test: runs the real Stage 3 polish+nikkud call (config.yaml 
 a few seifim of a siman's existing Stage 1 draft, and saves the raw polish output. Never generates a draft,
 writes no cache, no dictionary nikkud, no TTS.
 
-    python scripts/polish_sample.py 96 --seifim 1-2 [--draft-file PATH] [--relations-file PATH] [--config PATH]
+    python scripts/polish_sample.py 96 --seifim 1-2 [--draft-file PATH] [--relations-file PATH] [--allow-no-relations]
+        [--config PATH]
 
 Relations map: --relations-file if given, else the newest cached map of the current model whose simanim
-include this siman, else none (printed either way).
+include this siman. With neither it stops (the map changes the polished length, so a sample without one is
+not representative) unless --allow-no-relations is given.
 """
 import argparse
 import os
@@ -89,6 +91,8 @@ def parse_arguments(argv=None):
                         help="Stage 1 draft to use instead of the current model's cached draft.")
     parser.add_argument("--relations-file", type=str, default=None,
                         help="Relations map to use instead of the newest cached one that includes the siman.")
+    parser.add_argument("--allow-no-relations", action="store_true",
+                        help="Polish without a relations map when none is given or cached for the siman.")
     parser.add_argument("--config", type=str, default="config.yaml", help="Path to config.yaml.")
     args = parser.parse_args(argv)
     try:
@@ -121,8 +125,11 @@ def run(args) -> str:
     print(f"Draft: {draft_path} -> seifim {args.seifim_list} ({word_count(draft)} words)")
 
     relations_path = args.relations_file or find_cached_relations(config, args.siman, model_suffix)
+    if not relations_path and not args.allow_no_relations:
+        raise SampleError(f"No relations map covers Siman {args.siman} for model {model_suffix}; pass "
+                          "--relations-file PATH, or --allow-no-relations to polish without one.")
     relations = _read(relations_path, "Relations map") if relations_path else ""
-    print(f"Relations map: {relations_path or 'none (no cached map includes this siman)'}")
+    print(f"Relations map: {relations_path or 'none (--allow-no-relations)'}")
 
     # the real Stage 3 call; the generator logs tokens and cost ([Gemini Cost Tracker], config gemini_pricing)
     polished = generator.polish_siman_script(draft, relations, config.polishing_instruction,
