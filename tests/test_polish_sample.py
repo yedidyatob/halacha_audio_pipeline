@@ -85,10 +85,31 @@ def test_run_uses_cached_draft_and_relations(tmp_path, capsys):
     assert os.listdir(tmp_path / "drafts") == ["YD_Siman_96_m_draft.txt"]  # no cache writes
 
 
-def test_run_draft_file_without_relations(tmp_path, capsys):
-    mine = tmp_path / "mine.txt"
+def test_run_draft_file_and_relations_file(tmp_path, capsys):
+    _cfg(tmp_path)
+    mine, rel = tmp_path / "mine.txt", tmp_path / "myrel.txt"
     mine.write_text(DRAFT, encoding="utf-8")
-    gen, _ = _run(tmp_path, ["96", "--seifim", "3", "--draft-file", str(mine)])
+    rel.write_text("MYREL", encoding="utf-8")
+    (tmp_path / "rel" / "YD_Relations_96_m.txt").write_text("CACHED", encoding="utf-8")
+    gen, _ = _run(tmp_path, ["96", "--seifim", "3", "--draft-file", str(mine), "--relations-file", str(rel)])
+    assert gen.polish_siman_script.call_args.args[1] == "MYREL"
+    assert f"Relations map: {rel}" in capsys.readouterr().out
+
+
+def test_run_without_relations_map_stops_before_polish(tmp_path):
+    _cfg(tmp_path)
+    (tmp_path / "drafts" / "YD_Siman_96_m_draft.txt").write_text(DRAFT, encoding="utf-8")
+    gen = MagicMock(model_name="m")
+    with pytest.raises(ps.SampleError, match="No relations map covers Siman 96.*--relations-file PATH.*"
+                                             "--allow-no-relations"):
+        _run(tmp_path, ["96", "--seifim", "1"], gen)
+    gen.polish_siman_script.assert_not_called()
+
+
+def test_run_allow_no_relations(tmp_path, capsys):
+    _cfg(tmp_path)
+    (tmp_path / "drafts" / "YD_Siman_96_m_draft.txt").write_text(DRAFT, encoding="utf-8")
+    gen, _ = _run(tmp_path, ["96", "--seifim", "3", "--allow-no-relations"])
     assert gen.polish_siman_script.call_args.args[1] == ""
     assert "Relations map: none" in capsys.readouterr().out
 
