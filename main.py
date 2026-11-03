@@ -976,7 +976,7 @@ def main():
     # 6. Sefaria Extractor Setup
     try:
         extractor = SefariaExtractor(
-            section_name=config.halachic_section,
+            works=config.source_works,
             base_url=config.sefaria_base_url,
             timeout=config.sefaria_timeout,
             retries=config.sefaria_retries,

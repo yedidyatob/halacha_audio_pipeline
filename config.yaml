@@ -1,7 +1,49 @@
 # Halacha Audio Lesson Generation Pipeline Configuration
 
-# Halachic Section Settings (options: "Yoreh De'ah", "Orach Chayim")
+# Halachic Section Settings (options: the keys of 'sections' below)
 halachic_section: "Yoreh De'ah"
+
+# Per-section metadata.
+#   slug: file-name prefix of the section's outputs.
+#   hebrew_name: {hebrew_name} in relations_instruction.
+#   commentators_list_hebrew / prompt_commentators_desc: {placeholders} in system_instruction
+#     (prompt_commentators_desc also in relations_instruction).
+#   commentators_list_short / tts_abbreviations: {placeholders} in polishing_instruction.
+#   works: the Sefaria sources of a siman, fetched and listed in this order.
+#     label: the "--- <label> (סימן N) ---" header in the sources.
+#     sefaria_ref: the Sefaria book reference; ".<siman>" is appended.
+#     context_simanim: also fetched for context-only simanim (otherwise target simanim only).
+#     rama_glosses: the Shulchan Arukh text, whose <small> glosses are labeled [רמ"א] ... [/רמ"א].
+sections:
+  "Yoreh De'ah":
+    slug: "Yoreh_Deah"
+    hebrew_name: "יורה דעה"
+    commentators_list_hebrew: 'הטור, בית יוסף, דרכי משה, שולחן ערוך, רמ"א, ש"ך וט"ז'
+    commentators_list_short: 'הטור, בית יוסף, דרכי משה, מחבר, רמ"א, ש"ך וט"ז'
+    prompt_commentators_desc: 'השפתי כהן (הש"ך) והטורי זהב (הט"ז) והמקורות שהם מביאים'
+    tts_abbreviations: '"רמ"א" -> "הרמ"א", "ש"ך" -> "הש"ך", "ט"ז" -> "הט"ז", "מהרש"ל" -> "המהרש"ל"'
+    works:
+      - {label: "Tur", sefaria_ref: "Tur, Yoreh De'ah", context_simanim: true, rama_glosses: false}
+      - {label: "Beit Yosef", sefaria_ref: "Beit Yosef, Yoreh De'ah", context_simanim: false, rama_glosses: false}
+      - {label: "Darkei Moshe", sefaria_ref: "Darkhei Moshe, Yoreh De'ah", context_simanim: false, rama_glosses: false}
+      - {label: "Shulchan Arukh", sefaria_ref: "Shulchan Arukh, Yoreh De'ah", context_simanim: true, rama_glosses: true}
+      - {label: "Shach", sefaria_ref: "Siftei Kohen on Shulchan Arukh, Yoreh De'ah", context_simanim: false, rama_glosses: false}
+      - {label: "Taz", sefaria_ref: "Turei Zahav on Shulchan Arukh, Yoreh De'ah", context_simanim: false, rama_glosses: false}
+  "Orach Chayim":
+    slug: "Orach_Chayim"
+    hebrew_name: "אורח חיים"
+    commentators_list_hebrew: 'הטור, בית יוסף, דרכי משה, שולחן ערוך, רמ"א, מגן אברהם, טורי זהב ומשנה ברורה'
+    commentators_list_short: 'הטור, בית יוסף, דרכי משה, מחבר, רמ"א, מגן אברהם, טורי זהב ומשנה ברורה'
+    prompt_commentators_desc: 'המגן אברהם (המג"א), הטורי זהב (הט"ז) והמשנה ברורה (המשנ"ב) והמקורות שהם מביאים'
+    tts_abbreviations: '"רמ"א" -> "הרמ"א", "מג"א" -> "המגן אברהם", "ט"ז" -> "הט"ז", "מ"ב" -> "המשנה ברורה"'
+    works:
+      - {label: "Tur", sefaria_ref: "Tur, Orach Chayim", context_simanim: true, rama_glosses: false}
+      - {label: "Beit Yosef", sefaria_ref: "Beit Yosef, Orach Chayim", context_simanim: false, rama_glosses: false}
+      - {label: "Darkei Moshe", sefaria_ref: "Darkhei Moshe, Orach Chayim", context_simanim: false, rama_glosses: false}
+      - {label: "Shulchan Arukh", sefaria_ref: "Shulchan Arukh, Orach Chayim", context_simanim: true, rama_glosses: true}
+      - {label: "Magen Avraham", sefaria_ref: "Magen Avraham", context_simanim: false, rama_glosses: false}
+      - {label: "Taz", sefaria_ref: "Turei Zahav on Shulchan Arukh, Orach Chayim", context_simanim: false, rama_glosses: false}
+      - {label: "Mishna Berura", sefaria_ref: "Mishnah Berurah", context_simanim: false, rama_glosses: false}
 
 # Sefaria API settings
 sefaria:

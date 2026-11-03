@@ -9,6 +9,7 @@ import main as main_mod
 from pipeline.generator import BatchCapableGenerator, BatchResultError, GeminiScriptGenerator, OpenAIScriptGenerator
 from pipeline.retry import call_with_retries
 from tests.gemini_fakes import make_gemini_generator
+from tests.section_yaml import SECTIONS_YAML
 
 
 # --- Gemini: InlinedResponse carries `response` OR `error` ---------------------------
@@ -143,7 +144,7 @@ generator:
 
 def _config(line):
     from pipeline.config import PipelineConfig
-    with patch("builtins.open", mock_open(read_data=BASE_YAML + line)), \
+    with patch("builtins.open", mock_open(read_data=SECTIONS_YAML + BASE_YAML + line)), \
          patch("os.path.exists", return_value=True), patch("os.makedirs"):
         return PipelineConfig("config.yaml")
 
@@ -245,7 +246,7 @@ def cancelled(cid, rounds=(1,)):
 
 def _cfg(tmp_path, retries):
     return MagicMock(drafts_dir=str(tmp_path), output_dir=str(tmp_path), cache_dir=str(tmp_path), section_slug="YD",
-                     generator_max_retries=retries, section_metadata={"prompt_commentators_desc": "d"},
+                     generator_max_retries=retries,
                      draft_thinking_level="medium")
 
 
