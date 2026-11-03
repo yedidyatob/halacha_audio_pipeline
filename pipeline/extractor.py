@@ -48,6 +48,7 @@ class SefariaExtractor:
         self.works = {
             "Tur": f"Tur, {sefaria_name}",
             "Beit Yosef": f"Beit Yosef, {sefaria_name}",
+            "Darkei Moshe": f"Darkhei Moshe, {sefaria_name}",
             SHULCHAN_ARUKH: f"Shulchan Arukh, {sefaria_name}"
         }
         for comm_name, comm_info in metadata["commentators"].items():
@@ -165,7 +166,7 @@ class SefariaExtractor:
 
     def fetch_siman_sources(self, siman: int) -> Dict[str, List[str]]:
         """
-        Fetches all five works for a specific Siman.
+        Fetches every configured work for a specific Siman.
         """
         siman_data = {}
         for work_name in self.works:
@@ -195,7 +196,7 @@ class SefariaExtractor:
             # Determine works to fetch/include for this Siman
             is_target = target_simanim is None or siman in target_simanim
             if is_target:
-                works_to_include = ["Tur", "Beit Yosef", "Shulchan Arukh", "Shach", "Taz"]
+                works_to_include = ["Tur", "Beit Yosef", "Darkei Moshe", "Shulchan Arukh", "Shach", "Taz"]
             else:
                 works_to_include = ["Tur", "Shulchan Arukh"]
                 logger.info(f"Siman {siman} is context-only. Fetching only Tur and Shulchan Arukh to optimize context length.")
