@@ -8,6 +8,7 @@ from pipeline.nikkud_review import (
     WORDS_HEADER, OVERRIDES_TITLE, OVERRIDES_HEADER,
 )
 from pipeline.apply_nikkud import apply_nikkud_with_overrides, NikkudOverride
+from tests.section_yaml import SECTIONS_YAML
 
 # A final transcript: the polish vocalized טֵית / פַּת / סוֹפֵר, the dictionary wrote השַׁךְ.
 VOCALIZED = "סימן טֵית עוסק בדין פַּת.\nזו טעות סוֹפֵר בדברי השַׁךְ.\n"
@@ -109,7 +110,7 @@ tts:
 
 def _config(extra=""):
     from pipeline.config import PipelineConfig
-    with patch("builtins.open", mock_open(read_data=BASE_YAML + extra)), \
+    with patch("builtins.open", mock_open(read_data=SECTIONS_YAML + BASE_YAML + extra)), \
          patch("os.path.exists", return_value=True), patch("os.makedirs"):
         return PipelineConfig("config.yaml")
 

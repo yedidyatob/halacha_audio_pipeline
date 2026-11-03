@@ -3,6 +3,7 @@ import re
 import requests
 import time
 import urllib3
+from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
 from pipeline.logger import get_logger
 logger = get_logger(__name__)
@@ -18,8 +19,14 @@ RAMA_CLOSE = '[/רמ"א]'
 _SMALL_TAG_RE = re.compile(r"<(/?)small\b[^>]*>", re.IGNORECASE)
 _LEADING_HAGAH_RE = re.compile(r"^הגה\s*:?\s*")
 
-# The work whose <small> blocks are Rama glosses.
-SHULCHAN_ARUKH = "Shulchan Arukh"
+
+@dataclass(frozen=True)
+class SourceWork:
+    """One Sefaria work of a section (config.yaml sections.<section>.works)."""
+    label: str              # header of the work in the compiled sources
+    sefaria_ref: str        # Sefaria book reference; ".<siman>" is appended
+    context_simanim: bool   # also fetched for context-only simanim
+    rama_glosses: bool      # Shulchan Arukh text: <small> blocks are Rama glosses
 
 
 class SefariaExtractor:
@@ -27,31 +34,17 @@ class SefariaExtractor:
     Fetches and cleans classical Jewish texts from the Sefaria API.
     Handles nested list structures and HTML sanitization.
     """
-    def __init__(self, *, section_name: str, base_url: str, timeout: float, retries: int, ssl_verify: bool):
+    def __init__(self, *, works: List[SourceWork], base_url: str, timeout: float, retries: int, ssl_verify: bool):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.retries = retries
         self.ssl_verify = ssl_verify
-        self.section_name = section_name
+        # label -> work, in the order the works are listed in the sources
+        self.works = {work.label: work for work in works}
         
         if not self.ssl_verify:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         
-        from pipeline.domain import SECTIONS_METADATA
-        if section_name not in SECTIONS_METADATA:
-            raise ValueError(f"Unsupported section name: '{section_name}'")
-            
-        metadata = SECTIONS_METADATA[section_name]
-        sefaria_name = metadata["sefaria_name"]
-        
-        # Sefaria canonical text references resolved dynamically
-        self.works = {
-            "Tur": f"Tur, {sefaria_name}",
-            "Beit Yosef": f"Beit Yosef, {sefaria_name}",
-            SHULCHAN_ARUKH: f"Shulchan Arukh, {sefaria_name}"
-        }
-        for comm_name, comm_info in metadata["commentators"].items():
-            self.works[comm_name] = comm_info["sefaria_name"]
 
     def clean_html_text(self, text: str) -> str:
         """
@@ -111,7 +104,8 @@ class SefariaExtractor:
 
     def fetch_work(self, work_name: str, siman: int) -> List[str]:
         """Cleaned lines of one work for a siman; Shulchan Arukh lines carry Rama labels."""
-        return self.fetch_text(f"{self.works[work_name]}.{siman}", label_rama=work_name == SHULCHAN_ARUKH)
+        work = self.works[work_name]
+        return self.fetch_text(f"{work.sefaria_ref}.{siman}", label_rama=work.rama_glosses)
 
     def fetch_text(self, ref: str, label_rama: bool = False) -> List[str]:
         """
@@ -165,7 +159,7 @@ class SefariaExtractor:
 
     def fetch_siman_sources(self, siman: int) -> Dict[str, List[str]]:
         """
-        Fetches all five works for a specific Siman.
+        Fetches every configured work for a specific Siman.
         """
         siman_data = {}
         for work_name in self.works:
@@ -194,11 +188,10 @@ class SefariaExtractor:
             
             # Determine works to fetch/include for this Siman
             is_target = target_simanim is None or siman in target_simanim
-            if is_target:
-                works_to_include = ["Tur", "Beit Yosef", "Shulchan Arukh", "Shach", "Taz"]
-            else:
-                works_to_include = ["Tur", "Shulchan Arukh"]
-                logger.info(f"Siman {siman} is context-only. Fetching only Tur and Shulchan Arukh to optimize context length.")
+            works_to_include = [label for label, work in self.works.items() if is_target or work.context_simanim]
+            if not is_target:
+                logger.info(f"Siman {siman} is context-only. Fetching only {', '.join(works_to_include)} "
+                            f"to optimize context length.")
                 
             siman_sources = {}
             for work_name in works_to_include:
