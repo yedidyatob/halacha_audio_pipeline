@@ -770,6 +770,13 @@ def test_context_regexes_and_letter_names_unaffected_by_blank_rule():
 # ---------------------------------------------------------------------------
 
 MAHARSHAL = RABBINIC_NIKKUD_DICT['מהרש"ל']
+BAHAG = RABBINIC_NIKKUD_DICT['בה"ג']
+
+
+def test_bahag_is_read_as_the_book_name():
+    assert BAHAG == "בַּעַל הֲלָכוֹת גְּדוֹלוֹת"
+    assert apply('הרי"ף, הבה"ג והר"ן') == ("ה" + RABBINIC_NIKKUD_DICT['רי"ף'] + ", ה" + BAHAG + " וה"
+                                         + RABBINIC_NIKKUD_DICT['ר"ן'])
 
 
 @pytest.mark.parametrize("text, expected", [
@@ -780,6 +787,7 @@ MAHARSHAL = RABBINIC_NIKKUD_DICT['מהרש"ל']
     ("שהמגא כתב", "שה" + RABBINIC_NIKKUD_DICT['מג"א'] + " כתב"),
     ("מהמהרשא", "מה" + RABBINIC_NIKKUD_DICT['מהרש"א']),
     ("(הסמע)", "(ה" + RABBINIC_NIKKUD_DICT['סמ"ע'] + ")"),
+    ("פסקו הבהג כך", "פסקו ה" + BAHAG + " כך"),
 ])
 def test_unquoted_abbreviation_with_and_without_prefix(text, expected):
     assert apply(text) == expected
