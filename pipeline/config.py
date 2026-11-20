@@ -2,7 +2,7 @@ import os
 import yaml
 from typing import Dict, Any
 from pipeline.logger import get_logger
-from pipeline.domain import SECTIONS_METADATA
+from pipeline.extractor import SourceWork
 from pipeline.nikkud_review import has_nikkud, word_vocalization_error
 from pipeline.tts import (
     validate_gap_ms, validate_chunk_size, validate_context_chars,
@@ -64,6 +64,28 @@ def _engine(section: dict, path: str, choices: tuple) -> str:
     if value not in choices:
         raise ValueError(f"Invalid {path}.engine choice: '{value}'. Must be one of: {', '.join(choices)}.")
     return value
+
+
+def _source_works(value, path: str) -> list:
+    """The section's Sefaria works (sections.<section>.works), each with all four keys."""
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"'{path}' in config.yaml must be a non-empty list of works.")
+    works = []
+    for index, entry in enumerate(value):
+        if not isinstance(entry, dict):
+            raise ValueError(f"'{path}' entry {index} must be a mapping, got {entry!r}.")
+        entry_path = f"{path}[{index}]"
+        works.append(SourceWork(
+            label=_required_str(entry, "label", entry_path),
+            sefaria_ref=_required_str(entry, "sefaria_ref", entry_path),
+            context_simanim=_bool(_required(entry, "context_simanim", entry_path), f"{entry_path}.context_simanim"),
+            rama_glosses=_bool(_required(entry, "rama_glosses", entry_path), f"{entry_path}.rama_glosses"),
+        ))
+    labels = [work.label for work in works]
+    duplicates = sorted({label for label in labels if labels.count(label) > 1})
+    if duplicates:
+        raise ValueError(f"'{path}' has duplicate labels: {duplicates}.")
+    return works
 
 
 def _non_empty_str(value) -> bool:
@@ -144,13 +166,23 @@ class PipelineConfig:
         if not self.halachic_section:
             raise ValueError("Configuration must specify 'halachic_section'.")
 
-        if self.halachic_section not in SECTIONS_METADATA:
+        sections = self.config_data.get("sections")
+        if not isinstance(sections, dict) or not sections:
+            raise ValueError("Missing required configuration parameter 'sections' in config.yaml.")
+        if self.halachic_section not in sections:
             raise ValueError(
                 f"Unsupported halachic_section: '{self.halachic_section}'. "
-                f"Supported sections are: {list(SECTIONS_METADATA.keys())}"
+                f"Supported sections are: {list(sections.keys())}"
             )
-        self.section_metadata = SECTIONS_METADATA[self.halachic_section]
-        self.section_slug = self.section_metadata["slug"]
+        section = sections[self.halachic_section]
+        path = f"sections.{self.halachic_section}"
+        self.section_slug = _required_str(section, "slug", path)
+        self.section_hebrew_name = _required_str(section, "hebrew_name", path)
+        self.commentators_list_hebrew = _required_str(section, "commentators_list_hebrew", path)
+        self.commentators_list_short = _required_str(section, "commentators_list_short", path)
+        self.prompt_commentators_desc = _required_str(section, "prompt_commentators_desc", path)
+        self.tts_abbreviations = _required_str(section, "tts_abbreviations", path)
+        self.source_works = _source_works(_required(section, "works", path), f"{path}.works")
 
         # Load API keys (YAML takes priority, fallback to environment variables)
         api_keys = self.config_data.get("api_keys", {})
@@ -177,15 +209,15 @@ class PipelineConfig:
         # Load system instruction (shared at root or falling back to gemini section)
         raw_system_instruction = self.config_data.get("system_instruction") or self.config_data.get("gemini", {}).get("system_instruction", "")
         self.gemini_system_instruction = raw_system_instruction.format(
-            commentators_list_hebrew=self.section_metadata.get("commentators_list_hebrew", ""),
-            prompt_commentators_desc=self.section_metadata.get("prompt_commentators_desc", "")
+            commentators_list_hebrew=self.commentators_list_hebrew,
+            prompt_commentators_desc=self.prompt_commentators_desc
         ) if raw_system_instruction else ""
         
         
         raw_relations_instruction = self.config_data.get("relations_instruction") or ""
         self.relations_instruction = raw_relations_instruction.format(
-            hebrew_name=self.section_metadata.get("hebrew_name", ""),
-            prompt_commentators_desc=self.section_metadata.get("prompt_commentators_desc", "")
+            hebrew_name=self.section_hebrew_name,
+            prompt_commentators_desc=self.prompt_commentators_desc
         ) if raw_relations_instruction else ""
 
 
@@ -446,8 +478,8 @@ class PipelineConfig:
         if not _non_empty_str(value):
             raise ValueError("Missing required configuration parameter 'polishing_instruction' in config.yaml.")
         return value.format(
-            commentators_list_short=self.section_metadata.get("commentators_list_short", ""),
-            tts_abbreviations=self.section_metadata.get("tts_abbreviations", ""),
+            commentators_list_short=self.commentators_list_short,
+            tts_abbreviations=self.tts_abbreviations,
             always_vocalize=self._render_word_list(self.pronunciation_always_vocalize),
             never_vocalize=self._render_word_list(self.pronunciation_never_vocalize),
         )

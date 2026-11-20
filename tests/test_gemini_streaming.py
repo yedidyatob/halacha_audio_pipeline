@@ -9,6 +9,7 @@ from google.genai import types
 
 from pipeline.utils import gemini_cost, log_gemini_usage
 from tests.gemini_fakes import PRICE, answer_stream, chunk, make_gemini_generator, usage
+from tests.section_yaml import SECTIONS_YAML
 
 
 def _thinking_files(directory):
@@ -189,7 +190,7 @@ def _config(yaml_text):
         yaml_text += 'generator:\n  engine: "gemini"\n'
     elif not re.search(r"\ngenerator:\n(?:  .*\n)*?  engine:", yaml_text):
         yaml_text = yaml_text.replace("\ngenerator:\n", '\ngenerator:\n  engine: "gemini"\n', 1)
-    with patch("builtins.open", mock_open(read_data=yaml_text)), \
+    with patch("builtins.open", mock_open(read_data=SECTIONS_YAML + yaml_text)), \
          patch("os.path.exists", return_value=True), patch("os.makedirs"):
         return PipelineConfig("config.yaml")
 

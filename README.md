@@ -22,7 +22,6 @@ halacha_audio_pipeline/
 │   ├── generator.py      # Gemini & OpenAI API wrappers
 │   ├── tts.py            # TTS interface (ElevenLabs, OpenAI, Google, Gemini)
 │   ├── factory.py        # Engine factory functions
-│   ├── domain.py         # Section metadata and abbreviations
 │   ├── utils.py          # Utility functions
 │   └── ...               # Other modules
 │

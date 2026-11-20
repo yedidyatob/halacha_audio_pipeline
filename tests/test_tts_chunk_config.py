@@ -10,6 +10,7 @@ from pipeline.tts import (
     ElevenLabsTTS, GoogleCloudTTS, OpenAITTS, GeminiTTS,
     context_head, context_tail, validate_chunk_size,
 )
+from tests.section_yaml import SECTIONS_YAML
 
 GAPS = dict(chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=0)
 VOCALIZED_WORD = "טֵית"
@@ -18,7 +19,7 @@ VOCALIZED_WORD = "טֵית"
 def _load(tts_yaml: str) -> PipelineConfig:
     yaml_content = ('halachic_section: "Yoreh De\'ah"\nsefaria:\n  base_url: "u"\n  timeout_seconds: 15\n  retries: 3\n  ssl_verify: true\ndirectories:\n  thinking_dir: "./output/thinking"\ngenerator:\n  engine: "gemini"\n'
                     'tts:\n  chunk_gap_paragraph_ms: 0\n  chunk_gap_sentence_ms: 0\n' + tts_yaml)
-    with patch("builtins.open", mock_open(read_data=yaml_content)), \
+    with patch("builtins.open", mock_open(read_data=SECTIONS_YAML + yaml_content)), \
          patch("os.path.exists", return_value=True), patch("os.makedirs"):
         return PipelineConfig("config.yaml")
 

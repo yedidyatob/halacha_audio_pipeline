@@ -2,6 +2,7 @@ import pytest
 import os
 from unittest.mock import patch, mock_open
 from pipeline.config import PipelineConfig
+from tests.section_yaml import SECTIONS_YAML
 
 REQUIRED_YAML = """
 halachic_section: "Yoreh De'ah"
@@ -25,7 +26,7 @@ tts:
 
 
 def _load(yaml_content):
-    with patch("builtins.open", mock_open(read_data=yaml_content)), \
+    with patch("builtins.open", mock_open(read_data=SECTIONS_YAML + yaml_content)), \
          patch("os.path.exists", return_value=True), \
          patch("os.makedirs"):
         return PipelineConfig("config.yaml")
@@ -97,7 +98,7 @@ tts:
 """
 
     # Test Yoreh De'ah
-    with patch("builtins.open", mock_open(read_data=yaml_content.format(section="Yoreh De'ah"))), \
+    with patch("builtins.open", mock_open(read_data=SECTIONS_YAML + yaml_content.format(section="Yoreh De'ah"))), \
          patch("os.path.exists", return_value=True), \
          patch("os.makedirs"):
         config = PipelineConfig("config.yaml")
@@ -108,7 +109,7 @@ tts:
         assert "מהרש\"ל" in config.polishing_instruction
 
     # Test Orach Chayim
-    with patch("builtins.open", mock_open(read_data=yaml_content.format(section="Orach Chayim"))), \
+    with patch("builtins.open", mock_open(read_data=SECTIONS_YAML + yaml_content.format(section="Orach Chayim"))), \
          patch("os.path.exists", return_value=True), \
          patch("os.makedirs"):
         config = PipelineConfig("config.yaml")
@@ -118,3 +119,58 @@ tts:
         assert "אורח חיים" in config.relations_instruction
         assert "משנה ברורה" in config.polishing_instruction
 
+
+
+def test_section_metadata_and_works_are_read():
+    config = _load(REQUIRED_YAML)
+    assert (config.section_slug, config.section_hebrew_name) == ("Yoreh_Deah", "יורה דעה")
+    assert [work.label for work in config.source_works] == [
+        "Tur", "Beit Yosef", "Darkei Moshe", "Shulchan Arukh", "Shach", "Taz"]
+    assert [work.label for work in config.source_works if work.context_simanim] == ["Tur", "Shulchan Arukh"]
+
+
+def test_missing_sections_raises():
+    with pytest.raises(ValueError, match="'sections'"):
+        with patch("builtins.open", mock_open(read_data=REQUIRED_YAML)), \
+             patch("os.path.exists", return_value=True), patch("os.makedirs"):
+            PipelineConfig("config.yaml")
+
+
+def test_unknown_section_raises():
+    with pytest.raises(ValueError, match="Unsupported halachic_section: 'Even HaEzer'"):
+        _load(REQUIRED_YAML.replace("Yoreh De'ah", "Even HaEzer", 1))
+
+
+@pytest.mark.parametrize("key", ["slug", "hebrew_name", "commentators_list_hebrew", "commentators_list_short",
+                                 "prompt_commentators_desc", "tts_abbreviations", "works"])
+def test_missing_section_key_raises(key):
+    import yaml
+    from tests.section_yaml import SECTIONS
+    sections = {name: dict(section) for name, section in SECTIONS.items()}
+    del sections["Yoreh De'ah"][key]
+    content = yaml.safe_dump({"sections": sections}, allow_unicode=True) + REQUIRED_YAML
+    with pytest.raises(ValueError, match=f"'{key}' under 'sections.Yoreh De'ah'"):
+        with patch("builtins.open", mock_open(read_data=content)), \
+             patch("os.path.exists", return_value=True), patch("os.makedirs"):
+            PipelineConfig("config.yaml")
+
+
+@pytest.mark.parametrize("entry, message", [
+    ({"label": "Tur", "sefaria_ref": "Tur", "context_simanim": True}, "'rama_glosses' under 'w\\[0\\]'"),
+    ({"label": "Tur", "sefaria_ref": "", "context_simanim": True, "rama_glosses": False}, "'w\\[0\\].sefaria_ref' must be"),
+    ({"label": "Tur", "sefaria_ref": "Tur", "context_simanim": "yes", "rama_glosses": False}, "w\\[0\\].context_simanim' must be true or false"),
+    ("Tur", "'w' entry 0 must be a mapping"),
+])
+def test_invalid_work_entry_raises(entry, message):
+    from pipeline.config import _source_works
+    with pytest.raises(ValueError, match=message):
+        _source_works([entry], "w")
+
+
+def test_duplicate_work_labels_raise():
+    from pipeline.config import _source_works
+    work = {"label": "Tur", "sefaria_ref": "Tur", "context_simanim": True, "rama_glosses": False}
+    with pytest.raises(ValueError, match="duplicate labels: \\['Tur'\\]"):
+        _source_works([work, work], "w")
+    with pytest.raises(ValueError, match="non-empty list"):
+        _source_works([], "w")

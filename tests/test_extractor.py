@@ -1,10 +1,17 @@
 import pytest
 from unittest.mock import patch, MagicMock
+from pipeline.config import _source_works
 from pipeline.extractor import SefariaExtractor
+from tests.section_yaml import SECTIONS
+
+
+def _extractor(section="Yoreh De'ah", **kwargs):
+    settings = dict(base_url="https://fake-sefaria.org", timeout=5, retries=2, ssl_verify=True) | kwargs
+    return SefariaExtractor(works=_source_works(SECTIONS[section]["works"], "works"), **settings)
 
 @pytest.fixture
 def extractor():
-    return SefariaExtractor(section_name="Yoreh De'ah", base_url="https://fake-sefaria.org", timeout=5, retries=2, ssl_verify=True)
+    return _extractor()
 
 def test_clean_html_text(extractor):
     raw_html = "<b>שלום</b> <i data-commentator=\"test\">עולם</i> &quot;ציטוט&quot;"
@@ -81,6 +88,7 @@ def test_compile_simanim_context(mock_get, extractor):
     assert "=== סימן 94 ===" in context
     assert "--- Tur (סימן 94) ---" in context
     assert "--- Beit Yosef (סימן 94) ---" in context
+    assert "--- Darkei Moshe (סימן 94) ---" in context
     assert "--- Shulchan Arukh (סימן 94) ---" in context
     assert "[1] טקסט דוגמה" in context
 
@@ -104,12 +112,14 @@ def test_compile_simanim_context_with_target_simanim(mock_get, extractor):
     assert "--- Tur (סימן 93) ---" in context
     assert "--- Shulchan Arukh (סימן 93) ---" in context
     assert "--- Beit Yosef (סימן 93) ---" not in context
+    assert "--- Darkei Moshe (סימן 93) ---" not in context
     assert "--- Shach (סימן 93) ---" not in context
     assert "--- Taz (סימן 93) ---" not in context
     
     assert "=== סימן 94 ===" in context
     assert "--- Tur (סימן 94) ---" in context
     assert "--- Beit Yosef (סימן 94) ---" in context
+    assert "--- Darkei Moshe (סימן 94) ---" in context
     assert "--- Shulchan Arukh (סימן 94) ---" in context
     assert "--- Shach (סימן 94) ---" in context
     assert "--- Taz (סימן 94) ---" in context
@@ -118,7 +128,7 @@ def test_compile_simanim_context_with_target_simanim(mock_get, extractor):
 @patch("requests.get")
 def test_fetch_text_ssl_disabled(mock_get):
     # Test that SefariaExtractor passes verify=False when ssl_verify=False
-    extractor_no_ssl = SefariaExtractor(section_name="Yoreh De'ah", base_url="https://fake-sefaria.org", timeout=5, retries=1, ssl_verify=False)
+    extractor_no_ssl = _extractor(retries=1, ssl_verify=False)
     
     mock_response = MagicMock()
     mock_response.status_code = 200
@@ -132,15 +142,25 @@ def test_fetch_text_ssl_disabled(mock_get):
     mock_get.assert_called_with("https://fake-sefaria.org/v3/texts/Tur,_Yoreh_De'ah.94.1?version=hebrew", timeout=5, verify=False)
 
 
-def test_extractor_section_name():
-    extractor_oc = SefariaExtractor(section_name="Orach Chayim", base_url="https://fake-sefaria.org", timeout=5, retries=1, ssl_verify=True)
-    assert extractor_oc.works["Tur"] == "Tur, Orach Chayim"
-    assert extractor_oc.works["Magen Avraham"] == "Magen Avraham"
-    assert extractor_oc.works["Taz"] == "Turei Zahav on Shulchan Arukh, Orach Chayim"
-    assert extractor_oc.works["Mishna Berura"] == "Mishnah Berurah"
-    
-    with pytest.raises(ValueError):
-        SefariaExtractor(section_name="Invalid Section", base_url="https://fake-sefaria.org", timeout=5, retries=1, ssl_verify=True)
+def test_extractor_section_works():
+    extractor_oc = _extractor("Orach Chayim", retries=1)
+    assert list(extractor_oc.works) == ["Tur", "Beit Yosef", "Darkei Moshe", "Shulchan Arukh",
+                                        "Magen Avraham", "Taz", "Mishna Berura"]
+    assert extractor_oc.works["Tur"].sefaria_ref == "Tur, Orach Chayim"
+    assert extractor_oc.works["Magen Avraham"].sefaria_ref == "Magen Avraham"
+    assert extractor_oc.works["Taz"].sefaria_ref == "Turei Zahav on Shulchan Arukh, Orach Chayim"
+    assert extractor_oc.works["Mishna Berura"].sefaria_ref == "Mishnah Berurah"
+    assert [label for label, work in extractor_oc.works.items() if work.rama_glosses] == ["Shulchan Arukh"]
+
+
+@patch("requests.get")
+def test_orach_chayim_target_siman_fetches_its_own_commentators(mock_get):
+    mock_get.return_value = MagicMock(status_code=200, json=MagicMock(return_value={"versions": [{"language": "he", "text": ["שורה"]}]}))
+    context = _extractor("Orach Chayim").compile_simanim_context([1, 2], target_simanim=[2])
+    for label in ("Magen Avraham", "Taz", "Mishna Berura", "Darkei Moshe"):
+        assert f"--- {label} (סימן 2) ---" in context
+        assert f"--- {label} (סימן 1) ---" not in context
+    assert "--- Shulchan Arukh (סימן 1) ---" in context
 
 
 
@@ -228,7 +248,7 @@ def _sefaria_by_ref(url, **kwargs):
 def test_only_shulchan_arukh_is_labeled(mock_get, extractor):
     sources = extractor.fetch_siman_sources(94)
     assert sources["Shulchan Arukh"] == [f"מחבר {RAMA_OPEN} רמא {RAMA_CLOSE} סוף"]
-    for work in ("Tur", "Beit Yosef", "Shach", "Taz"):
+    for work in ("Tur", "Beit Yosef", "Darkei Moshe", "Shach", "Taz"):
         assert sources[work] == ["מחבר הגה רמא סוף"]
     context = extractor.compile_simanim_context([94])
     assert f"[1] מחבר {RAMA_OPEN} רמא {RAMA_CLOSE} סוף" in context
@@ -240,3 +260,27 @@ def test_stage1_prompt_describes_the_rama_labels():
     with patch("os.makedirs"):
         instruction = PipelineConfig("config.yaml").gemini_system_instruction
     assert f"{RAMA_OPEN} ... {RAMA_CLOSE}" in instruction
+
+
+@patch("requests.get")
+def test_darkei_moshe_ref_and_order(mock_get, extractor):
+    mock_get.return_value = MagicMock(status_code=200, json=MagicMock(return_value={"versions": [{"language": "he", "text": [["דרכי משה"]]}]}))
+    context = extractor.compile_simanim_context([87])
+    urls = [c.args[0] for c in mock_get.call_args_list]
+    assert "https://fake-sefaria.org/v3/texts/Darkhei_Moshe,_Yoreh_De'ah.87?version=hebrew" in urls
+    assert context.index("--- Beit Yosef (סימן 87) ---") < context.index("--- Darkei Moshe (סימן 87) ---") < context.index("--- Shulchan Arukh (סימן 87) ---")
+
+
+def _no_darkei_moshe(url, **kwargs):
+    if "Darkhei_Moshe" in url:
+        return MagicMock(status_code=404)
+    return MagicMock(status_code=200, json=MagicMock(return_value={"versions": [{"language": "he", "text": ["שורה"]}]}))
+
+
+@patch("time.sleep")
+@patch("requests.get", side_effect=_no_darkei_moshe)
+def test_missing_darkei_moshe_is_skipped(mock_get, mock_sleep, extractor):
+    context = extractor.compile_simanim_context([94])
+    assert "Darkei Moshe" not in context
+    assert "--- Beit Yosef (סימן 94) ---" in context
+    assert "--- Shulchan Arukh (סימן 94) ---" in context

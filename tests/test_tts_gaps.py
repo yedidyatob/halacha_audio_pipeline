@@ -19,6 +19,7 @@ from pipeline.tts import (
     BREAK_PARAGRAPH,
     BREAK_SENTENCE,
 )
+from tests.section_yaml import SECTIONS_YAML
 
 
 class _ConcreteTTS(BaseTTS):
@@ -178,7 +179,7 @@ def test_engines_require_gap_arguments():
 # ---------------------------------------------------------------------------
 
 def _load_config(yaml_content: str) -> PipelineConfig:
-    with patch("builtins.open", mock_open(read_data=yaml_content)), \
+    with patch("builtins.open", mock_open(read_data=SECTIONS_YAML + yaml_content)), \
          patch("os.path.exists", return_value=True), \
          patch("os.makedirs"):
         return PipelineConfig("config.yaml")
