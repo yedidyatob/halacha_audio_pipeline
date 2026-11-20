@@ -357,7 +357,10 @@ class BaseTTS(ABC):
         for path in chunk_paths:
             cmd += ['-i', os.path.abspath(path)]
         cmd += [
-            '-filter_complex_script', script_file,
+            # FFmpeg 9 removed -filter_complex_script. -/filter_complex (since 7.1)
+            # reads the graph from a file, so long chunk lists stay off the command
+            # line (Windows length limit) without the retired flag.
+            '-/filter_complex', script_file,
             '-map', '[out]',
             '-c:a', 'libmp3lame',
             '-b:a', _MERGE_BITRATE,
