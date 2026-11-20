@@ -22,6 +22,7 @@ halacha_audio_pipeline/
 │   ├── generator.py      # Gemini & OpenAI API wrappers
 │   ├── tts.py            # TTS interface (ElevenLabs, OpenAI, Google, Gemini)
 │   ├── factory.py        # Engine factory functions
+│   ├── text_check.py     # Stage 3 check for characters outside text_check.allowed_characters
 │   ├── utils.py          # Utility functions
 │   └── ...               # Other modules
 │
@@ -91,7 +92,7 @@ cleaned as before. Rule 6 of `system_instruction` tells the LLM how to read the 
 The Stage 3 polish call also adds the nikkud: `polishing_instruction` in `config.yaml` ends with a
 nikkud addendum (`===== תוספת: ניקוד לצורך הגייה =====`) telling the model to vocalize only the words a
 reader could read two ways (עובר → עֻבָּר, פת, סופר, letter names used as letters), with no markup. It
-uses the polish's model, temperature (`generator.polish_temperature`), thinking and retries, in sync
+uses the polish's model, temperature (`generator.polish_temperature`), thinking (`generator.polish_thinking_level`) and retries, in sync
 and batch mode; there is no separate nikkud LLM call.
 `pronunciation.always_vocalize` / `pronunciation.never_vocalize` are word lists filled into the
 `{always_vocalize}` / `{never_vocalize}` placeholders of `polishing_instruction` (joined with ", "; an
@@ -152,6 +153,23 @@ Failed (1/3): 95
 
 Setup errors and Stage 1 / Stage 2 failures still abort the whole run immediately (exit 1),
 since the relations map needs every context draft.
+
+### Text check (Stage 3)
+
+Every polish response (sync, batch and `--single-pass`) is checked against `text_check.allowed_characters`
+in `config.yaml`, the body of a regex character class (Hebrew incl. nikkud, printable ASCII, dashes,
+quotes, ellipsis and a few marks). Any other character, e.g. an Arabic or Cyrillic letter the model
+slipped in, fails that attempt like an empty response: it is retried up to `generator.max_retries` (a new
+batch job in batch mode), and if it still fails the siman fails at Stage 3, nothing is cached, and the run
+summary gives each bad character with its code point and context:
+
+```
+  - Siman 87 | stage: Stage 3 (Polishing and nikkud) | reason: Siman 87 polish: 3 character(s) outside text_check.allowed_characters: 'م' U+0645 in '...'; ... (after 2 attempt(s))
+```
+
+Stage 1 drafts are only checked for a log warning (a draft failure would abort the whole run, and the
+draft is never spoken; if the polish copies the character, the Stage 3 check catches it).
+`scripts/polish_sample.py` saves its output anyway and prints a `WARNING:` line with the characters.
 
 Output files are saved to `./output/` with timestamps preserved.
 
@@ -217,7 +235,8 @@ it never generates a draft. The relations map is `--relations-file`, else the ne
 model that includes the siman. If neither exists it exits with an error before any API call, since the
 map changes the polished length a lot; `--allow-no-relations` polishes without one anyway. Saves the raw polish output (no dictionary nikkud, no TTS, no
 cache writes) as `<slug>_Siman_N_<model>_sample_seifim_<spec>.txt` in the output dir and prints word counts;
-tokens and cost appear in the `[Gemini Cost Tracker]` log line.
+tokens and cost appear in the `[Gemini Cost Tracker]` log line. It uses `generator.polish_thinking_level`, and
+a character outside `text_check.allowed_characters` only prints a `WARNING:` line (the output is still saved).
 
 ### Batch Mode (Cost-Saving)
 
@@ -278,7 +297,7 @@ generator:
   engine: "gemini"  # or "openai"
   
   gemini:
-    model_name: "gemini-4-argon"
+    model_name: "gemini-4-neon"
     temperature: 0.3
     
   openai:
@@ -296,8 +315,11 @@ temperature of the Stage 3 polish calls (sync and batch).
 failed batch job or request, empty, blocked or cut-off response; 0 = no retry): new calls in sync
 mode, new batch jobs in batch mode.
 
-`generator.draft_thinking_level` (`low`/`medium`/`high`, required for engine `gemini`, ignored for
-`openai`) is the Gemini thinking level of the Stage 1 draft calls, sent in both sync and batch mode.
+`generator.draft_thinking_level` and `generator.polish_thinking_level` (`low`/`medium`/`high`, both
+required for engine `gemini`, ignored for `openai`) are the Gemini thinking levels of the Stage 1 draft
+calls and of the Stage 3 polish calls (including `--single-pass` and `scripts/polish_sample.py`), sent in
+both sync and batch mode. Stage 2 (relations) uses the model's default thinking level. The thinking level
+is not part of any file name: after changing it with the same model, use `--overwrite-cache`.
 
 ### Gemini calls: streaming and thinking files
 

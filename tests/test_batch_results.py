@@ -8,6 +8,7 @@ from google.genai import types
 import main as main_mod
 from pipeline.generator import BatchCapableGenerator, BatchResultError, GeminiScriptGenerator, OpenAIScriptGenerator
 from pipeline.retry import call_with_retries
+from tests.allowed_characters import ALLOWED_CHARACTERS
 from tests.gemini_fakes import make_gemini_generator
 from tests.section_yaml import SECTIONS_YAML
 
@@ -222,9 +223,14 @@ class FakeGenerator(BatchCapableGenerator):
         self.sync_thinking.append(("relations", None, thinking_name))
         return self._sync("relations", tuple(drafts))
 
-    def polish_siman_script(self, script_text, relations_text, polishing_instruction, temperature, thinking_name):
-        self.sync_thinking.append(("polish", None, thinking_name))
+    def polish_siman_script(self, script_text, relations_text, polishing_instruction, temperature, thinking_level,
+                            thinking_name):
+        self.sync_thinking.append(("polish", thinking_level, thinking_name))
         return self._sync("polish", script_text)
+
+    def polish_with_prompt(self, user_prompt, polishing_instruction, temperature, thinking_level, thinking_name):
+        self.sync_thinking.append(("single-pass polish", thinking_level, thinking_name))
+        return self._sync("single-pass polish", user_prompt)
 
     def _get_generation_user_prompt(self, gematria_siman, master_context):
         return master_context
@@ -247,7 +253,8 @@ def cancelled(cid, rounds=(1,)):
 def _cfg(tmp_path, retries):
     return MagicMock(drafts_dir=str(tmp_path), output_dir=str(tmp_path), cache_dir=str(tmp_path), section_slug="YD",
                      generator_max_retries=retries,
-                     draft_thinking_level="medium")
+                     draft_thinking_level="medium", polish_thinking_level="low",
+                     allowed_characters=ALLOWED_CHARACTERS)
 
 
 def _args(batch=True, timeout=60):
@@ -377,7 +384,30 @@ def test_stage2_and_3_sync_calls_name_their_thinking_files(tmp_path):
     gen = FakeGenerator(sync=lambda kind, key: "out")
     main_mod.generate_relations({94: "d"}, gen, _cfg(tmp_path, 0), _args(batch=False), "YD_Relations_94_m")
     main_mod.polish_simanim({94: "d94"}, "rel", gen, _cfg(tmp_path, 0), _args(batch=False), main_mod.RunSummary(), "m")
-    assert gen.sync_thinking == [("relations", None, "YD_Relations_94_m"), ("polish", None, "YD_Siman_94_m_polish")]
+    assert gen.sync_thinking == [("relations", None, "YD_Relations_94_m"), ("polish", "low", "YD_Siman_94_m_polish")]
+
+
+def test_stage3_sends_polish_thinking_level_in_sync_and_batch(tmp_path):
+    cfg = _cfg(tmp_path, 0)
+    cfg.format_single_pass_user_prompt = lambda gematria_siman, sources: f"sources {sources}"
+    gen = FakeGenerator(batch=lambda c, n: "polished")
+    main_mod.polish_simanim({94: "d94"}, "rel", gen, cfg, _args(), main_mod.RunSummary(), "m")
+    main_mod.polish_sources({95: "s95"}, gen, cfg, _args(), main_mod.RunSummary(), "m")
+    assert gen.submitted_thinking == [("stage3_siman_94", "low"), ("stage3_single_pass_siman_95", "low")]
+    gen = FakeGenerator(sync=lambda kind, key: "polished")
+    main_mod.polish_simanim({94: "d94"}, "rel", gen, cfg, _args(batch=False), main_mod.RunSummary(), "m")
+    main_mod.polish_sources({95: "s95"}, gen, cfg, _args(batch=False), main_mod.RunSummary(), "m")
+    assert gen.sync_thinking == [("polish", "low", "YD_Siman_94_m_polish"),
+                                 ("single-pass polish", "low", "YD_Siman_95_m_polish")]
+
+
+def test_stage1_draft_with_disallowed_characters_is_only_a_warning(tmp_path, caplog):
+    gen = FakeGenerator(batch=lambda c, n: "draft مفرט")
+    drafts = main_mod.generate_drafts([94], _extractor(), gen, _cfg(tmp_path, 1), _args(), "m")
+    assert drafts == {94: "draft مفرט"} and gen.submitted == ["stage1_siman_94"]   # saved, not retried
+    assert _saved(tmp_path) == [94]
+    assert ("Siman 94 Stage 1 (Drafts): 3 character(s) outside text_check.allowed_characters: "
+            "'م' U+0645") in caplog.text
 
 
 # --- a failed status check / result fetch says nothing about the job: never resubmitted -------

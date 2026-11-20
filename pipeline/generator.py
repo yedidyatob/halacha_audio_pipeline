@@ -94,20 +94,21 @@ class BaseScriptGenerator(ABC):
         pass
 
     def polish_siman_script(self, script_text: str, relations_text: str, polishing_instruction: str,
-                            temperature: float,
+                            temperature: float, thinking_level: Optional[str],
                             thinking_name: Optional[str] = None) -> str:
         """
         Refines a Stage 1 draft (with the relations map) into the polished lesson.
         """
         return self.polish_with_prompt(self._get_polishing_user_prompt(script_text, relations_text),
-                                       polishing_instruction, temperature, thinking_name)
+                                       polishing_instruction, temperature, thinking_level, thinking_name)
 
     @abstractmethod
     def polish_with_prompt(self, user_prompt: str, polishing_instruction: str, temperature: float,
-                           thinking_name: Optional[str] = None) -> str:
+                           thinking_level: Optional[str], thinking_name: Optional[str] = None) -> str:
         """
         The Stage 3 polish call (polishing_instruction as the system instruction) for a ready user prompt:
-        a draft's (polish_siman_script) or the raw sources' (--single-pass).
+        a draft's (polish_siman_script) or the raw sources' (--single-pass). thinking_level is
+        honoured by Gemini only (generator.polish_thinking_level).
         """
         pass
 
@@ -230,10 +231,10 @@ class GeminiScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
         return relations_text
 
     def polish_with_prompt(self, user_prompt: str, polishing_instruction: str, temperature: float,
-                           thinking_name: Optional[str] = None) -> str:
+                           thinking_level: Optional[str], thinking_name: Optional[str] = None) -> str:
         logger.info("Polishing generated script for TTS compliance via Gemini...")
         try:
-            polished_text = self._generate(polishing_instruction, user_prompt, temperature, None,
+            polished_text = self._generate(polishing_instruction, user_prompt, temperature, thinking_level,
                                            "Gemini polish call", thinking_name)
         except Exception as e:
             logger.error(f"Error during Gemini script polish call: {e}")
@@ -509,7 +510,8 @@ class OpenAIScriptGenerator(BaseScriptGenerator, BatchCapableGenerator):
             raise
 
     def polish_with_prompt(self, user_prompt: str, polishing_instruction: str, temperature: float,
-                           thinking_name: Optional[str] = None) -> str:
+                           thinking_level: Optional[str], thinking_name: Optional[str] = None) -> str:
+        # thinking_level is Gemini-only; ignored here.
         logger.info("Polishing generated script for TTS compliance via OpenAI...")
         
         messages = []

@@ -1,6 +1,7 @@
 import os
+import re
 import yaml
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from pipeline.logger import get_logger
 from pipeline.extractor import SourceWork
 from pipeline.nikkud_review import has_nikkud, word_vocalization_error
@@ -376,16 +377,35 @@ class PipelineConfig:
         value = _required(self._native_audio_section(), "temperature", "experiments.gemini_native_audio")
         return _temperature(value, "experiments.gemini_native_audio.temperature")
 
-    @property
-    def draft_thinking_level(self) -> str:
-        """Gemini thinking level for the Stage 1 draft calls (sync and batch). Required for engine gemini."""
+    def _thinking_level(self, key: str) -> Optional[str]:
+        """generator.<key>: a Gemini thinking level, required for engine gemini (None for openai)."""
         if self.generator_engine != "gemini":
             return None
-        value = (self.config_data.get("generator") or {}).get("draft_thinking_level")
+        value = (self.config_data.get("generator") or {}).get(key)
         if value is None:
-            raise ValueError("Missing required configuration parameter 'draft_thinking_level' under 'generator' in config.yaml.")
+            raise ValueError(f"Missing required configuration parameter '{key}' under 'generator' in config.yaml.")
         if value not in THINKING_LEVELS:
-            raise ValueError(f"'generator.draft_thinking_level' must be one of low, medium, high, got {value!r}.")
+            raise ValueError(f"'generator.{key}' must be one of {', '.join(THINKING_LEVELS)}, got {value!r}.")
+        return value
+
+    @property
+    def draft_thinking_level(self) -> Optional[str]:
+        """Gemini thinking level for the Stage 1 draft calls (sync and batch)."""
+        return self._thinking_level("draft_thinking_level")
+
+    @property
+    def polish_thinking_level(self) -> Optional[str]:
+        """Gemini thinking level for the Stage 3 polish calls (sync, batch, --single-pass, polish_sample)."""
+        return self._thinking_level("polish_thinking_level")
+
+    @property
+    def allowed_characters(self) -> str:
+        """text_check.allowed_characters: regex character-class body of the characters a lesson may contain."""
+        value = _required_str(self.config_data.get("text_check"), "allowed_characters", "text_check")
+        try:
+            re.compile(f"[{value}]")
+        except re.error as e:
+            raise ValueError(f"'text_check.allowed_characters' is not a valid regex character class: {e}")
         return value
 
     def gemini_price(self, model_name: str) -> dict:

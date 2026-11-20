@@ -9,6 +9,9 @@ writes no cache, no dictionary nikkud, no TTS.
 Relations map: --relations-file if given, else the newest cached map of the current model whose simanim
 include this siman. With neither it stops (the map changes the polished length, so a sample without one is
 not representative) unless --allow-no-relations is given.
+
+Text check (config text_check.allowed_characters): unlike the pipeline, a bad character does not fail the
+sample; the paid output is saved anyway and a WARNING line names the characters.
 """
 import argparse
 import os
@@ -26,6 +29,7 @@ from pipeline.config import PipelineConfig  # noqa: E402
 from pipeline.factory import create_generator_engine  # noqa: E402
 from pipeline.gematria import gematria_to_int  # noqa: E402
 from pipeline.input_parser import parse_simanim_string  # noqa: E402
+from pipeline.text_check import disallowed_characters_report  # noqa: E402
 from pipeline.utils import save_output_file  # noqa: E402
 from pipeline.logger import get_logger  # noqa: E402
 
@@ -133,13 +137,17 @@ def run(args) -> str:
 
     # the real Stage 3 call; the generator logs tokens and cost ([Gemini Cost Tracker], config gemini_pricing)
     polished = generator.polish_siman_script(draft, relations, config.polishing_instruction,
-                                             temperature=config.polish_temperature)
+                                             temperature=config.polish_temperature,
+                                             thinking_level=config.polish_thinking_level)
     spec = "_".join(str(s) for s in args.seifim_list)
     base_name = f"{lesson_base_name(config, args.siman, model_suffix)}_sample_seifim_{spec}"
     save_output_file(directory=config.output_dir, base_name=base_name, extension="txt", content=polished,
                      logger=logger, label=f"Polish sample for Siman {args.siman}")
     path = os.path.join(config.output_dir, base_name + ".txt")
     print(f"Output: {path} ({word_count(polished)} words; draft slice {word_count(draft)} words)")
+    report = disallowed_characters_report(polished, config.allowed_characters)
+    if report:
+        print(f"WARNING: {report}")
     return path
 
 

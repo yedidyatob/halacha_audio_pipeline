@@ -5,6 +5,7 @@ import pytest
 
 import main as main_mod
 from pipeline.generator import GeminiScriptGenerator
+from tests.allowed_characters import ALLOWED_CHARACTERS
 from tests.test_stage3_flow import DRAFTS, FakeBatchGenerator, _config, _run, vocalized
 
 
@@ -64,7 +65,7 @@ def test_full_run_logs_relations_polish_and_transcript_paths(tmp_path, monkeypat
     drafts_dir.mkdir()
     (drafts_dir / "YD_Siman_94_m_draft.txt").write_text("draft 94", encoding="utf-8")
     cfg = MagicMock(section_slug="YD", drafts_dir=str(drafts_dir), relations_dir=str(tmp_path),
-                    output_dir=str(tmp_path), generator_max_retries=0)
+                    output_dir=str(tmp_path), generator_max_retries=0, allowed_characters=ALLOWED_CHARACTERS)
     gen = MagicMock(spec=GeminiScriptGenerator, model_name="m")
     gen.analyze_cross_relations.return_value = "relations"
     gen.polish_siman_script.return_value = "polished 94"

@@ -52,13 +52,15 @@ def main():
         print(f"Polishing instruction length: {len(polishing_instruction)} chars")
         print(f"Model name: {config.gemini_model_name}")
         print(f"Temperature: {config.gemini_temperature} (polish: {config.polish_temperature})")
+        print(f"Polish thinking level: {config.polish_thinking_level}")
 
         # Set timeout for API call (Windows doesn't support signal.alarm)
         print("\nCalling Gemini API... (this may take a while)")
 
         try:
             result = generator.polish_siman_script(draft, relations, polishing_instruction,
-                                                  temperature=config.polish_temperature)
+                                                  temperature=config.polish_temperature,
+                                                  thinking_level=config.polish_thinking_level)
             print(f"\n✓ Success! Polished script length: {len(result)} chars")
             print("\nFirst 500 chars of result:")
             print(result[:500])
