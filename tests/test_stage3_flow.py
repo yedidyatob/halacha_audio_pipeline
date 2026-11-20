@@ -7,6 +7,7 @@ import main as main_mod
 from pipeline.generator import BatchCapableGenerator, BatchResultError
 from pipeline.nikkud_review import format_review
 from pipeline.apply_nikkud import apply_nikkud_with_overrides
+from tests.allowed_characters import ALLOWED_CHARACTERS
 
 TET = "טֵית"
 
@@ -46,7 +47,8 @@ class FakeBatchGenerator(BatchCapableGenerator):
 
 def _config(tmp_path):
     return MagicMock(output_dir=str(tmp_path), generator_max_retries=0, section_slug="YD", cache_dir=str(tmp_path),
-                     polishing_instruction="POLISH", polish_temperature=0.15)
+                     polishing_instruction="POLISH", polish_temperature=0.15, polish_thinking_level="low",
+                     allowed_characters=ALLOWED_CHARACTERS)
 
 
 def _args(batch):
@@ -77,7 +79,7 @@ def test_batch_combined_polish_success(tmp_path):
     assert summary.succeeded == [94, 95, 96, 97] and not summary.failed
     # one LLM call per siman: the polish, with its own instruction and temperature
     assert [r["custom_id"] for r in polish_gen.submitted] == [f"stage3_siman_{s}" for s in DRAFTS]
-    assert all(r["system_instruction"] == "POLISH" and r["temperature"] == 0.15 and r["thinking_level"] is None
+    assert all(r["system_instruction"] == "POLISH" and r["temperature"] == 0.15 and r["thinking_level"] == "low"
                for r in polish_gen.submitted)
     assert (tmp_path / "YD_Siman_94_m_polish.txt").read_text(encoding="utf-8") == f"{TET} 94"  # vocalized polish
     assert (tmp_path / "YD_Siman_94_m_transcript.txt").read_text(encoding="utf-8") == f"{TET} 94"
@@ -116,13 +118,14 @@ def test_batch_mixed_simanim_summary(tmp_path):
 
 def test_sync_mode_polishes_each_siman_synchronously(tmp_path):
     gen = MagicMock()
-    gen.polish_siman_script.side_effect = lambda draft, rel, instr, temperature, thinking_name: (
+    gen.polish_siman_script.side_effect = lambda draft, rel, instr, temperature, thinking_level, thinking_name: (
         _raise(RuntimeError("LLM down")) if "95" in draft else vocalized(draft))
     summary = _run(tmp_path, gen, batch=False)
     assert summary.succeeded == [94, 96, 97]
     assert summary.failed[95] == (main_mod.STAGE_POLISH, "LLM down (after 1 attempt(s))")
     assert gen.polish_siman_script.call_count == 4
-    assert all(c.args[2] == "POLISH" and c.kwargs["temperature"] == 0.15 for c in gen.polish_siman_script.call_args_list)
+    assert all(c.args[2] == "POLISH" and c.kwargs["temperature"] == 0.15 and c.kwargs["thinking_level"] == "low"
+               for c in gen.polish_siman_script.call_args_list)
     gen.submit_batch.assert_not_called()
     assert _transcripts(tmp_path) == [94, 96, 97]
 
@@ -135,7 +138,7 @@ def _raise(error):
 
 def test_dictionary_overrides_the_polish_nikkud_and_is_reported(tmp_path):
     gen = MagicMock()
-    gen.polish_siman_script.side_effect = lambda draft, rel, instr, temperature, thinking_name: (
+    gen.polish_siman_script.side_effect = lambda draft, rel, instr, temperature, thinking_level, thinking_name: (
         draft + ' סימן הֵא והַשַׁ"ךְ אוסר בכֹּחַל ופַּת')
     summary = _run(tmp_path, gen, batch=False, drafts={94: "טית 94"})
     assert summary.succeeded == [94]
@@ -146,3 +149,48 @@ def test_dictionary_overrides_the_polish_nikkud_and_is_reported(tmp_path):
     assert transcript == final and "הֵי" in transcript and "ופַּת" in transcript  # non-dictionary nikkud kept
     assert [o.model for o in overrides] == ["הֵא", 'והַשַׁ"ךְ', "בכֹּחַל"]
     assert _review(tmp_path, 94) == format_review(final, overrides)
+
+
+# --- text check (text_check.allowed_characters) ----------------------------------
+
+ARABIC = "טית 94 مفرט"
+
+
+def _retry_config(tmp_path):
+    config = _config(tmp_path)
+    config.generator_max_retries = 1
+    return config
+
+
+def test_sync_disallowed_character_is_retried_then_saved(tmp_path):
+    gen = MagicMock()
+    gen.polish_siman_script.side_effect = [ARABIC, "טית 94"]
+    summary = main_mod.run_lesson_stages([94], {94: "טית 94"}, {}, "rel", gen, _retry_config(tmp_path),
+                                         _args(False), "m")
+    assert summary.succeeded == [94] and not summary.failed
+    assert gen.polish_siman_script.call_count == 2
+    assert (tmp_path / "YD_Siman_94_m_polish.txt").read_text(encoding="utf-8") == "טית 94"
+
+
+def test_sync_disallowed_character_twice_fails_the_siman_at_stage_3(tmp_path):
+    gen = MagicMock()
+    gen.polish_siman_script.return_value = ARABIC
+    summary = main_mod.run_lesson_stages([94], {94: "טית 94"}, {}, "rel", gen, _retry_config(tmp_path),
+                                         _args(False), "m")
+    stage, reason = summary.failed[94]
+    assert stage == main_mod.STAGE_POLISH
+    assert reason.startswith("Siman 94 polish: 3 character(s) outside text_check.allowed_characters:")
+    assert "U+0645" in reason and reason.endswith("(after 2 attempt(s))")
+    assert "Siman 94 | stage: Stage 3 (Polishing and nikkud) | reason: Siman 94 polish: 3 character(s)" in summary.format()
+    assert not (tmp_path / "YD_Siman_94_m_polish.txt").exists()
+    assert _transcripts(tmp_path) == []
+
+
+def test_batch_disallowed_character_is_resubmitted_as_a_new_job(tmp_path):
+    answers = iter([ARABIC, "טית 94"])
+    polish_gen = FakeBatchGenerator(lambda cid, prompt: next(answers))
+    summary = main_mod.run_lesson_stages([94], {94: "טית 94"}, {}, "rel", polish_gen, _retry_config(tmp_path),
+                                         _args(True), "m")
+    assert summary.succeeded == [94]
+    assert [r["custom_id"] for r in polish_gen.submitted] == ["stage3_siman_94", "stage3_siman_94"]
+    assert (tmp_path / "YD_Siman_94_m_polish.txt").read_text(encoding="utf-8") == "טית 94"

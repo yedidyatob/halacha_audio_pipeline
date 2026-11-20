@@ -5,6 +5,7 @@ import pytest
 
 import main as main_mod
 from pipeline.generator import GeminiScriptGenerator
+from tests.allowed_characters import ALLOWED_CHARACTERS
 from tests.test_dry_run import _args as _plan_args, _main_dry_run
 from tests.test_stage3_flow import DRAFTS, FakeBatchGenerator, _run, _transcripts
 
@@ -110,7 +111,7 @@ def test_batch_all_cached_submits_no_polish_job(tmp_path, caplog):
 
 def _main(tmp_path, monkeypatch, argv, gen):
     cfg = MagicMock(section_slug="YD", drafts_dir=str(tmp_path / "drafts"), relations_dir=str(tmp_path / "rel"),
-                    output_dir=str(tmp_path / "out"), generator_max_retries=0)
+                    output_dir=str(tmp_path / "out"), generator_max_retries=0, allowed_characters=ALLOWED_CHARACTERS)
     monkeypatch.setattr("sys.argv", ["main.py", *argv, "--skip-tts"])
     with patch.object(main_mod, "PipelineConfig", return_value=cfg), \
          patch.object(main_mod, "create_generator_engine", return_value=gen), \

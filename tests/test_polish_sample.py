@@ -6,6 +6,7 @@ import pytest
 
 from pipeline.gematria import gematria_to_int
 from scripts import polish_sample as ps
+from tests.allowed_characters import ALLOWED_CHARACTERS
 
 DRAFT = """# סימן צ"ו
 
@@ -45,7 +46,8 @@ def _cfg(tmp_path):
     for d in ("drafts", "rel", "out"):
         (tmp_path / d).mkdir(exist_ok=True)
     return MagicMock(section_slug="YD", drafts_dir=str(tmp_path / "drafts"), relations_dir=str(tmp_path / "rel"),
-                     output_dir=str(tmp_path / "out"), polishing_instruction="POLISH", polish_temperature=0.1)
+                     output_dir=str(tmp_path / "out"), polishing_instruction="POLISH", polish_temperature=0.1,
+                     polish_thinking_level="low", allowed_characters=ALLOWED_CHARACTERS)
 
 
 def test_find_cached_relations_newest_including_siman(tmp_path):
@@ -60,9 +62,9 @@ def test_find_cached_relations_newest_including_siman(tmp_path):
     assert ps.find_cached_relations(cfg, 99, "m") is None
 
 
-def _run(tmp_path, argv, gen=None):
+def _run(tmp_path, argv, gen=None, polished="שיעור קצר מאוד"):
     gen = gen or MagicMock(model_name="m")
-    gen.polish_siman_script.return_value = "שיעור קצר מאוד"
+    gen.polish_siman_script.return_value = polished
     with patch.object(ps, "PipelineConfig", return_value=_cfg(tmp_path)), \
          patch.object(ps, "create_generator_engine", return_value=gen):
         path = ps.run(ps.parse_arguments(argv))
@@ -77,11 +79,12 @@ def test_run_uses_cached_draft_and_relations(tmp_path, capsys):
     draft, relations, instruction = gen.polish_siman_script.call_args.args
     assert "חתיכה" in draft and "סכין" in draft and "צנון" not in draft
     assert (relations, instruction) == ("REL", "POLISH")
-    assert gen.polish_siman_script.call_args.kwargs == {"temperature": 0.1}
+    assert gen.polish_siman_script.call_args.kwargs == {"temperature": 0.1, "thinking_level": "low"}
     assert path == os.path.join(cfg.output_dir, "YD_Siman_96_m_sample_seifim_1_2.txt")
     assert open(path, encoding="utf-8").read() == "שיעור קצר מאוד"
     out = capsys.readouterr().out
     assert "YD_Relations_95_96_m.txt" in out and "(3 words; draft slice" in out
+    assert "WARNING" not in out
     assert os.listdir(tmp_path / "drafts") == ["YD_Siman_96_m_draft.txt"]  # no cache writes
 
 
@@ -125,3 +128,14 @@ def test_run_missing_draft_never_generates(tmp_path):
 def test_parse_arguments_errors(argv):
     with pytest.raises(SystemExit):
         ps.parse_arguments(argv)
+
+
+def test_run_disallowed_characters_saves_and_warns(tmp_path, capsys):
+    cfg = _cfg(tmp_path)
+    (tmp_path / "drafts" / "YD_Siman_96_m_draft.txt").write_text(DRAFT, encoding="utf-8")
+    (tmp_path / "rel" / "YD_Relations_96_m.txt").write_text("REL", encoding="utf-8")
+    _, path = _run(tmp_path, ["96", "--seifim", "1"], polished="שיעור مفرט קצר")
+    assert path == os.path.join(cfg.output_dir, "YD_Siman_96_m_sample_seifim_1.txt")
+    assert open(path, encoding="utf-8").read() == "שיעור مفرט קצר"  # the paid output is kept
+    out = capsys.readouterr().out
+    assert "WARNING: 3 character(s) outside text_check.allowed_characters: 'م' U+0645" in out

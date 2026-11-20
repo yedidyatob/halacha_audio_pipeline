@@ -26,7 +26,7 @@ def _call(gen, thinking_name=None):
 @pytest.mark.parametrize("call", [
     lambda g: g.generate_siman_script(94, "ctx", "sys", thinking_name="N"),
     lambda g: g.analyze_cross_relations({94: "d"}, "sys", thinking_name="N"),
-    lambda g: g.polish_siman_script("d", "rel", "sys", temperature=0.1, thinking_name="N"),
+    lambda g: g.polish_siman_script("d", "rel", "sys", temperature=0.1, thinking_level="low", thinking_name="N"),
 ])
 def test_every_sync_call_streams_and_returns_only_answer_text(tmp_path, call):
     gen, client = make_gemini_generator(tmp_path)
@@ -93,7 +93,7 @@ def test_early_finish_discards_partial_text_but_keeps_thinking_file(tmp_path):
         chunk(("text", "partial"), finish_reason=types.FinishReason.MAX_TOKENS, usage=usage()),
     ]
     with pytest.raises(ValueError, match=r"finish_reason MAX_TOKENS.*7 chars of partial text discarded"):
-        gen.polish_siman_script("d", "", "sys", temperature=0.1, thinking_name="P")
+        gen.polish_siman_script("d", "", "sys", temperature=0.1, thinking_level=None, thinking_name="P")
     assert (tmp_path / "P_thinking.txt").read_text(encoding="utf-8") == "long thinking"
 
 
@@ -210,6 +210,25 @@ def test_draft_thinking_level():
     assert _config(BASE + 'generator:\n  engine: "openai"\n').draft_thinking_level is None
 
 
+def test_polish_thinking_level():
+    assert _config(BASE + 'generator:\n  engine: "gemini"\n  polish_thinking_level: "low"\n').polish_thinking_level == "low"
+    with pytest.raises(ValueError, match="'polish_thinking_level' under 'generator'"):
+        _config(BASE + 'generator:\n  engine: "gemini"\n  draft_thinking_level: "high"\n').polish_thinking_level
+    with pytest.raises(ValueError, match="'generator.polish_thinking_level' must be one of low, medium, high"):
+        _config(BASE + 'generator:\n  engine: "gemini"\n  polish_thinking_level: "xhigh"\n').polish_thinking_level
+    assert _config(BASE + 'generator:\n  engine: "openai"\n').polish_thinking_level is None
+
+
+def test_allowed_characters():
+    assert _config(BASE + "text_check:\n  allowed_characters: 'a-z'\n").allowed_characters == "a-z"
+    with pytest.raises(ValueError, match="'allowed_characters' under 'text_check'"):
+        _config(BASE).allowed_characters
+    with pytest.raises(ValueError, match="'text_check.allowed_characters' must be a non-empty string"):
+        _config(BASE + "text_check:\n  allowed_characters: ''\n").allowed_characters
+    with pytest.raises(ValueError, match="not a valid regex character class"):
+        _config(BASE + "text_check:\n  allowed_characters: 'z-a'\n").allowed_characters
+
+
 @pytest.mark.parametrize("prop, section, key", [
     ("gemini_model_name", "generator:\n  gemini:\n", "model_name"),
     ("gemini_temperature", "generator:\n  gemini:\n", "temperature"),
@@ -286,9 +305,11 @@ def test_repo_config_prices_every_configured_gemini_model():
     from pipeline.config import PipelineConfig
     with patch("os.makedirs"):
         cfg = PipelineConfig("config.yaml")
-    assert cfg.draft_thinking_level == "medium"
+    assert (cfg.draft_thinking_level, cfg.polish_thinking_level) == ("high", "low")
     assert cfg.polish_temperature == 0.1
+    assert cfg.allowed_characters.startswith("\\u0590-\\u05FF")
     assert (cfg.gemini_temperature, cfg.openai_temperature, cfg.openai_service_tier) == (0.3, 1.0, "auto")
     assert (cfg.native_audio_model_name, cfg.native_audio_voice_name, cfg.native_audio_temperature) == \
         ("gemini-2.5-flash-preview-tts", "Puck", 0.3)
-    assert cfg.gemini_price(cfg.gemini_model_name) == {"input_per_million": 2.0, "output_per_million": 10.0}
+    assert cfg.gemini_model_name == "gemini-4-neon"
+    assert cfg.gemini_price(cfg.gemini_model_name) == {"input_per_million": 3.0, "output_per_million": 15.0}

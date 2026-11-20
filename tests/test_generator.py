@@ -44,7 +44,8 @@ def test_generate_siman_script_success(tmp_path):
 def test_polish_siman_script_success(tmp_path):
     generator, client = make_gemini_generator(tmp_path)
     client.models.generate_content_stream.return_value = answer_stream("שיעור שמע מוגה ומלוטש")
-    polished = generator.polish_siman_script("טקסט גולמי", "", "עורך לשוני מקצועי", temperature=0.15)
+    polished = generator.polish_siman_script("טקסט גולמי", "", "עורך לשוני מקצועי", temperature=0.15,
+                                             thinking_level="low")
 
     assert polished == "שיעור שמע מוגה ומלוטש"
     client.models.generate_content_stream.assert_called_once()
@@ -53,6 +54,7 @@ def test_polish_siman_script_success(tmp_path):
     expected_prompt = generator._get_polishing_user_prompt("טקסט גולמי", "")
     assert call_kwargs["contents"] == expected_prompt
     assert call_kwargs["config"].temperature == 0.15  # the polish temperature, not the generator's
+    assert call_kwargs["config"].thinking_config.thinking_level.value.lower() == "low"
 
 @patch("pipeline.generator.OpenAI")
 def test_openai_generator_initialization(mock_openai_cls):
@@ -155,7 +157,8 @@ def test_openai_polish_siman_script_success(mock_openai_cls):
     mock_client.chat.completions.create.return_value = mock_response
 
     generator = OpenAIScriptGenerator(api_key="fake-key", model_name="gpt-4o", temperature=1.0, service_tier=None, ssl_verify=True)
-    polished = generator.polish_siman_script("טקסט גולמי", "", "עורך לשוני מקצועי", temperature=0.15)
+    polished = generator.polish_siman_script("טקסט גולמי", "", "עורך לשוני מקצועי", temperature=0.15,
+                                             thinking_level=None)  # Gemini-only; OpenAI ignores it
 
     assert polished == "שיעור שמע מלוטש מאופנאיי"
     mock_client.chat.completions.create.assert_called_once()
@@ -177,7 +180,8 @@ def test_openai_polish_siman_script_with_service_tier(mock_openai_cls):
     mock_client.chat.completions.create.return_value = mock_response
 
     generator = OpenAIScriptGenerator(api_key="fake-key", model_name="gpt-4o", service_tier="flex", temperature=1.0, ssl_verify=True)
-    polished = generator.polish_siman_script("טקסט גולמי", "", "עורך לשוני מקצועי", temperature=0.15)
+    polished = generator.polish_siman_script("טקסט גולמי", "", "עורך לשוני מקצועי", temperature=0.15,
+                                             thinking_level=None)  # Gemini-only; OpenAI ignores it
 
     assert polished == "שיעור שמע מלוטש מאופנאיי עם שירות פלקס"
     mock_client.chat.completions.create.assert_called_once()

@@ -8,6 +8,7 @@ from pipeline.nikkud_review import (
     WORDS_HEADER, OVERRIDES_TITLE, OVERRIDES_HEADER,
 )
 from pipeline.apply_nikkud import apply_nikkud_with_overrides, NikkudOverride
+from tests.allowed_characters import ALLOWED_CHARACTERS
 from tests.section_yaml import SECTIONS_YAML
 
 # A final transcript: the polish vocalized טֵית / פַּת / סוֹפֵר, the dictionary wrote השַׁךְ.
@@ -271,13 +272,14 @@ def test_gemini_batch_request_carries_thinking_level():
     assert "thinking_config" not in client.batches.create.call_args.kwargs["src"][0]["config"]
 
 
-def test_gemini_polish_sends_no_thinking_level():
+def test_gemini_polish_call_passes_thinking_level():
     gen, client = _gemini_gen()
     with patch("pipeline.generator.log_gemini_usage"):
-        gen.polish_siman_script("draft", "rel", "instr", temperature=0.1)
+        gen.polish_siman_script("draft", "rel", "instr", temperature=0.1, thinking_level="low")
     assert client.models.generate_content_stream.call_count == 1
-    for call in client.models.generate_content_stream.call_args_list:
-        assert call.kwargs["config"].thinking_config.thinking_level is None
+    config = client.models.generate_content_stream.call_args.kwargs["config"]
+    assert config.thinking_config.thinking_level.value.lower() == "low"
+    assert config.temperature == 0.1 and config.system_instruction == "instr"
 
 
 def test_main_save_transcript_writes_transcript_and_review(tmp_path):
@@ -324,7 +326,7 @@ def _run_main_sync(tmp_path, monkeypatch, polish):
     """Runs main.main() in sync mode for simanim 94,95 with cached drafts and relations."""
     import main as main_mod
     cfg = MagicMock(section_slug="YD", generator_max_retries=0, drafts_dir=str(tmp_path), relations_dir=str(tmp_path),
-                    output_dir=str(tmp_path))
+                    output_dir=str(tmp_path), allowed_characters=ALLOWED_CHARACTERS)
     for s in (94, 95):
         (tmp_path / f"YD_Siman_{s}_m_draft.txt").write_text(f"draft {s}", encoding="utf-8")
     (tmp_path / "YD_Relations_94_95_m.txt").write_text("rel", encoding="utf-8")
@@ -338,7 +340,7 @@ def _run_main_sync(tmp_path, monkeypatch, polish):
 
 
 def test_main_continues_after_siman_failure_and_exits_nonzero(tmp_path, monkeypatch, caplog):
-    def polish(draft, rel, instr, temperature, thinking_name):
+    def polish(draft, rel, instr, temperature, thinking_level, thinking_name):
         if draft == "draft 94":
             raise RuntimeError("LLM down")
         return "polished"
@@ -352,7 +354,7 @@ def test_main_continues_after_siman_failure_and_exits_nonzero(tmp_path, monkeypa
 
 
 def test_main_all_succeed_exits_zero(tmp_path, monkeypatch, caplog):
-    _run_main_sync(tmp_path, monkeypatch, lambda d, r, i, temperature, thinking_name: "polished")
+    _run_main_sync(tmp_path, monkeypatch, lambda d, r, i, temperature, thinking_level, thinking_name: "polished")
     assert "Succeeded (2/2): 94, 95" in caplog.text
     for s in (94, 95):
         assert (tmp_path / f"YD_Siman_{s}_m_pronunciation_changes.txt").exists()

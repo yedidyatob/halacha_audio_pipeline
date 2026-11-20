@@ -25,6 +25,7 @@ from pipeline.logger import get_logger
 from pipeline.utils import save_output_file
 from pipeline.factory import create_generator_engine, create_tts_engine
 from pipeline.generator import BatchResultError
+from pipeline.text_check import check_allowed_characters, disallowed_characters_report
 from pipeline.gematria import int_to_gematria
 from pipeline.apply_nikkud import apply_nikkud_with_overrides
 from pipeline.nikkud_review import format_review
@@ -364,6 +365,11 @@ def generate_drafts(simanim: list, extractor, generator, config, args, model_suf
         ),
         on_result=lambda siman, draft: save_draft(siman, draft, config, model_suffix),
     )
+    for siman, draft in drafts.items():
+        report = disallowed_characters_report(draft, config.allowed_characters)
+        if report:
+            logger.warning(f"Siman {siman} {STAGE_DRAFTS}: {report} (not spoken; the Stage 3 check catches them "
+                           f"if the polish copies them).")
     abort_if_failed(summary, STAGE_DRAFTS,
                     f"{len(drafts)} draft(s) were saved to the cache; a rerun only regenerates the missing ones.")
     return drafts
@@ -399,14 +405,23 @@ def generate_relations(drafts: dict, generator, config, args, base_name: str) ->
     return result[RELATIONS_KEY]
 
 
+def check_polish(siman: int, polished_text: str, config) -> str:
+    """
+    The Stage 3 text check (text_check.allowed_characters) on a polish response, sync or batch: a bad
+    character fails the attempt (DisallowedCharactersError), so it is retried like an empty response.
+    """
+    return check_allowed_characters(polished_text, config.allowed_characters, f"Siman {siman} polish")
+
+
 def polish_simanim(drafts: dict, relations_text: str, generator, config, args, summary: RunSummary,
                    model_suffix: str) -> dict:
     """Stage 3: {siman: draft} -> {siman: polished_text} (sync or batch, with generator.max_retries)."""
     return run_llm_stage(
         summary, drafts, STAGE_POLISH,
-        call=lambda siman, draft: generator.polish_siman_script(
+        call=lambda siman, draft: check_polish(siman, generator.polish_siman_script(
             draft, relations_text, config.polishing_instruction,
-            temperature=config.polish_temperature, thinking_name=polish_base_name(config, siman, model_suffix)),
+            temperature=config.polish_temperature, thinking_level=config.polish_thinking_level,
+            thinking_name=polish_base_name(config, siman, model_suffix)), config),
         max_retries=config.generator_max_retries, args=args,
         batch=BatchCalls(
             generator,
@@ -415,9 +430,10 @@ def polish_simanim(drafts: dict, relations_text: str, generator, config, args, s
                 user_prompt=generator._get_polishing_user_prompt(draft, relations_text),
                 temperature=config.polish_temperature,
                 custom_id=f"stage3_siman_{siman}",
-                cache_dir=config.cache_dir
+                cache_dir=config.cache_dir,
+                thinking_level=config.polish_thinking_level,
             ),
-            fetch=lambda siman, draft, job_id: generator.get_batch_result(job_id),
+            fetch=lambda siman, draft, job_id: check_polish(siman, generator.get_batch_result(job_id), config),
         ),
         on_result=lambda siman, polished_text: save_polish(siman, polished_text, config, model_suffix),
     )
@@ -441,9 +457,10 @@ def polish_sources(sources: dict, generator, config, args, summary: RunSummary, 
 
     return run_llm_stage(
         summary, sources, STAGE_POLISH,
-        call=lambda siman, text: generator.polish_with_prompt(
+        call=lambda siman, text: check_polish(siman, generator.polish_with_prompt(
             user_prompt(siman, text), config.polishing_instruction,
-            temperature=config.polish_temperature, thinking_name=polish_base_name(config, siman, model_suffix)),
+            temperature=config.polish_temperature, thinking_level=config.polish_thinking_level,
+            thinking_name=polish_base_name(config, siman, model_suffix)), config),
         max_retries=config.generator_max_retries, args=args,
         batch=BatchCalls(
             generator,
@@ -452,9 +469,10 @@ def polish_sources(sources: dict, generator, config, args, summary: RunSummary, 
                 user_prompt=user_prompt(siman, text),
                 temperature=config.polish_temperature,
                 custom_id=f"stage3_single_pass_siman_{siman}",
-                cache_dir=config.cache_dir
+                cache_dir=config.cache_dir,
+                thinking_level=config.polish_thinking_level,
             ),
-            fetch=lambda siman, text, job_id: generator.get_batch_result(job_id),
+            fetch=lambda siman, text, job_id: check_polish(siman, generator.get_batch_result(job_id), config),
         ),
         on_result=lambda siman, polished_text: save_polish(siman, polished_text, config, model_suffix),
     )

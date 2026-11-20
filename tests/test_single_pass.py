@@ -5,6 +5,7 @@ import pytest
 
 import main as main_mod
 from pipeline.generator import GeminiScriptGenerator
+from tests.allowed_characters import ALLOWED_CHARACTERS
 from tests.test_dry_run import _args, _cfg, cache  # noqa: F401  (fixture)
 from tests.test_gemini_streaming import BASE, _config
 
@@ -53,7 +54,8 @@ def test_single_pass_conflicts_are_rejected(monkeypatch, capsys, extra, flag):
 
 def _sp_config(tmp_path):
     cfg = MagicMock(output_dir=str(tmp_path), generator_max_retries=0, section_slug="YD", cache_dir=str(tmp_path),
-                    polishing_instruction="POLISH", polish_temperature=0.15)
+                    polishing_instruction="POLISH", polish_temperature=0.15, polish_thinking_level="low",
+                    allowed_characters=ALLOWED_CHARACTERS)
     cfg.format_single_pass_user_prompt.side_effect = lambda g, sources: PROMPT.format(gematria_siman=g,
                                                                                       sources=sources)
     return cfg
@@ -63,13 +65,15 @@ def test_single_pass_polishes_raw_sources_sync(tmp_path):
     extractor = MagicMock()
     extractor.compile_simanim_context.side_effect = lambda simanim, target_simanim: f"sources {simanim[0]}"
     gen = MagicMock()
-    gen.polish_with_prompt.side_effect = lambda prompt, instr, temperature, thinking_name: f"lesson: {prompt}"
+    gen.polish_with_prompt.side_effect = lambda prompt, instr, temperature, thinking_level, thinking_name: (
+        f"lesson: {prompt}")
     summary = main_mod.run_single_pass_stages([94, 95], {95: "cached lesson"}, extractor, gen, _sp_config(tmp_path),
                                               MagicMock(batch=False, skip_tts=True), "m_single_pass")
     assert summary.succeeded == [94, 95]
     extractor.compile_simanim_context.assert_called_once_with([94], target_simanim=[94])
     call = gen.polish_with_prompt.call_args
     assert call.args[:2] == ("מקורות צ\"ד:\nsources 94", "POLISH") and call.kwargs["temperature"] == 0.15
+    assert call.kwargs["thinking_level"] == "low"
     gen.polish_siman_script.assert_not_called()
     assert (tmp_path / "YD_Siman_94_m_single_pass_polish.txt").read_text(encoding="utf-8") == \
         "lesson: מקורות צ\"ד:\nsources 94"
@@ -85,7 +89,7 @@ def test_single_pass_batch_uses_single_pass_prompt(tmp_path):
     summary = main_mod.run_single_pass_stages([94], {}, extractor, gen, _sp_config(tmp_path), args, "m_single_pass")
     assert summary.succeeded == [94]
     assert gen.submitted == [dict(system_instruction="POLISH", user_prompt="מקורות צ\"ד:\nsrc", temperature=0.15,
-                                  custom_id="stage3_single_pass_siman_94", thinking_level=None)]
+                                  custom_id="stage3_single_pass_siman_94", thinking_level="low")]
 
 
 def test_single_pass_sefaria_failure_skips_siman(tmp_path):
@@ -116,5 +120,17 @@ def test_repo_config_single_pass_user_prompt():
 def test_polish_siman_script_wraps_polish_with_prompt():
     gen = GeminiScriptGenerator.__new__(GeminiScriptGenerator)
     with patch.object(GeminiScriptGenerator, "polish_with_prompt", return_value="out") as call:
-        assert gen.polish_siman_script("d", "", "SYS", temperature=0.1, thinking_name="N") == "out"
-    call.assert_called_once_with(gen._get_polishing_user_prompt("d", ""), "SYS", 0.1, "N")
+        assert gen.polish_siman_script("d", "", "SYS", temperature=0.1, thinking_level="low", thinking_name="N") == "out"
+    call.assert_called_once_with(gen._get_polishing_user_prompt("d", ""), "SYS", 0.1, "low", "N")
+
+
+def test_single_pass_polish_gets_the_text_check(tmp_path):
+    extractor = MagicMock()
+    extractor.compile_simanim_context.return_value = "src"
+    gen = MagicMock()
+    gen.polish_with_prompt.return_value = "lesson д"
+    summary = main_mod.run_single_pass_stages([94], {}, extractor, gen, _sp_config(tmp_path),
+                                              MagicMock(batch=False, skip_tts=True), "m_single_pass")
+    stage, reason = summary.failed[94]
+    assert stage == main_mod.STAGE_POLISH and "Siman 94 polish: 1 character(s)" in reason and "U+0434" in reason
+    assert not (tmp_path / "YD_Siman_94_m_single_pass_polish.txt").exists()
