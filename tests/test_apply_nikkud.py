@@ -780,6 +780,15 @@ def test_bahag_is_read_as_the_book_name():
 
 
 @pytest.mark.parametrize("text, expected", [
+    ("המתיר סובר כך", "הַמַּתִּיר סובר כך"),
+    ("וְהִמְתִּיר", "וְהַמַּתִּיר"),
+    ("לדעת שהמתיר.", "לדעת שהַמַּתִּיר."),
+])
+def test_hamatir_is_read_as_the_one_who_permits(text, expected):
+    assert apply(text) == expected
+
+
+@pytest.mark.parametrize("text, expected", [
     ("מהרשל", MAHARSHAL),
     ("והמהרשל אומר", f"וה{MAHARSHAL} אומר"),
     ("כדברי הרמבם.", f"כדברי ה{RAMBAM}."),
