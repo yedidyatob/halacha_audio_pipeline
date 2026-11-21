@@ -264,6 +264,7 @@ class PipelineConfig:
             self.elevenlabs_context_chars = validate_context_chars(
                 self.elevenlabs_settings["context_chars"], "tts.elevenlabs.context_chars"
             )
+            self.elevenlabs_language_code = _required_str(self.elevenlabs_settings, "language_code", "tts.elevenlabs")
 
         # Validation for Gemini TTS settings (no hardcoded defaults allowed in pipeline)
         if self.tts_engine == "gemini":

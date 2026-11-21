@@ -5,8 +5,9 @@ Nikkud / pronunciation fixes for TTS.
   These may carry a Hebrew prefix (הרמב"ם, ברמב"ם, להרמב"ם, מהרמב"ם ...), which is preserved.
   The abbreviations in UNQUOTED_ABBREVIATIONS also match written without the gershayim
   (מהרשל, והמהרשל), generated from their quoted entries.
-- NO_PREFIX_NIKKUD_DICT: the letter names הא / הי / וו / פא / צדי. Replaced only as a whole
-  word, never with a prefix, and only in a letter-name context (see LETTER-NAME CONTEXT below).
+- NO_PREFIX_NIKKUD_DICT: letter names (הא / הי / וו / פא / צדי, אלף / בית / דלת / למד / מם / סמך /
+  קוף). Replaced only as a whole word, never with a prefix, and only in a letter-name context
+  (see LETTER-NAME CONTEXT below).
   A value may RESPELL the name, not only vocalize it: הא -> הֵי (ElevenLabs v4 reads הֵא wrongly).
 - additional_nikkud_corrections: list of (plain, nikkuded) pairs; the same prefixes are allowed.
 
@@ -98,12 +99,22 @@ additional_nikkud_corrections: list[tuple[str, str]] = [
     ("קדירה", "קְדֵרָה"),
     ("קדרה", "קְדֵרָה"),
     ("המתיר", "הַמַּתִּיר"),
+    ("המתירים", "הַמַּתִּירִים"),
+    ("המיקל", "הַמֵּקֵל"),
+    ("הלבוש", "הַלְּבוּשׁ"),
+    ("קדרות", "קְדֵרוֹת"),
+    ("קדירת", "קְדֵרַת"),
+    ("מעורה", "מְעֹרָה"),
+    ("מעורות", "מְעֹרוֹת"),
+    ("נסיובי", "נְסִיוּבֵי"),
+    ("דחלבא", "דְּחַלְבָּא"),
     ('סאין', 'סְאִין'),
     ('כלאים', 'כִּלְאַיִם'),
     ('כותח', 'כּוּתָח'),
     ('דמיה', 'דָּמֶיהָ'),
     ('שליה', 'שִׁלְיָה'),
     ('שלייה', 'שִׁלְיָה'),
+    ('שליא', 'שִׁלְיָא'),
     ('כחל', 'כְּחָל'),
 
 ]
@@ -137,6 +148,7 @@ RABBINIC_NIKKUD_DICT = {
     'סמ"ק': 'סְמַק',
     'רמ"ך': 'רָמָךְ',
     'בה"ג': 'בַּעַל הֲלָכוֹת גְּדוֹלוֹת',  # נפתח לשם הספר
+    'רא"ה': 'רָאָה',  # הרא"ה (ר' אהרן הלוי); בלי גרשיים זו המילה ראה
     'הר"ר פרץ': 'הרב רַבֵּנוּ פֶּרֶץ',
     'רבינו פרץ': 'רַבֵּנוּ פֶּרֶץ',
 
@@ -152,6 +164,9 @@ RABBINIC_NIKKUD_DICT = {
     'מהר"ם': 'מַהֲרַם',
     'מהרי"ל': 'מַהֲרִיל',
     'מהרי"ט': 'מַהֲרִיט',
+    'מהרי"ו': 'מַהֲרִי וַייל',  # מהר"י ווייל; בלי גרשיים זו המילה מהריו
+    'מהרא"י': 'מַהֲרַאי',
+    'אשיר"י': 'אֲשֵׁרִי',
     'רדב"ז': 'רַדְבַּז',
     'חיד"א': 'חִידָא',
     'חת"ס': 'חֲתַם סוֹפֵר',  # Fixed: נפתח
@@ -183,13 +198,13 @@ RABBINIC_NIKKUD_DICT = {
 # והמהרשל for והמהרש"ל). The unquoted form is generated from the quoted entry and takes the
 # same prefixes. Only abbreviations whose unquoted form - bare or with any DEFAULT_PREFIXES
 # prefix - is not an ordinary Hebrew / Aramaic word or number. Left out for that reason:
-#   ראש רזה רמה רמא שך (משך) רשי (מרשי, שרשי) נציב גרא תשבץ סמק ריף (שריף) רדק (ברדק)
+#   ראש ראה רזה רמה רמא מהריו שך (משך) רשי (מרשי, שרשי) נציב גרא תשבץ סמק ריף (שריף) רדק (ברדק)
 #   חנן שוע (השוע) שות (ושות) יוד אוח, and the two-letter ones רת רן טז בח בי נט עפ;
 #   חומ / אעפ would end in a non-final letter, so they never occur unquoted.
 UNQUOTED_ABBREVIATIONS: tuple[str, ...] = (
     'רמב"ם', 'רמב"ן', 'רשב"א', 'ריטב"א', 'רשב"ם', 'ראב"ד', 'ריב"ש', 'רלב"ג', 'סמ"ג', 'רמ"ך', 'בה"ג',
-    'סמ"ע', 'מג"א', 'מהרש"א', 'מהרש"ל', 'מהר"ם', 'מהרי"ל', 'מהרי"ט', 'רדב"ז', 'חיד"א', 'חת"ס',
-    'חזו"א', 'פרמ"ג', 'נוב"י', 'כה"ח', 'משנ"ב', 'ערוה"ש', 'אה"ע',
+    'סמ"ע', 'מג"א', 'מהרש"א', 'מהרש"ל', 'מהר"ם', 'מהרי"ל', 'מהרי"ט', 'מהרא"י', 'אשיר"י', 'רדב"ז',
+    'חיד"א', 'חת"ס', 'חזו"א', 'פרמ"ג', 'נוב"י', 'כה"ח', 'משנ"ב', 'ערוה"ש', 'אה"ע',
 )
 
 
@@ -204,13 +219,20 @@ def _unquoted_variants() -> list[tuple[str, str]]:
 
 
 # Standalone words: replaced only as a whole word, never with a prefix
-# (a bare הא / פא / צדי is already risky; ב+הא etc. is meaningless).
+# (a bare הא / פא / בית is already risky; ב+הא, הבית etc. are not letter names).
 NO_PREFIX_NIKKUD_DICT = {
     'הא': 'הֵי',  # respelled: the letter name is pronounced "hei"
     'הי': 'הֵי',
     'וו': 'וָו',
     'פא': 'פֵּא',
     'צדי': 'צָדִי',
+    'אלף': 'אָלֶף',
+    'בית': 'בֵּית',
+    'דלת': 'דָּלֶת',
+    'למד': 'לָמֶד',
+    'מם': 'מֵם',
+    'סמך': 'סָמֶךְ',
+    'קוף': 'קוֹף',
 }
 
 # ---------------------------------------------------------------------------
@@ -301,20 +323,23 @@ def _alternation(keys: Iterable[str]) -> str:
 # ---------------------------------------------------------------------------
 # LETTER-NAME CONTEXT (NO_PREFIX_NIKKUD_DICT entries; all words below match with any nikkud)
 #
-# These are ordinary Hebrew/Aramaic words too (הא דתניא, הא קמ"ל, הי מינייהו, הֵא לך), so they
-# are replaced only when the text clearly means a letter name used as a number (סימן צדי הא, אות פא):
+# These are ordinary Hebrew/Aramaic words too (הא דתניא, הא קמ"ל, הי מינייהו, הֵא לך, בית הלל,
+# סמך על, למד מכאן), so they are replaced only when the text clearly means a letter name used as
+# a number (סימן צדי הא, אות פא, עמוד בית):
 #   1. preceded, on the SAME line, by a context word (LETTER_NAME_CONTEXT_WORDS) - optionally
 #      carrying a prefix (בסימן, לסעיף, ובאות ...) - with only whitespace, quotes, a
 #      colon, a dash or a bracket between them (not . , ; ? ! - those end the phrase), or
 #   2. directly adjacent (separated only by blank space) to another letter-name word
 #      (LETTER_NAMES), before or after: "צדי הא", "פא זין", "הא ריש", "צָדִי הֵא".
+# A letter-name word that starts a hyphenated compound with a word that is not a letter name
+# (בית-דין, בֵּית־הַכְּנֶסֶת) is that word, never a letter name, whatever its context.
 # A trailing geresh (הא' = "the first", an ordinal) is never a boundary for these entries,
 # unless the word is wrapped in quotes ('הא').
 # Anything else - "הא דתניא", a sentence-initial "הא" - is left unchanged.
 # Known residual: "הא תו ..." (Aramaic "הא תו") counts as adjacent to the letter name תו.
 # ---------------------------------------------------------------------------
 
-LETTER_NAME_CONTEXT_WORDS: tuple[str, ...] = ("סימן", "סעיף", 'ס"ק', "דף", "פרק", "אות", "סי'")
+LETTER_NAME_CONTEXT_WORDS: tuple[str, ...] = ("סימן", "סעיף", 'ס"ק', "דף", "עמוד", "פרק", "אות", "סי'")
 
 LETTER_NAMES: tuple[str, ...] = (
     "צדי", "צדיק", "טית", "זין", "וו", "דלת", "גימל", "בית", "אלף", "חית", "יוד", "כף",
@@ -353,7 +378,9 @@ def _letter_context_regexes(prefixes: tuple[str, ...]):
     # a neighbour that is half of a hyphenated compound (בית-דין, זין-X) is not a letter name
     name_before = re.compile(f"(?<![{_WORD_CHARS}\\-\u05BE])(?:{names})[{_QUOTE_CHARS}]?{_BLANK}+$")
     name_after = re.compile(f"^[{_QUOTE_CHARS}]?{_BLANK}+(?:{names}){_AFTER}(?![\\-\u05BE]{_WORD_CLASS})")
-    return context_before, name_before, name_after
+    # matched at the end of the letter name: it starts a compound with a non-letter-name word
+    compound_after = re.compile(f"[\\-\u05BE](?!(?:{names}){_AFTER}){_WORD_CLASS}")
+    return context_before, name_before, name_after, compound_after
 
 
 def _has_letter_name_context(text: str, start: int, end: int, prefixes: tuple[str, ...]) -> bool:
@@ -361,7 +388,9 @@ def _has_letter_name_context(text: str, start: int, end: int, prefixes: tuple[st
     # a trailing geresh makes it an ordinal (הא'), unless the word is wrapped in quotes ('הא')
     if text[end:end + 1] in ("'", "\u05F3") and text[start - 1:start] not in ("'", "\u05F3", '"', "\u05F4"):
         return False
-    context_before, name_before, name_after = _letter_context_regexes(prefixes)
+    context_before, name_before, name_after, compound_after = _letter_context_regexes(prefixes)
+    if compound_after.match(text, end):
+        return False
     line_start = text.rfind("\n", 0, start) + 1
     line_start = max(line_start, text.rfind("\r", 0, start) + 1, start - _LOOKBACK)
     before = text[line_start:start]

@@ -106,6 +106,7 @@ tts:
   elevenlabs:
     chunk_size: 8000
     context_chars: 500
+    language_code: "he"
 """
 
 
