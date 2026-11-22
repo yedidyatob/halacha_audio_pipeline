@@ -449,12 +449,14 @@ class ElevenLabsTTS(BaseTTS):
         *,
         chunk_size: int,
         context_chars: int,
+        language_code: str,
         chunk_gap_paragraph_ms: int,
         chunk_gap_sentence_ms: int,
     ):
         self._set_chunk_gaps(chunk_gap_paragraph_ms, chunk_gap_sentence_ms)
         self._set_chunk_size(chunk_size)
         self.context_chars = validate_context_chars(context_chars, "tts.elevenlabs.context_chars")
+        self.language_code = language_code
         self.api_key = api_key or os.environ.get("ELEVENLABS_API_KEY")
         if not self.api_key:
             logger.warning(
@@ -512,6 +514,7 @@ class ElevenLabsTTS(BaseTTS):
             text=text,
             voice_id=self.voice_id,
             model_id=self.model_id,
+            language_code=self.language_code,
             output_format="mp3_44100_128",
             optimize_streaming_latency=None,
             voice_settings=self._voice_settings,

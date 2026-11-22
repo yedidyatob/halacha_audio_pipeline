@@ -47,6 +47,7 @@ def create_tts_engine(config: PipelineConfig) -> BaseTTS:
             ssl_verify=config.ssl_verify,
             chunk_size=config.tts_chunk_size,
             context_chars=config.elevenlabs_context_chars,
+            language_code=config.elevenlabs_language_code,
             **gaps
         )
     elif config.tts_engine == "google":

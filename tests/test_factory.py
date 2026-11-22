@@ -49,6 +49,7 @@ def test_create_tts_engine_elevenlabs(mock_elevenlabs):
     config.tts_engine = "elevenlabs"
     config.tts_chunk_size = {"elevenlabs":8000,"google":2000,"openai":4000,"gemini":2000}["elevenlabs"]
     config.elevenlabs_context_chars = 500
+    config.elevenlabs_language_code = "he"
     config.tts_chunk_gap_paragraph_ms = 700
     config.tts_chunk_gap_sentence_ms = 300
     config.elevenlabs_api_key = "fake-key"
@@ -63,6 +64,7 @@ def test_create_tts_engine_elevenlabs(mock_elevenlabs):
     engine = create_tts_engine(config)
     assert isinstance(engine, ElevenLabsTTS)
     assert engine.voice_id == "Adam"
+    assert engine.language_code == "he"
 
 @patch("google.cloud.texttospeech.TextToSpeechClient")
 def test_create_tts_engine_google(mock_google):

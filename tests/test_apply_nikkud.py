@@ -434,7 +434,7 @@ def test_entries_starting_with_prefix_letters_are_not_double_prefixed():
     ("צדיק הא", "צדיק הֵי"),
     ("הא ריש", "הֵי ריש"),
     ("פא זין", "פֵּא זין"),
-    ("קוף הא", "קוף הֵי"),
+    ("קוף הא", "קוֹף הֵי"),
     ("הא\tוו", "הֵי\tוָו"),
     ("סימן פא הא", "סימן פֵּא הֵי"),
     # next to punctuation / start / end / newline, with context
@@ -496,7 +496,7 @@ def test_letter_name_context_is_per_match():
 
 def test_siman_numbers_spoken_as_letter_names():
     """The pipeline writes simanim as letter names: 94 -> צדי דלת, 95 -> צדי הא, 85 -> פא הא."""
-    assert apply("סימן צדי דלת") == f"סימן {NO_PREFIX_NIKKUD_DICT['צדי']} דלת"
+    assert apply("סימן צדי דלת") == f"סימן {NO_PREFIX_NIKKUD_DICT['צדי']} {NO_PREFIX_NIKKUD_DICT['דלת']}"
     assert apply("סימן צדי הא") == f"סימן {NO_PREFIX_NIKKUD_DICT['צדי']} {NO_PREFIX_NIKKUD_DICT['הא']}"
     assert apply("סימן פא הא") == f"סימן {NO_PREFIX_NIKKUD_DICT['פא']} {NO_PREFIX_NIKKUD_DICT['הא']}"
     assert apply("סימן פא זין") == f"סימן {NO_PREFIX_NIKKUD_DICT['פא']} זין"
@@ -508,17 +508,17 @@ HEI = NO_PREFIX_NIKKUD_DICT["הא"]
 @pytest.mark.parametrize("text, expected", [
     # the letter ה written as הי, or wrongly vocalized הֵא (e.g. by the polish), is respelled הֵי
     ("סעיף הי", "סעיף הֵי"),
-    ("דף הי עמוד בית", "דף הֵי עמוד בית"),
+    ("דף הי עמוד בית", "דף הֵי עמוד בֵּית"),
     ("סימן יוד הי", "סימן יוד הֵי"),
     ("סעיף הֵא", "סעיף הֵי"),
     ("סעיף הֵא.", "סעיף הֵי."),
     # the polish output that showed the bug: a wrongly vocalized neighbour still gives context
-    ("צדי אלף עד צדי הֵא", "צָדִי אלף עד צָדִי הֵי"),
-    ("בדף למד הֵא עמוד בית", "בדף למד הֵי עמוד בית"),
-    ("סימן קוף הֵא", "סימן קוף הֵי"),
+    ("צדי אלף עד צדי הֵא", "צָדִי אָלֶף עד צָדִי הֵי"),
+    ("בדף למד הֵא עמוד בית", "בדף לָמֶד הֵי עמוד בֵּית"),
+    ("סימן קוף הֵא", "סימן קוֹף הֵי"),
     # וו as a letter name
     ("סעיף וו", "סעיף וָו"),
-    ("דף קוף טית וו", "דף קוף טית וָו"),
+    ("דף קוף טית וו", "דף קוֹף טית וָו"),
 ])
 def test_he_and_vav_letter_names(text, expected):
     assert apply(text) == expected
@@ -533,6 +533,51 @@ def test_he_and_vav_letter_names(text, expected):
 ])
 def test_he_and_vav_untouched_outside_letter_name_context(text):
     assert apply(text) == text
+
+
+@pytest.mark.parametrize("text, expected", [
+    # daf / amud and se'if numbers
+    ("עמוד אלף", "עמוד אָלֶף"),
+    ("דף קוף עמוד בית", "דף קוֹף עמוד בֵּית"),
+    ("בעמוד בית", "בעמוד בֵּית"),
+    ("סעיף דלת", "סעיף דָּלֶת"),
+    ("בסעיף למד", "בסעיף לָמֶד"),
+    ("סימן מם", "סימן מֵם"),
+    ("סימן סמך", "סימן סָמֶךְ"),
+    ('ס"ק בית', 'ס"ק בֵּית'),
+    ("אות קוף.", "אות קוֹף."),
+    # chains of letter names
+    ("סימן פא זין", "סימן פֵּא זין"),
+    ("סימן קוף דלת", "סימן קוֹף דָּלֶת"),
+    ("סעיף למד בית", "סעיף לָמֶד בֵּית"),
+    ("סמך הא", "סָמֶךְ הֵי"),
+    # the model's own nikkud is replaced (דֶּלֶת = door)
+    ("סעיף דֶּלֶת", "סעיף דָּלֶת"),
+    # a hyphen before another letter name is not a compound (as with סימן הא-פא)
+    ("סימן אלף-בית", "סימן אָלֶף-בית"),
+])
+def test_more_letter_names_in_letter_name_context(text, expected):
+    assert apply(text) == expected
+    assert apply(expected) == expected
+
+
+@pytest.mark.parametrize("text", [
+    # ordinary words: no letter-name context
+    "באלף לא בטל", "אלף", "אלף ומאתיים", "תורת הבית", "הבית", "בית הלל", "בית שמאי",
+    "הדלת", "דלת הבית", "סמך על דבריו", "למד מכאן", "מם", "קוף",
+    # a prefix is never a letter name, even after a context word
+    "סעיף הדלת", "עמוד באלף", "סימן ובית",
+    # half of a hyphenated compound with an ordinary word, even in context
+    "סימן בית-דין", "דף בֵּית־הַכְּנֶסֶת", "צדי בית-דין",
+    # עמוד must be a whole word, and the stop rule still applies
+    "העמודים אלף", "עמוד. אלף",
+])
+def test_more_letter_names_untouched_without_letter_name_context(text):
+    assert apply(text) == text
+
+
+def test_beit_yosef_after_a_context_word_is_still_the_book():
+    assert apply("סימן בית יוסף") == "סימן בֵּית יוֹסֵף"
 
 
 def test_letter_name_context_is_linear_on_long_lines():
@@ -786,6 +831,25 @@ def test_bahag_is_read_as_the_book_name():
 ])
 def test_hamatir_is_read_as_the_one_who_permits(text, expected):
     assert apply(text) == expected
+
+
+@pytest.mark.parametrize("text, expected", [
+    ('הרא"ה', "הרָאָ\"ה"),
+    ('הרא"ה והרמב"ם', "הרָאָ\"ה וה" + RABBINIC_NIKKUD_DICT['רמב"ם']),
+    ('מהרא"י', "מַהֲרַאי"),
+    ('ומהרא"י', "ומַהֲרַאי"),
+    ("שמהראי עצמו", "שמַהֲרַאי עצמו"),
+    ('מהרי"ו', "מַהֲרִי וַייל"),
+    ('המהרי"ו כתב', "המַהֲרִי וַייל כתב"),
+    ('מהרי״ו', "מַהֲרִי וַייל"),
+])
+def test_mahari_weil_maharai_and_raah(text, expected):
+    assert apply(text) == expected
+
+
+@pytest.mark.parametrize("text", ["ראה", "וראה", "מהריו", "הרים מהריו", "ראה סימן"])
+def test_raah_and_mahari_weil_only_with_gershayim(text):
+    assert apply(text) == text
 
 
 @pytest.mark.parametrize("text, expected", [

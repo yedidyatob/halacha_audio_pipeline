@@ -114,7 +114,7 @@ def test_elevenlabs_tts_single_chunk(mock_elevenlabs_cls, tmp_path):
     mock_elevenlabs_cls.return_value = mock_client
     mock_client.text_to_speech.convert.return_value = [b"audio_chunk_1", b"audio_chunk_2"]
 
-    tts = ElevenLabsTTS(chunk_size=8000, context_chars=500, api_key="fake-key", voice_id="Adam", model_id="eleven_v3", stability=0.5, similarity_boost=0.75, chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=0)
+    tts = ElevenLabsTTS(chunk_size=8000, context_chars=500, language_code="he", api_key="fake-key", voice_id="Adam", model_id="eleven_v3", stability=0.5, similarity_boost=0.75, chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=0)
     output_file = str(tmp_path / "test_output.mp3")
 
     tts.synthesize("טקסט קצר", output_file)
@@ -124,6 +124,7 @@ def test_elevenlabs_tts_single_chunk(mock_elevenlabs_cls, tmp_path):
     assert call_kwargs["text"] == "טקסט קצר"
     assert call_kwargs["voice_id"] == "Adam"
     assert call_kwargs["model_id"] == "eleven_v3"
+    assert call_kwargs["language_code"] == "he"
     assert call_kwargs["voice_settings"].stability == 0.5
     assert call_kwargs["voice_settings"].similarity_boost == 0.75
 
@@ -142,7 +143,7 @@ def test_elevenlabs_tts_multi_chunk_calls_merge(mock_elevenlabs_cls, tmp_path):
     mock_elevenlabs_cls.return_value = mock_client
     mock_client.text_to_speech.convert.return_value = [_make_real_mp3()]
 
-    tts = ElevenLabsTTS(chunk_size=1500, context_chars=500, api_key="fake-key", voice_id="Adam", model_id="eleven_v3", stability=0.5, similarity_boost=0.75, chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=0)
+    tts = ElevenLabsTTS(chunk_size=1500, context_chars=500, language_code="he", api_key="fake-key", voice_id="Adam", model_id="eleven_v3", stability=0.5, similarity_boost=0.75, chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=0)
     output_file = str(tmp_path / "multi_chunk.mp3")
 
     # Two paragraphs each just over 1500 chars → forces 2 chunks

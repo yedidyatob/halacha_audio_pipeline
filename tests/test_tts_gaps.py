@@ -147,7 +147,7 @@ def test_validate_gap_ms():
 
 
 def test_engine_explicit_gaps():
-    e = ElevenLabsTTS(chunk_size=8000, context_chars=500, api_key="k", chunk_gap_paragraph_ms=700, chunk_gap_sentence_ms=300)
+    e = ElevenLabsTTS(chunk_size=8000, context_chars=500, language_code="he", api_key="k", chunk_gap_paragraph_ms=700, chunk_gap_sentence_ms=300)
     assert (e.chunk_gap_paragraph_ms, e.chunk_gap_sentence_ms) == (700, 300)
     o = OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy", chunk_size=4000, chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=50)
     assert (o.chunk_gap_paragraph_ms, o.chunk_gap_sentence_ms) == (0, 50)

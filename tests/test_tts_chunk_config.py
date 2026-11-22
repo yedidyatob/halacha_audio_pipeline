@@ -28,7 +28,7 @@ def _load(tts_yaml: str) -> PipelineConfig:
 
 @pytest.mark.parametrize("engine,size", [("elevenlabs", 8000), ("google", 2000), ("openai", 4000), ("gemini", 2000)])
 def test_config_reads_chunk_size_for_selected_engine(engine, size):
-    extra = "    context_chars: 500\n" if engine == "elevenlabs" else ""
+    extra = '    context_chars: 500\n    language_code: "he"\n' if engine == "elevenlabs" else ""
     gem = ('    model_name: "m"\n    voice_name: "Achird"\n    pitch: 0\n    speaking_rate: 1\n'
            '    language_code: "he-il"\n') if engine == "gemini" else ""
     cfg = _load(f'  engine: "{engine}"\n  {engine}:\n    chunk_size: {size}\n' + extra + gem)
@@ -54,11 +54,20 @@ def test_config_google_chunk_size_over_byte_limit_errors():
 
 def test_config_elevenlabs_context_chars_required_and_validated():
     with pytest.raises(ValueError, match="context_chars"):
-        _load('  engine: "elevenlabs"\n  elevenlabs:\n    chunk_size: 8000\n')
+        _load('  engine: "elevenlabs"\n  elevenlabs:\n    chunk_size: 8000\n    language_code: "he"\n')
     with pytest.raises(ValueError, match="positive integer"):
-        _load('  engine: "elevenlabs"\n  elevenlabs:\n    chunk_size: 8000\n    context_chars: 0\n')
-    cfg = _load('  engine: "elevenlabs"\n  elevenlabs:\n    chunk_size: 8000\n    context_chars: 300\n')
+        _load('  engine: "elevenlabs"\n  elevenlabs:\n    chunk_size: 8000\n    context_chars: 0\n    language_code: "he"\n')
+    cfg = _load('  engine: "elevenlabs"\n  elevenlabs:\n    chunk_size: 8000\n    context_chars: 300\n    language_code: "he"\n')
     assert cfg.elevenlabs_context_chars == 300
+
+
+def test_config_elevenlabs_language_code_required():
+    base = '  engine: "elevenlabs"\n  elevenlabs:\n    chunk_size: 8000\n    context_chars: 500\n'
+    with pytest.raises(ValueError, match="'language_code' under 'tts.elevenlabs'"):
+        _load(base)
+    with pytest.raises(ValueError, match="non-empty string"):
+        _load(base + '    language_code: ""\n')
+    assert _load(base + '    language_code: "he"\n').elevenlabs_language_code == "he"
 
 
 def test_repo_config_yaml_chunk_settings():
@@ -68,6 +77,7 @@ def test_repo_config_yaml_chunk_settings():
         tts = yaml.safe_load(f)["tts"]
     assert tts["elevenlabs"]["chunk_size"] == 8000
     assert tts["elevenlabs"]["context_chars"] == 500
+    assert tts["elevenlabs"]["language_code"] == "he"
     assert tts["google"]["chunk_size"] == 2000
     assert tts["openai"]["chunk_size"] == 4000
     assert tts["gemini"]["chunk_size"] == 2000
@@ -78,12 +88,12 @@ def test_engines_store_and_validate_chunk_size():
     assert GoogleCloudTTS(credentials_path=None, voice_name="v", language_code="he-IL", speaking_rate=1.0, pitch=0.0, chunk_size=2000, **GAPS)._chunk_size == 2000
     with patch("google.auth.default", side_effect=Exception("no creds")):
         assert GeminiTTS("m", "v", pitch=0, speaking_rate=1, language_code="he-il", chunk_size=1234, **GAPS)._chunk_size == 1234
-    el = ElevenLabsTTS(api_key="k", chunk_size=8000, context_chars=500, **GAPS)
+    el = ElevenLabsTTS(api_key="k", chunk_size=8000, context_chars=500, language_code="he", **GAPS)
     assert (el._chunk_size, el.context_chars) == (8000, 500)
     with pytest.raises(ValueError):
         OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy", chunk_size=0, **GAPS)
     with pytest.raises(ValueError):
-        ElevenLabsTTS(api_key="k", chunk_size=8000, context_chars=-1, **GAPS)
+        ElevenLabsTTS(api_key="k", chunk_size=8000, context_chars=-1, language_code="he", **GAPS)
     with pytest.raises(ValueError, match="5000 bytes"):
         GoogleCloudTTS(credentials_path=None, voice_name="v", language_code="he-IL", speaking_rate=1.0, pitch=0.0, chunk_size=3000, **GAPS)
     with pytest.raises(TypeError):
@@ -107,13 +117,14 @@ def test_factory_passes_chunk_settings():
     config.tts_engine = "elevenlabs"
     config.tts_chunk_size = 7000
     config.elevenlabs_context_chars = 321
+    config.elevenlabs_language_code = "he"
     config.tts_chunk_gap_paragraph_ms = 0
     config.tts_chunk_gap_sentence_ms = 0
     config.elevenlabs_api_key = "k"
     config.elevenlabs_settings = {"voice_id": "v", "model_id": "eleven_v4", "stability": 0.5, "similarity_boost": 0.75}
     config.ssl_verify = True
     engine = create_tts_engine(config)
-    assert (engine._chunk_size, engine.context_chars) == (7000, 321)
+    assert (engine._chunk_size, engine.context_chars, engine.language_code) == (7000, 321, "he")
 
 
 # --- context helpers ------------------------------------------------------------
@@ -140,7 +151,7 @@ def test_context_never_splits_a_vocalized_word():
 
 def _el(chunk_size, context_chars):
     tts = ElevenLabsTTS(api_key="k", voice_id="v", model_id="eleven_v4", stability=0.5,
-                        similarity_boost=0.75, chunk_size=chunk_size, context_chars=context_chars, **GAPS)
+                        similarity_boost=0.75, chunk_size=chunk_size, context_chars=context_chars, language_code="he", **GAPS)
     return tts
 
 

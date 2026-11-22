@@ -41,8 +41,9 @@ source venv/bin/activate  # On Windows: .\venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-Re-run this after pulling: an existing venv is not upgraded automatically. ElevenLabs request stitching
-needs `elevenlabs>=1.3.0`; an older SDK fails with `unexpected keyword argument 'next_text'`.
+Re-run this after pulling: an existing venv is not upgraded automatically. The ElevenLabs engine
+needs `elevenlabs>=1.6.0` (request stitching and `language_code`); an older SDK fails with
+`unexpected keyword argument`.
 
 ### 2. Configure API Keys
 
@@ -372,7 +373,8 @@ tts:
     
   elevenlabs:
     voice_id: "lJylpTXX0sNdqq5EUv4M"
-    chunk_size: 8000      # eleven_v4 allows 10,000 chars/request
+    language_code: "he"   # ISO 639-1; enforces the language and its text normalization
+    chunk_size: 8000      # eleven_v4 allows 100,000 chars/request; short requests keep retries cheap
     context_chars: 500    # previous_text / next_text length for request stitching
     
   google:

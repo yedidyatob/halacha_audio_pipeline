@@ -288,8 +288,12 @@ tts:
     model_id: "eleven_v4"
     stability: 0.5
     similarity_boost: 0.75
-    # Max characters per request. eleven_v4 allows 10,000 per request; 8000 leaves headroom
-    # (requests are cut at paragraph / sentence boundaries, so chunks vary in length).
+    # ISO 639-1 language of the script, sent with every request: enforces the language and its
+    # text normalization instead of auto-detecting it per chunk (ignored by eleven_multilingual_v2).
+    language_code: "he"
+    # Max characters per request. eleven_v4 allows 100,000 per request; 8000 keeps each request
+    # short, so it stays well inside the request timeout and a failed request costs one chunk,
+    # not the whole lesson (requests are cut at paragraph / sentence boundaries, so chunks vary).
     chunk_size: 8000
     # Request stitching: previous_text / next_text sent with each chunk are the last / first
     # context_chars characters of the neighbouring chunks (cut at a word boundary).
