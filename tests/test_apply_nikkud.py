@@ -834,8 +834,8 @@ def test_hamatir_is_read_as_the_one_who_permits(text, expected):
 
 
 @pytest.mark.parametrize("text, expected", [
-    ('הרא"ה', "הרָאָה"),
-    ('הרא"ה והרמב"ם', "הרָאָה וה" + RABBINIC_NIKKUD_DICT['רמב"ם']),
+    ('הרא"ה', "הרָאָ\"ה"),
+    ('הרא"ה והרמב"ם', "הרָאָ\"ה וה" + RABBINIC_NIKKUD_DICT['רמב"ם']),
     ('מהרא"י', "מַהֲרַאי"),
     ('ומהרא"י', "ומַהֲרַאי"),
     ("שמהראי עצמו", "שמַהֲרַאי עצמו"),
