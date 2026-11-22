@@ -1,6 +1,6 @@
 # Halacha Audio Lesson Generation Pipeline
 
-An end-to-end Python pipeline that downloads classical Jewish Halachic texts from Sefaria, generates TTS-optimized Hebrew scripts using Gemini or OpenAI, and synthesizes them to high-quality audio using ElevenLabs, Google Cloud TTS, or OpenAI TTS.
+An end-to-end Python pipeline that downloads classical Jewish Halachic texts from Sefaria, generates TTS-optimized Hebrew scripts using Gemini or OpenAI, and synthesizes them to high-quality audio using Gemini TTS, ElevenLabs, Google Cloud TTS, or OpenAI TTS.
 
 Designed for advanced students preparing for Rabbinical Ordination exams, producing authentic-sounding monologue lessons with spoken transitions, definitions, and cross-references.
 
@@ -365,11 +365,11 @@ tts:
   chunk_gap_sentence_ms: 300   # silence between TTS chunks split mid-paragraph (0 = none)
   
   gemini:
-    voice_name: "Achird"  # Achird, Puck, Charon, Kore, Fenrir, Aoede
-    chunk_size: 2000
-    pitch: 0              # Cloud TTS audioConfig.pitch (-20 to 20)
-    speaking_rate: 1      # Cloud TTS audioConfig.speakingRate (0.25 to 2.0)
-    language_code: "he-il"
+    model: "gemini-3.8-flash-tts"
+    voice: "voice_0fdvd4fjjg9o"  # Achird remixed with a native Israeli Hebrew accent
+    language: "he-IL"
+    style: "warm, upbeat, measured pace"  # keep it short; the accent lives in the voice
+    chunk_size: 1000
     
   elevenlabs:
     voice_id: "lJylpTXX0sNdqq5EUv4M"
@@ -390,6 +390,13 @@ tts:
 must be a positive integer; there are no defaults in code. Chunks are split at paragraph / sentence
 boundaries.
 
+**Gemini TTS** (`engine: "gemini"`) calls the Gemini API Interactions endpoint with
+`GEMINI_API_KEY` (the same key as the text stages). Each chunk is one request: the text carries a
+`speech_metadata` annotation with `style`, `voice` and `language` go in `speech_config`, and the
+response is raw 24 kHz PCM (`audio/l16`). The chunks' PCM is joined with the configured silence gaps
+and encoded to one 128 kbps mono MP3. All of `model`, `voice`, `language`, `style` and `chunk_size`
+are required.
+
 **ElevenLabs request stitching:** every chunk is sent with `previous_text` (the last
 `context_chars` characters of the preceding chunk) and `next_text` (the first `context_chars`
 characters of the following chunk), cut at a word boundary, so
@@ -405,7 +412,7 @@ has no `next_text`, and a single-chunk text sends neither.
 | `GEMINI_API_KEY` | Gemini API key |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `ELEVENLABS_API_KEY` | ElevenLabs API key |
-| `GOOGLE_APPLICATION_CREDENTIALS` | Path to Google service account JSON |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Path to Google service account JSON (engine `google` only) |
 
 ---
 

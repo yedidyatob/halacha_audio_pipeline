@@ -263,7 +263,7 @@ pronunciation:
 
 # TTS Engine Selection and Settings
 tts:
-  engine: "elevenlabs"  # "elevenlabs", "google", "openai", or "gemini"
+  engine: "gemini"  # "elevenlabs", "google", "openai", or "gemini"
 
   # Silence (ms) inserted between synthesized chunks of a long script, so the stitch
   # points don't sound like abrupt cuts. Applies to all engines.
@@ -274,14 +274,22 @@ tts:
   chunk_gap_paragraph_ms: 700
   chunk_gap_sentence_ms: 300
 
+  # Gemini API Interactions endpoint, authenticated with GEMINI_API_KEY.
   gemini:
-    model_name: "gemini-3.1-flash-tts-preview"
-    voice_name: "Achird" # Options: Puck, Charon, Kore, Fenrir, Aoede, Achird
-    # Cloud Text-to-Speech request fields (the API has no temperature for these voices)
-    pitch: 0             # audioConfig.pitch, semitones, -20 to 20
-    speaking_rate: 1     # audioConfig.speakingRate, 0.25 to 2.0 (1 = native speed)
-    language_code: "he-il"  # voice.languageCode (BCP-47)
-    chunk_size: 2000  # max characters per request
+    model: "gemini-3.8-flash-tts"
+    # Voice remix of the prebuilt Achird with a native Israeli Hebrew accent, created via
+    # POST /v1beta/voices (store=True) with the instruction "Change the accent to that of a native
+    # Israeli Hebrew speaker with a natural Israeli accent. Keep the friendly, warm, upbeat timbre
+    # and pitch." The prebuilt Achird is en-US and drifted to other accents at chunk starts.
+    voice: "voice_0fdvd4fjjg9o"
+    language: "he-IL"  # speech_config.language (BCP-47)
+    # speech_metadata style sent with every chunk. Google's 3.8 guidance: keep the style short
+    # (long style prompts are the most common cause of voice drift); the accent lives in the
+    # voice, not the style.
+    style: "warm, upbeat, measured pace"
+    # Max characters per request. Every request starts fresh (no neighbouring-text context),
+    # and shorter requests sound cleaner.
+    chunk_size: 1000
 
   elevenlabs:
     voice_id: "aTTiK3YzK3dXETpuDE2h"  # Ben - Effortless and Casual

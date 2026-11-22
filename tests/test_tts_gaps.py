@@ -153,8 +153,7 @@ def test_engine_explicit_gaps():
     assert (o.chunk_gap_paragraph_ms, o.chunk_gap_sentence_ms) == (0, 50)
     g = GoogleCloudTTS(credentials_path=None, voice_name="v", language_code="he-IL", speaking_rate=1.0, pitch=0.0, chunk_size=2000, chunk_gap_paragraph_ms=10, chunk_gap_sentence_ms=20)
     assert (g.chunk_gap_paragraph_ms, g.chunk_gap_sentence_ms) == (10, 20)
-    with patch("google.auth.default", side_effect=Exception("no creds")):
-        gem = GeminiTTS("m", "v", pitch=0, speaking_rate=1, language_code="he-il", chunk_size=2000, chunk_gap_paragraph_ms=11, chunk_gap_sentence_ms=22)
+    gem = GeminiTTS("k", "m", "v", "he-IL", "s", True, chunk_size=1000, chunk_gap_paragraph_ms=11, chunk_gap_sentence_ms=22)
     assert (gem.chunk_gap_paragraph_ms, gem.chunk_gap_sentence_ms) == (11, 22)
     with pytest.raises(ValueError):
         OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy", chunk_size=4000, chunk_gap_paragraph_ms=-5, chunk_gap_sentence_ms=0)
@@ -169,7 +168,7 @@ def test_engines_require_gap_arguments():
     with pytest.raises(TypeError):
         GoogleCloudTTS(credentials_path=None, voice_name="v", language_code="he-IL", speaking_rate=1.0, pitch=0.0)
     with pytest.raises(TypeError):
-        GeminiTTS("m", "v")
+        GeminiTTS("k", "m", "v", "he-IL", "s", True)
     with pytest.raises(ValueError):
         OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy", chunk_size=4000, chunk_gap_paragraph_ms=None, chunk_gap_sentence_ms=0)
 
@@ -242,15 +241,16 @@ def test_factory_passes_gaps_to_engine(_mock_openai):
 def test_factory_passes_gaps_to_gemini():
     config = MagicMock(spec=PipelineConfig)
     config.tts_engine = "gemini"
-    config.tts_chunk_size = {"elevenlabs":8000,"google":2000,"openai":4000,"gemini":2000}["gemini"]
+    config.tts_chunk_size = 1000
     config.gemini_tts_model = "m"
-    config.gemini_tts_voice = "Achird"
-    config.gemini_tts_pitch, config.gemini_tts_speaking_rate, config.gemini_tts_language_code = 0, 1, "he-il"
+    config.gemini_tts_voice = "v"
+    config.gemini_tts_language = "he-IL"
+    config.gemini_tts_style = "s"
     config.gemini_api_key = "k"
+    config.ssl_verify = True
     config.tts_chunk_gap_paragraph_ms = 640
     config.tts_chunk_gap_sentence_ms = 0
-    with patch("google.auth.default", side_effect=Exception("no creds")):
-        engine = create_tts_engine(config)
+    engine = create_tts_engine(config)
     assert isinstance(engine, GeminiTTS)
     assert (engine.chunk_gap_paragraph_ms, engine.chunk_gap_sentence_ms) == (640, 0)
 
@@ -270,8 +270,7 @@ def test_gemini_silence_pcm_length_and_even():
 
 
 def test_gemini_assemble_pcm_inserts_gaps():
-    with patch("google.auth.default", side_effect=Exception("no creds")):
-        gem = GeminiTTS("m", "v", pitch=0, speaking_rate=1, language_code="he-il", chunk_size=2000, chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=0)
+    gem = GeminiTTS("k", "m", "v", "he-IL", "s", True, chunk_size=1000, chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=0)
     out = gem._assemble_pcm([b"\x01\x01", b"\x02\x02", b"\x03\x03"], [1000, 0])
     assert out == b"\x01\x01" + bytes(48000) + b"\x02\x02" + b"\x03\x03"
     assert gem._assemble_pcm([b"\x01\x01"], []) == b"\x01\x01"

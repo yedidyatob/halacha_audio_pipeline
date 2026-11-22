@@ -42,12 +42,6 @@ def _required_str(section: dict, key: str, path: str) -> str:
 THINKING_LEVELS = ("low", "medium", "high")
 
 
-def _number_in_range(value, key: str, low: float, high: float) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
-        raise ValueError(f"'{key}' must be a number between {low} and {high}, got {value!r}.")
-    return value
-
-
 def _positive_int(value, key: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError(f"'{key}' must be a positive integer, got {value!r}.")
@@ -266,37 +260,14 @@ class PipelineConfig:
             )
             self.elevenlabs_language_code = _required_str(self.elevenlabs_settings, "language_code", "tts.elevenlabs")
 
-        # Validation for Gemini TTS settings (no hardcoded defaults allowed in pipeline)
+        # Gemini TTS settings (Gemini API Interactions endpoint; no hardcoded defaults)
         if self.tts_engine == "gemini":
-            if not self.gemini_tts_settings:
-                raise ValueError("TTS engine is set to 'gemini' but the 'gemini' configuration section is missing under 'tts' in config.yaml.")
-            self.gemini_tts_model = self.gemini_tts_settings.get("model_name")
-            if not self.gemini_tts_model:
-                raise ValueError("Missing required configuration parameter 'model_name' under 'tts.gemini' in config.yaml.")
-            
-            raw_voice = self.gemini_tts_settings.get("voice_name")
-            if not raw_voice:
-                raise ValueError("Missing required configuration parameter 'voice_name' under 'tts.gemini' in config.yaml.")
-            
-            # Map/clean legacy Google voice names to Gemini prebuilt voices
-            if "Achird" in raw_voice:
-                self.gemini_tts_voice = "Achird"
-            elif "Achernar" in raw_voice:
-                self.gemini_tts_voice = "Aoede"
-            elif raw_voice in ["Puck", "Charon", "Kore", "Fenrir", "Aoede", "Achird"]:
-                self.gemini_tts_voice = raw_voice
-            else:
-                raise ValueError(
-                    f"Unsupported Gemini TTS voice: '{raw_voice}'. "
-                    f"Supported prebuilt voices are: Puck, Charon, Kore, Fenrir, Aoede, Achird."
-                )
-            # Cloud Text-to-Speech request fields (audioConfig.pitch / speakingRate, voice.languageCode)
-            self.gemini_tts_pitch = _number_in_range(
-                _required(self.gemini_tts_settings, "pitch", "tts.gemini"), "tts.gemini.pitch", -20.0, 20.0)
-            self.gemini_tts_speaking_rate = _number_in_range(
-                _required(self.gemini_tts_settings, "speaking_rate", "tts.gemini"), "tts.gemini.speaking_rate", 0.25, 2.0)
-            self.gemini_tts_language_code = _required_str(self.gemini_tts_settings, "language_code", "tts.gemini")
-                
+            path = "tts.gemini"
+            self.gemini_tts_model = _required_str(self.gemini_tts_settings, "model", path)
+            self.gemini_tts_voice = _required_str(self.gemini_tts_settings, "voice", path)
+            self.gemini_tts_language = _required_str(self.gemini_tts_settings, "language", path)
+            self.gemini_tts_style = _required_str(self.gemini_tts_settings, "style", path)
+
         # Directory setup
         dirs = self.config_data.get("directories", {})
         self.output_dir = dirs.get("output_dir", "./output")
