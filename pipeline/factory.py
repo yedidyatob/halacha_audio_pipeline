@@ -74,12 +74,12 @@ def create_tts_engine(config: PipelineConfig) -> BaseTTS:
         )
     elif config.tts_engine == "gemini":
         return GeminiTTS(
-            model_id=config.gemini_tts_model,
-            voice_name=config.gemini_tts_voice,
-            pitch=config.gemini_tts_pitch,
-            speaking_rate=config.gemini_tts_speaking_rate,
-            language_code=config.gemini_tts_language_code,
             api_key=config.gemini_api_key,
+            model=config.gemini_tts_model,
+            voice=config.gemini_tts_voice,
+            language=config.gemini_tts_language,
+            style=config.gemini_tts_style,
+            ssl_verify=config.ssl_verify,
             chunk_size=config.tts_chunk_size,
             **gaps
         )

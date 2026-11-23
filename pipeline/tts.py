@@ -13,7 +13,7 @@ logger = get_logger(__name__)
 BREAK_PARAGRAPH = "paragraph"  # chunk ended at a paragraph boundary
 BREAK_SENTENCE = "sentence"    # chunk was cut mid-paragraph (sentence or word split)
 
-# Gemini returns raw 24 kHz, 16-bit, mono LINEAR16 PCM.
+# Gemini TTS returns raw 24 kHz, 16-bit, mono PCM (audio/l16).
 _GEMINI_PCM_SAMPLE_RATE = 24000
 _GEMINI_PCM_BYTES_PER_SAMPLE = 2
 
@@ -664,56 +664,70 @@ class OpenAITTS(BaseTTS):
 
 class GeminiTTS(BaseTTS):
     """
-    Synthesizes speech using the Gemini 3.1 TTS preview models via the GCP Text-to-Speech API.
-    Bypasses the buggy google-genai SDK and bills based on input characters instead of output tokens.
+    Synthesizes speech with the Gemini TTS models (gemini-3.8-flash-tts) through the
+    Gemini API Interactions endpoint, authenticated with GEMINI_API_KEY.
 
-    This engine accumulates raw LINEAR16 PCM from all chunks, then encodes the combined
-    stream to MP3 in a single lameenc pass — which avoids inter-chunk discontinuities that
-    would occur if each chunk were encoded independently and concatenated.  Because of this
-    PCM-accumulate-then-encode flow the base class synthesize() loop is not applicable here,
-    so GeminiTTS overrides synthesize() directly.
+    Each chunk is one interaction: the chunk text carries a speech_metadata style
+    annotation, the voice and language go in generation_config.speech_config, and the
+    response is raw 24 kHz / 16-bit / mono PCM (audio/l16). The PCM of all chunks is
+    accumulated (with digital silence between chunks) and encoded to MP3 in a single
+    lameenc pass, which avoids the discontinuities of encoding each chunk on its own.
+    Because of this flow the base class synthesize() loop does not apply, so GeminiTTS
+    overrides synthesize() directly.
     """
 
     def __init__(
         self,
-        model_id: str,
-        voice_name: str,
-        api_key: str = None,
+        api_key: Optional[str],
+        model: str,
+        voice: str,
+        language: str,
+        style: str,
+        ssl_verify: bool,
         *,
-        pitch: float,
-        speaking_rate: float,
-        language_code: str,
         chunk_size: int,
         chunk_gap_paragraph_ms: int,
         chunk_gap_sentence_ms: int,
     ):
         self._set_chunk_gaps(chunk_gap_paragraph_ms, chunk_gap_sentence_ms)
         self._set_chunk_size(chunk_size)
-        self.model_id = model_id
-        self.voice_name = voice_name
-        self.pitch = pitch
-        self.speaking_rate = speaking_rate
-        self.language_code = language_code
-
-        try:
-            import google.auth
-            self.credentials, self.project = google.auth.default(
-                scopes=["https://www.googleapis.com/auth/cloud-platform"]
-            )
-        except Exception as e:
+        self.api_key = api_key
+        if not self.api_key:
             logger.warning(
-                f"Failed to load Google Cloud credentials: {e}. Gemini TTS calls may fail."
+                "Gemini API key is not configured. Gemini TTS calls will fail unless GEMINI_API_KEY is set."
             )
-            self.credentials = None
-            self.project = None
-
-    @property
-    def file_extension(self) -> str:
-        return "mp3"
+        self.model = model
+        self.voice = voice
+        self.language = language
+        self.style = style
+        self.ssl_verify = ssl_verify
 
     def _synthesize_chunk(self, text: str) -> bytes:
-        """Not used — GeminiTTS overrides synthesize() to do PCM accumulation."""
-        raise NotImplementedError("GeminiTTS uses a custom synthesize() flow.")
+        """One chunk -> raw 24 kHz / 16-bit / mono PCM bytes via the Interactions API."""
+        import base64
+
+        interaction = self._client.interactions.create(
+            model=self.model,
+            input=[{
+                "type": "user_input",
+                "content": [{
+                    "type": "text",
+                    "text": text,
+                    "annotations": [{"type": "speech_metadata", "style": self.style}],
+                }],
+            }],
+            response_format={
+                "type": "audio",
+                "mime_type": "audio/l16",  # headerless PCM: chunks concatenate cleanly
+                "sample_rate": _GEMINI_PCM_SAMPLE_RATE,
+            },
+            generation_config={"speech_config": [{"voice": self.voice, "language": self.language}]},
+        )
+        output_audio = getattr(interaction, "output_audio", None)
+        if output_audio is None or not getattr(output_audio, "data", None):
+            status = getattr(interaction, "status", "unknown")
+            raise ValueError(f"No audio returned by Gemini TTS (interaction status: {status}).")
+        return base64.b64decode(output_audio.data)
 
     @staticmethod
     def _silence_pcm(gap_ms: int) -> bytes:
@@ -733,21 +747,16 @@ class GeminiTTS(BaseTTS):
 
     def synthesize(self, text: str, output_path: str) -> None:
         logger.info(
-            f"Synthesizing audio via Gemini GCP TTS (Model: {self.model_id}, Voice: {self.voice_name})..."
+            f"Synthesizing audio via Gemini TTS (Model: {self.model}, Voice: {self.voice}, "
+            f"Language: {self.language})..."
         )
         try:
-            import requests
-            import base64
             import lameenc
-            from google.auth.transport.requests import Request
+            from pipeline.generator import build_gemini_client
 
-            if not self.credentials:
-                raise ValueError(
-                    "GCP Credentials not loaded. Ensure GOOGLE_APPLICATION_CREDENTIALS is set."
-                )
-
-            self.credentials.refresh(Request())
-            token = self.credentials.token
+            if not self.api_key:
+                raise ValueError("Gemini API key is not configured. Set GEMINI_API_KEY.")
+            self._client = build_gemini_client(self.api_key, self.ssl_verify)
 
             chunks_with_breaks = self._chunk_text_with_breaks(text, max_chars=self._chunk_size)
             text_chunks = [chunk for chunk, _ in chunks_with_breaks]
@@ -758,13 +767,6 @@ class GeminiTTS(BaseTTS):
 
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-            url = "https://texttospeech.googleapis.com/v1beta1/text:synthesize"
-            headers = {
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json; charset=utf-8",
-                "x-goog-user-project": self.project if self.project else "",
-            }
-
             # Accumulate all PCM before encoding so lameenc can produce a single
             # gapless MP3 stream rather than spliced per-chunk files.
             pcm_chunks = []
@@ -772,38 +774,7 @@ class GeminiTTS(BaseTTS):
                 logger.info(
                     f"Generating audio for chunk {idx}/{len(text_chunks)} ({len(chunk)} chars)..."
                 )
-
-                payload = {
-                    "audioConfig": {
-                        "audioEncoding": "LINEAR16",
-                        "pitch": self.pitch,
-                        "speakingRate": self.speaking_rate,
-                    },
-                    "input": {"text": chunk},
-                    "voice": {
-                        "languageCode": self.language_code,
-                        "modelName": self.model_id,
-                        "name": self.voice_name,
-                    },
-                }
-
-                if hasattr(self, "prompt") and self.prompt:
-                    payload["input"]["prompt"] = self.prompt
-
-                response = requests.post(url, headers=headers, json=payload, timeout=120)
-
-                if response.status_code != 200:
-                    logger.error(f"GCP API Error: {response.text}")
-                    raise ValueError(
-                        f"GCP TTS API failed with status {response.status_code}"
-                    )
-
-                data = response.json()
-                audio_content = data.get("audioContent")
-                if not audio_content:
-                    raise ValueError("No audioContent returned by GCP API.")
-
-                pcm_chunks.append(base64.b64decode(audio_content))
+                pcm_chunks.append(self._synthesize_chunk(chunk))
 
             # Silence between chunks is inserted as zero samples (per break type).
             all_pcm_data = self._assemble_pcm(pcm_chunks, gaps_ms)
@@ -811,7 +782,7 @@ class GeminiTTS(BaseTTS):
             logger.info("Encoding raw PCM to MP3 using lameenc...")
             encoder = lameenc.Encoder()
             encoder.set_bit_rate(128)
-            encoder.set_in_sample_rate(24000)
+            encoder.set_in_sample_rate(_GEMINI_PCM_SAMPLE_RATE)
             encoder.set_channels(1)
             encoder.set_quality(2)
 
@@ -822,10 +793,8 @@ class GeminiTTS(BaseTTS):
             with open(output_path, "wb") as f:
                 f.write(mp3_data)
 
-            logger.info(
-                f"Successfully saved compressed Gemini native TTS audio to {output_path}"
-            )
+            logger.info(f"Successfully saved Gemini TTS audio to {output_path}")
 
         except Exception as e:
-            logger.error(f"Gemini native TTS synthesis failed: {e}")
+            logger.error(f"Gemini TTS synthesis failed: {e}")
             raise
