@@ -8,7 +8,7 @@ from pipeline.nikkud_review import (
     WORDS_HEADER, OVERRIDES_TITLE, OVERRIDES_HEADER,
 )
 from pipeline.apply_nikkud import apply_nikkud_with_overrides, NikkudOverride
-from tests.allowed_characters import ALLOWED_CHARACTERS
+from tests.text_check_config import ALLOWED_CHARACTERS, MAX_SENTENCE_WORDS
 from tests.section_yaml import SECTIONS_YAML
 
 # A final transcript: the polish vocalized טֵית / פַּת / סוֹפֵר, the dictionary wrote השַׁךְ.
@@ -327,7 +327,8 @@ def _run_main_sync(tmp_path, monkeypatch, polish):
     """Runs main.main() in sync mode for simanim 94,95 with cached drafts and relations."""
     import main as main_mod
     cfg = MagicMock(section_slug="YD", generator_max_retries=0, drafts_dir=str(tmp_path), relations_dir=str(tmp_path),
-                    output_dir=str(tmp_path), allowed_characters=ALLOWED_CHARACTERS)
+                    output_dir=str(tmp_path), allowed_characters=ALLOWED_CHARACTERS,
+                    max_sentence_words=MAX_SENTENCE_WORDS)
     for s in (94, 95):
         (tmp_path / f"YD_Siman_{s}_m_draft.txt").write_text(f"draft {s}", encoding="utf-8")
     (tmp_path / "YD_Relations_94_95_m.txt").write_text("rel", encoding="utf-8")

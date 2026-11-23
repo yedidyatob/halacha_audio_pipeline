@@ -22,7 +22,7 @@ halacha_audio_pipeline/
 │   ├── generator.py      # Gemini & OpenAI API wrappers
 │   ├── tts.py            # TTS interface (ElevenLabs, OpenAI, Google, Gemini)
 │   ├── factory.py        # Engine factory functions
-│   ├── text_check.py     # Stage 3 check for characters outside text_check.allowed_characters
+│   ├── text_check.py     # Stage 3 checks: characters outside text_check.allowed_characters, long sentences
 │   ├── utils.py          # Utility functions
 │   └── ...               # Other modules
 │
@@ -172,6 +172,16 @@ Stage 1 drafts are only checked for a log warning (a draft failure would abort t
 draft is never spoken; if the polish copies the character, the Stage 3 check catches it).
 `scripts/polish_sample.py` saves its output anyway and prints a `WARNING:` line with the characters.
 
+Every polish response is also checked for sentences longer than `text_check.max_sentence_words` (25). This
+is a warning only: the polish never fails or retries for it. A sentence ends at `.` `?` `!` `:` or a line
+break (an ellipsis is a pause, not an end), and spelled-out Gemara page references ("דף קוף טית וו עמוד
+בית") are not counted. The log line gives how many sentences are over the limit and quotes the longest
+three, each with its word count without and with page references:
+
+```
+WARNING ... Siman 87 polish: 16 sentence(s) over text_check.max_sentence_words (25 words, not counting Gemara page references): [36 words, 36 with page references] '...'; ... (+13 more)
+```
+
 Output files are saved to `./output/` with timestamps preserved.
 
 ---
@@ -237,7 +247,8 @@ model that includes the siman. If neither exists it exits with an error before a
 map changes the polished length a lot; `--allow-no-relations` polishes without one anyway. Saves the raw polish output (no dictionary nikkud, no TTS, no
 cache writes) as `<slug>_Siman_N_<model>_sample_seifim_<spec>.txt` in the output dir and prints word counts;
 tokens and cost appear in the `[Gemini Cost Tracker]` log line. It uses `generator.polish_thinking_level`, and
-a character outside `text_check.allowed_characters` only prints a `WARNING:` line (the output is still saved).
+a character outside `text_check.allowed_characters` only prints a `WARNING:` line (the output is still saved),
+as do sentences over `text_check.max_sentence_words`.
 
 ### Batch Mode (Cost-Saving)
 

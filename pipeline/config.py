@@ -409,6 +409,12 @@ class PipelineConfig:
             raise ValueError(f"'text_check.allowed_characters' is not a valid regex character class: {e}")
         return value
 
+    @property
+    def max_sentence_words(self) -> int:
+        """text_check.max_sentence_words: a polished sentence with more words is logged as a warning."""
+        return _positive_int(_required(self.config_data.get("text_check"), "max_sentence_words", "text_check"),
+                             "text_check.max_sentence_words")
+
     def gemini_price(self, model_name: str) -> dict:
         """
         The validated gemini_pricing entry for a model (USD per 1M tokens): input_per_million,
