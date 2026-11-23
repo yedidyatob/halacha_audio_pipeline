@@ -11,7 +11,8 @@ include this siman. With neither it stops (the map changes the polished length, 
 not representative) unless --allow-no-relations is given.
 
 Text check (config text_check.allowed_characters): unlike the pipeline, a bad character does not fail the
-sample; the paid output is saved anyway and a WARNING line names the characters.
+sample; the paid output is saved anyway and a WARNING line names the characters. Sentences over
+text_check.max_sentence_words get a WARNING line too, as in the pipeline.
 """
 import argparse
 import os
@@ -29,7 +30,7 @@ from pipeline.config import PipelineConfig  # noqa: E402
 from pipeline.factory import create_generator_engine  # noqa: E402
 from pipeline.gematria import gematria_to_int  # noqa: E402
 from pipeline.input_parser import parse_simanim_string  # noqa: E402
-from pipeline.text_check import disallowed_characters_report  # noqa: E402
+from pipeline.text_check import disallowed_characters_report, long_sentences_report  # noqa: E402
 from pipeline.utils import save_output_file  # noqa: E402
 from pipeline.logger import get_logger  # noqa: E402
 
@@ -145,9 +146,10 @@ def run(args) -> str:
                      logger=logger, label=f"Polish sample for Siman {args.siman}")
     path = os.path.join(config.output_dir, base_name + ".txt")
     print(f"Output: {path} ({word_count(polished)} words; draft slice {word_count(draft)} words)")
-    report = disallowed_characters_report(polished, config.allowed_characters)
-    if report:
-        print(f"WARNING: {report}")
+    for report in (disallowed_characters_report(polished, config.allowed_characters),
+                   long_sentences_report(polished, config.max_sentence_words)):
+        if report:
+            print(f"WARNING: {report}")
     return path
 
 

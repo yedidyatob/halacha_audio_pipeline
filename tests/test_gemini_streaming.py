@@ -230,6 +230,15 @@ def test_allowed_characters():
         _config(BASE + "text_check:\n  allowed_characters: 'z-a'\n").allowed_characters
 
 
+def test_max_sentence_words():
+    assert _config(BASE + "text_check:\n  max_sentence_words: 25\n").max_sentence_words == 25
+    with pytest.raises(ValueError, match="'max_sentence_words' under 'text_check'"):
+        _config(BASE + "text_check:\n  allowed_characters: 'a-z'\n").max_sentence_words
+    for bad in ("0", "-3", "2.5", "true", '"25"'):
+        with pytest.raises(ValueError, match="'text_check.max_sentence_words' must be a positive integer"):
+            _config(BASE + f"text_check:\n  max_sentence_words: {bad}\n").max_sentence_words
+
+
 @pytest.mark.parametrize("prop, section, key", [
     ("gemini_model_name", "generator:\n  gemini:\n", "model_name"),
     ("gemini_temperature", "generator:\n  gemini:\n", "temperature"),
@@ -309,6 +318,7 @@ def test_repo_config_prices_every_configured_gemini_model():
     assert (cfg.draft_thinking_level, cfg.polish_thinking_level) == ("high", "low")
     assert cfg.polish_temperature == 0.1
     assert cfg.allowed_characters.startswith("\\u0590-\\u05FF")
+    assert cfg.max_sentence_words == 25
     assert (cfg.gemini_temperature, cfg.openai_temperature, cfg.openai_service_tier) == (0.3, 1.0, "auto")
     assert (cfg.native_audio_model_name, cfg.native_audio_voice_name, cfg.native_audio_temperature) == \
         ("gemini-2.5-flash-preview-tts", "Puck", 0.3)

@@ -6,7 +6,7 @@ import pytest
 
 from pipeline.gematria import gematria_to_int
 from scripts import polish_sample as ps
-from tests.allowed_characters import ALLOWED_CHARACTERS
+from tests.text_check_config import ALLOWED_CHARACTERS, MAX_SENTENCE_WORDS
 
 DRAFT = """# סימן צ"ו
 
@@ -47,7 +47,8 @@ def _cfg(tmp_path):
         (tmp_path / d).mkdir(exist_ok=True)
     return MagicMock(section_slug="YD", drafts_dir=str(tmp_path / "drafts"), relations_dir=str(tmp_path / "rel"),
                      output_dir=str(tmp_path / "out"), polishing_instruction="POLISH", polish_temperature=0.1,
-                     polish_thinking_level="low", allowed_characters=ALLOWED_CHARACTERS)
+                     polish_thinking_level="low", allowed_characters=ALLOWED_CHARACTERS,
+                     max_sentence_words=MAX_SENTENCE_WORDS)
 
 
 def test_find_cached_relations_newest_including_siman(tmp_path):
@@ -139,3 +140,14 @@ def test_run_disallowed_characters_saves_and_warns(tmp_path, capsys):
     assert open(path, encoding="utf-8").read() == "שיעור مفرט קצר"  # the paid output is kept
     out = capsys.readouterr().out
     assert "WARNING: 3 character(s) outside text_check.allowed_characters: 'م' U+0645" in out
+
+
+def test_run_long_sentence_warns(tmp_path, capsys):
+    _cfg(tmp_path)  # makes the drafts / rel / out folders
+    (tmp_path / "drafts" / "YD_Siman_96_m_draft.txt").write_text(DRAFT, encoding="utf-8")
+    (tmp_path / "rel" / "YD_Relations_96_m.txt").write_text("REL", encoding="utf-8")
+    long_sentence = " ".join(["מילה"] * (MAX_SENTENCE_WORDS + 1)) + "."
+    _, path = _run(tmp_path, ["96", "--seifim", "1"], polished=long_sentence)
+    assert open(path, encoding="utf-8").read() == long_sentence
+    out = capsys.readouterr().out
+    assert f"WARNING: 1 sentence(s) over text_check.max_sentence_words ({MAX_SENTENCE_WORDS} words" in out

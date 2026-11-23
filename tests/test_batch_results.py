@@ -8,7 +8,7 @@ from google.genai import types
 import main as main_mod
 from pipeline.generator import BatchCapableGenerator, BatchResultError, GeminiScriptGenerator, OpenAIScriptGenerator
 from pipeline.retry import call_with_retries
-from tests.allowed_characters import ALLOWED_CHARACTERS
+from tests.text_check_config import ALLOWED_CHARACTERS, MAX_SENTENCE_WORDS
 from tests.gemini_fakes import make_gemini_generator
 from tests.section_yaml import SECTIONS_YAML
 
@@ -255,7 +255,8 @@ def _cfg(tmp_path, retries):
     return MagicMock(drafts_dir=str(tmp_path), output_dir=str(tmp_path), cache_dir=str(tmp_path), section_slug="YD",
                      generator_max_retries=retries,
                      draft_thinking_level="medium", polish_thinking_level="low",
-                     allowed_characters=ALLOWED_CHARACTERS)
+                     allowed_characters=ALLOWED_CHARACTERS,
+                     max_sentence_words=MAX_SENTENCE_WORDS)
 
 
 def _args(batch=True, timeout=60):

@@ -7,7 +7,7 @@ import main as main_mod
 from pipeline.generator import BatchCapableGenerator, BatchResultError
 from pipeline.nikkud_review import format_review
 from pipeline.apply_nikkud import apply_nikkud_with_overrides
-from tests.allowed_characters import ALLOWED_CHARACTERS
+from tests.text_check_config import ALLOWED_CHARACTERS, MAX_SENTENCE_WORDS
 
 TET = "טֵית"
 
@@ -48,7 +48,8 @@ class FakeBatchGenerator(BatchCapableGenerator):
 def _config(tmp_path):
     return MagicMock(output_dir=str(tmp_path), generator_max_retries=0, section_slug="YD", cache_dir=str(tmp_path),
                      polishing_instruction="POLISH", polish_temperature=0.15, polish_thinking_level="low",
-                     allowed_characters=ALLOWED_CHARACTERS)
+                     allowed_characters=ALLOWED_CHARACTERS,
+                     max_sentence_words=MAX_SENTENCE_WORDS)
 
 
 def _args(batch):
@@ -194,3 +195,28 @@ def test_batch_disallowed_character_is_resubmitted_as_a_new_job(tmp_path):
     assert summary.succeeded == [94]
     assert [r["custom_id"] for r in polish_gen.submitted] == ["stage3_siman_94", "stage3_siman_94"]
     assert (tmp_path / "YD_Siman_94_m_polish.txt").read_text(encoding="utf-8") == "טית 94"
+
+
+LONG_SENTENCE = " ".join(["טית"] * (MAX_SENTENCE_WORDS + 1)) + "."
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_long_sentence_is_logged_but_the_polish_succeeds(tmp_path, caplog, batch):
+    if batch:
+        gen = FakeBatchGenerator(lambda cid, prompt: LONG_SENTENCE)
+    else:
+        gen = MagicMock()
+        gen.polish_siman_script.return_value = LONG_SENTENCE
+    with caplog.at_level("WARNING"):
+        summary = main_mod.run_lesson_stages([94], {94: "טית 94"}, {}, "rel", gen, _retry_config(tmp_path),
+                                             _args(batch), "m")
+    assert summary.succeeded == [94] and not summary.failed
+    assert (tmp_path / "YD_Siman_94_m_polish.txt").read_text(encoding="utf-8") == LONG_SENTENCE
+    warnings = [r.getMessage() for r in caplog.records if "max_sentence_words" in r.getMessage()]
+    assert warnings == [f"Siman 94 polish: 1 sentence(s) over text_check.max_sentence_words ({MAX_SENTENCE_WORDS} "
+                        f"words, not counting Gemara page references): [{MAX_SENTENCE_WORDS + 1} words, "
+                        f"{MAX_SENTENCE_WORDS + 1} with page references] '{LONG_SENTENCE}'"]
+    if batch:
+        assert len(gen.submitted) == 1  # not resubmitted
+    else:
+        assert gen.polish_siman_script.call_count == 1  # not retried

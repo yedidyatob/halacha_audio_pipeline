@@ -25,7 +25,7 @@ from pipeline.logger import get_logger
 from pipeline.utils import save_output_file
 from pipeline.factory import create_generator_engine, create_tts_engine
 from pipeline.generator import BatchResultError
-from pipeline.text_check import check_allowed_characters, disallowed_characters_report
+from pipeline.text_check import check_allowed_characters, disallowed_characters_report, long_sentences_report
 from pipeline.gematria import int_to_gematria
 from pipeline.apply_nikkud import apply_nikkud_with_overrides
 from pipeline.nikkud_review import format_review
@@ -407,10 +407,15 @@ def generate_relations(drafts: dict, generator, config, args, base_name: str) ->
 
 def check_polish(siman: int, polished_text: str, config) -> str:
     """
-    The Stage 3 text check (text_check.allowed_characters) on a polish response, sync or batch: a bad
-    character fails the attempt (DisallowedCharactersError), so it is retried like an empty response.
+    The Stage 3 text checks on a polish response, sync or batch: a bad character (text_check.allowed_characters)
+    fails the attempt (DisallowedCharactersError), so it is retried like an empty response; sentences over
+    text_check.max_sentence_words are only logged as a warning.
     """
-    return check_allowed_characters(polished_text, config.allowed_characters, f"Siman {siman} polish")
+    check_allowed_characters(polished_text, config.allowed_characters, f"Siman {siman} polish")
+    report = long_sentences_report(polished_text, config.max_sentence_words)
+    if report:
+        logger.warning(f"Siman {siman} polish: {report}")
+    return polished_text
 
 
 def polish_simanim(drafts: dict, relations_text: str, generator, config, args, summary: RunSummary,

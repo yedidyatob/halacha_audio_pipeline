@@ -5,7 +5,7 @@ import pytest
 
 import main as main_mod
 from pipeline.generator import GeminiScriptGenerator
-from tests.allowed_characters import ALLOWED_CHARACTERS
+from tests.text_check_config import ALLOWED_CHARACTERS, MAX_SENTENCE_WORDS
 from tests.test_dry_run import _args, _cfg, cache  # noqa: F401  (fixture)
 from tests.test_gemini_streaming import BASE, _config
 
@@ -55,7 +55,8 @@ def test_single_pass_conflicts_are_rejected(monkeypatch, capsys, extra, flag):
 def _sp_config(tmp_path):
     cfg = MagicMock(output_dir=str(tmp_path), generator_max_retries=0, section_slug="YD", cache_dir=str(tmp_path),
                     polishing_instruction="POLISH", polish_temperature=0.15, polish_thinking_level="low",
-                    allowed_characters=ALLOWED_CHARACTERS)
+                    allowed_characters=ALLOWED_CHARACTERS,
+                    max_sentence_words=MAX_SENTENCE_WORDS)
     cfg.format_single_pass_user_prompt.side_effect = lambda g, sources: PROMPT.format(gematria_siman=g,
                                                                                       sources=sources)
     return cfg
