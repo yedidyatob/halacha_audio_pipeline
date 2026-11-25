@@ -264,6 +264,11 @@ pronunciation:
       readings:
         - {nikkud: "גְּזֵרָה", meaning: 'צו או תקנה, כמו "גזרה שווה"'}
         - {nikkud: "גִּזְרָה", meaning: "חיתוך, צורה"}
+    - word: "חלב"
+      readings:
+        - {nikkud: "חָלָב", meaning: 'משקה שחולבים מן הבהמה, צד החלבי, כמו "בשר בחלב"'}
+        - {nikkud: "חֲלֵב", meaning: 'חלב בסמיכות, כמו "חלב אמו"'}
+        - {nikkud: "חֵלֶב", meaning: 'שומן אסור של הבהמה, צד הבשרי, כמו "כזית חלב". טעות בניקוד מחליפה בשיעור בין חלבי לבשרי, ולכן נקד בדיוק לפי ההקשר'}
   never_vocalize: ["דאורייתא", "דרבנן"]
 
 # TTS Engine Selection and Settings
