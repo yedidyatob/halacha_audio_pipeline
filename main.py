@@ -724,15 +724,18 @@ def save_transcript(siman: int, text: str, overrides: list, config, model_suffix
 def synthesize_siman_audio(siman: int, text: str, config, model_suffix: str) -> None:
     """TTS for one siman."""
     tts_engine = create_tts_engine(config)
+    base_name = lesson_base_name(config, siman, model_suffix)
 
     # Synthesize directly to the audio files using a write_callback
     def tts_callback(path: str) -> None:
         logger.info(f"Synthesizing script for Siman {siman}...")
-        tts_engine.synthesize(text=text, output_path=path)
+        tts_engine.synthesize(
+            text=text, output_path=path, chunk_dir=os.path.join(config.tts_chunks_dir, base_name)
+        )
 
     save_output_file(
         directory=config.output_dir,
-        base_name=lesson_base_name(config, siman, model_suffix),
+        base_name=base_name,
         extension=AUDIO_EXTENSION,
         content=None,
         logger=logger,

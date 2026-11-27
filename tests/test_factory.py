@@ -52,6 +52,8 @@ def test_create_tts_engine_elevenlabs(mock_elevenlabs):
     config.elevenlabs_language_code = "he"
     config.tts_chunk_gap_paragraph_ms = 700
     config.tts_chunk_gap_sentence_ms = 300
+    config.tts_keep_chunks = True
+    config.tts_request_timeout_seconds = 1800
     config.elevenlabs_api_key = "fake-key"
     config.elevenlabs_settings = {
         "voice_id": "Adam",
@@ -73,6 +75,8 @@ def test_create_tts_engine_google(mock_google):
     config.tts_chunk_size = {"elevenlabs":8000,"google":2000,"openai":4000,"gemini":2000}["google"]
     config.tts_chunk_gap_paragraph_ms = 700
     config.tts_chunk_gap_sentence_ms = 300
+    config.tts_keep_chunks = True
+    config.tts_request_timeout_seconds = 1800
     config.google_tts_credentials = "fake_creds.json"
     config.google_tts_settings = {
         "voice_name": "he-IL-Neural2-M",
@@ -92,6 +96,8 @@ def test_create_tts_engine_openai(mock_openai):
     config.tts_chunk_size = {"elevenlabs":8000,"google":2000,"openai":4000,"gemini":2000}["openai"]
     config.tts_chunk_gap_paragraph_ms = 700
     config.tts_chunk_gap_sentence_ms = 300
+    config.tts_keep_chunks = True
+    config.tts_request_timeout_seconds = 1800
     config.openai_api_key = "fake-key"
     config.openai_tts_settings = {
         "voice": "alloy",
@@ -109,5 +115,7 @@ def test_create_tts_engine_invalid():
     config.tts_engine = "invalid_tts"
     config.tts_chunk_gap_paragraph_ms = 700
     config.tts_chunk_gap_sentence_ms = 300
+    config.tts_keep_chunks = True
+    config.tts_request_timeout_seconds = 1800
     with pytest.raises(ValueError, match="Unsupported TTS engine"):
         create_tts_engine(config)

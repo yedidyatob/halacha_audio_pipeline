@@ -48,7 +48,8 @@ def main(argv=None):
     tts = create_tts_engine(config)
     output = args.output or os.path.splitext(args.input)[0] + "." + tts.file_extension
     print(f"Synthesizing {args.input} ({len(text)} chars) with '{config.tts_engine}' -> {output}")
-    tts.synthesize(text=text, output_path=output)
+    chunk_dir = os.path.join(config.tts_chunks_dir, os.path.splitext(os.path.basename(output))[0])
+    tts.synthesize(text=text, output_path=output, chunk_dir=chunk_dir)
     print(f"Audio saved to: {output}")
 
 

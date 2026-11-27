@@ -31,10 +31,11 @@ def create_tts_engine(config: PipelineConfig) -> BaseTTS:
     Factory function to return the configured TTS Synthesizer engine.
     All engine-specific settings come from config.yaml (single source of truth).
     """
-    # Silence between synthesized chunks (shared by all engines).
-    gaps = dict(
+    # Silence between synthesized chunks and the saved-chunk cleanup (shared by all engines).
+    shared = dict(
         chunk_gap_paragraph_ms=config.tts_chunk_gap_paragraph_ms,
         chunk_gap_sentence_ms=config.tts_chunk_gap_sentence_ms,
+        keep_chunks=config.tts_keep_chunks,
     )
     if config.tts_engine == "elevenlabs":
         el = config.elevenlabs_settings
@@ -48,7 +49,8 @@ def create_tts_engine(config: PipelineConfig) -> BaseTTS:
             chunk_size=config.tts_chunk_size,
             context_chars=config.elevenlabs_context_chars,
             language_code=config.elevenlabs_language_code,
-            **gaps
+            request_timeout_seconds=config.tts_request_timeout_seconds,
+            **shared
         )
     elif config.tts_engine == "google":
         g = config.google_tts_settings
@@ -59,7 +61,7 @@ def create_tts_engine(config: PipelineConfig) -> BaseTTS:
             speaking_rate=g["speaking_rate"],
             pitch=g["pitch"],
             chunk_size=config.tts_chunk_size,
-            **gaps
+            **shared
         )
     elif config.tts_engine == "openai":
         o = config.openai_tts_settings
@@ -70,7 +72,8 @@ def create_tts_engine(config: PipelineConfig) -> BaseTTS:
             speed=o["speed"],
             ssl_verify=config.ssl_verify,
             chunk_size=config.tts_chunk_size,
-            **gaps
+            request_timeout_seconds=config.tts_request_timeout_seconds,
+            **shared
         )
     elif config.tts_engine == "gemini":
         return GeminiTTS(
@@ -81,7 +84,7 @@ def create_tts_engine(config: PipelineConfig) -> BaseTTS:
             style=config.gemini_tts_style,
             ssl_verify=config.ssl_verify,
             chunk_size=config.tts_chunk_size,
-            **gaps
+            **shared
         )
     else:
         raise ValueError(f"Unsupported TTS engine: {config.tts_engine}")

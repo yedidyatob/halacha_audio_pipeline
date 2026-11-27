@@ -31,6 +31,9 @@ class _ConcreteTTS(BaseTTS):
     def _synthesize_chunk(self, text: str) -> bytes:
         return b""
 
+    def _cache_settings(self) -> dict:
+        return {}
+
 
 # ---------------------------------------------------------------------------
 # Chunker break types
@@ -147,30 +150,30 @@ def test_validate_gap_ms():
 
 
 def test_engine_explicit_gaps():
-    e = ElevenLabsTTS(chunk_size=8000, context_chars=500, language_code="he", api_key="k", chunk_gap_paragraph_ms=700, chunk_gap_sentence_ms=300)
+    e = ElevenLabsTTS(chunk_size=8000, context_chars=500, language_code="he", api_key="k", chunk_gap_paragraph_ms=700, chunk_gap_sentence_ms=300, keep_chunks=True, request_timeout_seconds=1800)
     assert (e.chunk_gap_paragraph_ms, e.chunk_gap_sentence_ms) == (700, 300)
-    o = OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy", chunk_size=4000, chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=50)
+    o = OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy", chunk_size=4000, chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=50, keep_chunks=True, request_timeout_seconds=1800)
     assert (o.chunk_gap_paragraph_ms, o.chunk_gap_sentence_ms) == (0, 50)
-    g = GoogleCloudTTS(credentials_path=None, voice_name="v", language_code="he-IL", speaking_rate=1.0, pitch=0.0, chunk_size=2000, chunk_gap_paragraph_ms=10, chunk_gap_sentence_ms=20)
+    g = GoogleCloudTTS(credentials_path=None, voice_name="v", language_code="he-IL", speaking_rate=1.0, pitch=0.0, chunk_size=2000, chunk_gap_paragraph_ms=10, chunk_gap_sentence_ms=20, keep_chunks=True)
     assert (g.chunk_gap_paragraph_ms, g.chunk_gap_sentence_ms) == (10, 20)
-    gem = GeminiTTS("k", "m", "v", "he-IL", "s", True, chunk_size=1000, chunk_gap_paragraph_ms=11, chunk_gap_sentence_ms=22)
+    gem = GeminiTTS("k", "m", "v", "he-IL", "s", True, chunk_size=1000, chunk_gap_paragraph_ms=11, chunk_gap_sentence_ms=22, keep_chunks=True)
     assert (gem.chunk_gap_paragraph_ms, gem.chunk_gap_sentence_ms) == (11, 22)
     with pytest.raises(ValueError):
-        OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy", chunk_size=4000, chunk_gap_paragraph_ms=-5, chunk_gap_sentence_ms=0)
+        OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy", chunk_size=4000, chunk_gap_paragraph_ms=-5, chunk_gap_sentence_ms=0, keep_chunks=True, request_timeout_seconds=1800)
 
 
 def test_engines_require_gap_arguments():
     """No numeric fallback in code: omitting the gap values is a TypeError."""
     with pytest.raises(TypeError):
-        ElevenLabsTTS(api_key="k")
+        ElevenLabsTTS(api_key="k", keep_chunks=True, request_timeout_seconds=1800)
     with pytest.raises(TypeError):
-        OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy")
+        OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy", keep_chunks=True, request_timeout_seconds=1800)
     with pytest.raises(TypeError):
-        GoogleCloudTTS(credentials_path=None, voice_name="v", language_code="he-IL", speaking_rate=1.0, pitch=0.0)
+        GoogleCloudTTS(credentials_path=None, voice_name="v", language_code="he-IL", speaking_rate=1.0, pitch=0.0, keep_chunks=True)
     with pytest.raises(TypeError):
-        GeminiTTS("k", "m", "v", "he-IL", "s", True)
+        GeminiTTS("k", "m", "v", "he-IL", "s", True, keep_chunks=True)
     with pytest.raises(ValueError):
-        OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy", chunk_size=4000, chunk_gap_paragraph_ms=None, chunk_gap_sentence_ms=0)
+        OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy", chunk_size=4000, chunk_gap_paragraph_ms=None, chunk_gap_sentence_ms=0, keep_chunks=True, request_timeout_seconds=1800)
 
 
 # ---------------------------------------------------------------------------
@@ -190,18 +193,18 @@ def test_config_chunk_gap_missing_raises_clear_error(missing):
     del keys[missing]
     lines = "".join(f"  {k}: {v}\n" for k, v in keys.items())
     with pytest.raises(ValueError, match=missing):
-        _load_config('halachic_section: "Yoreh De\'ah"\nsefaria:\n  base_url: "u"\n  timeout_seconds: 15\n  retries: 3\n  ssl_verify: true\ngenerator:\n  engine: "gemini"\ndirectories:\n  thinking_dir: "./output/thinking"\ntts:\n  engine: "openai"\n' + lines)
+        _load_config('halachic_section: "Yoreh De\'ah"\nsefaria:\n  base_url: "u"\n  timeout_seconds: 15\n  retries: 3\n  ssl_verify: true\ngenerator:\n  engine: "gemini"\ndirectories:\n  thinking_dir: "./output/thinking"\n  tts_chunks_dir: "./output/tts_chunks"\ntts:\n  engine: "openai"\n' + lines)
 
 
 def test_config_missing_tts_section_raises():
     with pytest.raises(ValueError, match="'engine' under 'tts'"):
-        _load_config('halachic_section: "Yoreh De\'ah"\nsefaria:\n  base_url: "u"\n  timeout_seconds: 15\n  retries: 3\n  ssl_verify: true\ngenerator:\n  engine: "gemini"\ndirectories:\n  thinking_dir: "./output/thinking"\n')
+        _load_config('halachic_section: "Yoreh De\'ah"\nsefaria:\n  base_url: "u"\n  timeout_seconds: 15\n  retries: 3\n  ssl_verify: true\ngenerator:\n  engine: "gemini"\ndirectories:\n  thinking_dir: "./output/thinking"\n  tts_chunks_dir: "./output/tts_chunks"\n')
 
 
 def test_config_chunk_gap_explicit_values():
     config = _load_config(
-        'halachic_section: "Yoreh De\'ah"\nsefaria:\n  base_url: "u"\n  timeout_seconds: 15\n  retries: 3\n  ssl_verify: true\ngenerator:\n  engine: "gemini"\ndirectories:\n  thinking_dir: "./output/thinking"\n'
-        'tts:\n  engine: "openai"\n  chunk_gap_paragraph_ms: 1000\n  chunk_gap_sentence_ms: 0\n'
+        'halachic_section: "Yoreh De\'ah"\nsefaria:\n  base_url: "u"\n  timeout_seconds: 15\n  retries: 3\n  ssl_verify: true\ngenerator:\n  engine: "gemini"\ndirectories:\n  thinking_dir: "./output/thinking"\n  tts_chunks_dir: "./output/tts_chunks"\n'
+        'tts:\n  engine: "openai"\n  chunk_gap_paragraph_ms: 1000\n  chunk_gap_sentence_ms: 0\n  keep_chunks: true\n  request_timeout_seconds: 1800\n'
         '  openai:\n    chunk_size: 4000\n'
     )
     assert config.tts_chunk_gap_paragraph_ms == 1000
@@ -211,7 +214,7 @@ def test_config_chunk_gap_explicit_values():
 def test_config_chunk_gap_invalid_raises():
     with pytest.raises(ValueError):
         _load_config(
-            'halachic_section: "Yoreh De\'ah"\nsefaria:\n  base_url: "u"\n  timeout_seconds: 15\n  retries: 3\n  ssl_verify: true\ngenerator:\n  engine: "gemini"\ndirectories:\n  thinking_dir: "./output/thinking"\ntts:\n  chunk_gap_paragraph_ms: -10\n  chunk_gap_sentence_ms: 0\n'
+            'halachic_section: "Yoreh De\'ah"\nsefaria:\n  base_url: "u"\n  timeout_seconds: 15\n  retries: 3\n  ssl_verify: true\ngenerator:\n  engine: "gemini"\ndirectories:\n  thinking_dir: "./output/thinking"\n  tts_chunks_dir: "./output/tts_chunks"\ntts:\n  chunk_gap_paragraph_ms: -10\n  chunk_gap_sentence_ms: 0\n  keep_chunks: true\n  request_timeout_seconds: 1800\n'
         )
 
 
@@ -234,6 +237,8 @@ def test_factory_passes_gaps_to_engine(_mock_openai):
     config.ssl_verify = True
     config.tts_chunk_gap_paragraph_ms = 900
     config.tts_chunk_gap_sentence_ms = 120
+    config.tts_keep_chunks = True
+    config.tts_request_timeout_seconds = 1800
     engine = create_tts_engine(config)
     assert (engine.chunk_gap_paragraph_ms, engine.chunk_gap_sentence_ms) == (900, 120)
 
@@ -250,6 +255,8 @@ def test_factory_passes_gaps_to_gemini():
     config.ssl_verify = True
     config.tts_chunk_gap_paragraph_ms = 640
     config.tts_chunk_gap_sentence_ms = 0
+    config.tts_keep_chunks = True
+    config.tts_request_timeout_seconds = 1800
     engine = create_tts_engine(config)
     assert isinstance(engine, GeminiTTS)
     assert (engine.chunk_gap_paragraph_ms, engine.chunk_gap_sentence_ms) == (640, 0)
@@ -270,7 +277,7 @@ def test_gemini_silence_pcm_length_and_even():
 
 
 def test_gemini_assemble_pcm_inserts_gaps():
-    gem = GeminiTTS("k", "m", "v", "he-IL", "s", True, chunk_size=1000, chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=0)
+    gem = GeminiTTS("k", "m", "v", "he-IL", "s", True, chunk_size=1000, chunk_gap_paragraph_ms=0, chunk_gap_sentence_ms=0, keep_chunks=True)
     out = gem._assemble_pcm([b"\x01\x01", b"\x02\x02", b"\x03\x03"], [1000, 0])
     assert out == b"\x01\x01" + bytes(48000) + b"\x02\x02" + b"\x03\x03"
     assert gem._assemble_pcm([b"\x01\x01"], []) == b"\x01\x01"
@@ -372,9 +379,13 @@ def test_synthesize_passes_planned_gaps_to_merge(tmp_path):
         def _synthesize_chunk(self, text):
             return b"x"
 
+        def _cache_settings(self):
+            return {}
+
     tts = _Fake()
     tts._set_chunk_gaps(700, 300)
+    tts._set_keep_chunks(False)
     text = "\n".join(["a" * 60, "b" * 60, "c" * 60])
     with patch.object(tts, "_merge_audio_chunks") as merge:
-        tts.synthesize(text, str(tmp_path / "o.mp3"))
+        tts.synthesize(text, str(tmp_path / "o.mp3"), str(tmp_path / "chunks"))
     assert merge.call_args.kwargs["gaps_ms"] == [700, 700]

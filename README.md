@@ -374,6 +374,8 @@ tts:
   engine: "gemini"  # "elevenlabs", "google", "openai", or "gemini"
   chunk_gap_paragraph_ms: 700  # silence between TTS chunks split at a paragraph (0 = none)
   chunk_gap_sentence_ms: 300   # silence between TTS chunks split mid-paragraph (0 = none)
+  keep_chunks: true            # keep a lesson's saved chunks after a successful merge (false = delete)
+  request_timeout_seconds: 1800  # HTTP timeout of one ElevenLabs / OpenAI request
   
   gemini:
     model: "gemini-3.8-flash-tts"
@@ -414,6 +416,18 @@ characters of the following chunk), cut at a word boundary, so
 prosody stays continuous across chunk boundaries. The first chunk has no `previous_text`, the last
 has no `next_text`, and a single-chunk text sends neither.
 
+**Saved chunks:** every engine saves each chunk as soon as it is synthesized, in
+`directories.tts_chunks_dir/<audio base name>/chunk_<NNNN>_<key>.mp3` (`.pcm` for Gemini, which
+encodes the MP3 once at the end). Each file is written to a `.part` file and renamed, so an
+interrupted download is never reused. `<key>` is a hash of the engine, its voice / model settings,
+the chunk text and (ElevenLabs) its `previous_text` / `next_text`. If a chunk fails (e.g. a timeout),
+the chunks already paid for stay on disk and the next run synthesizes only the missing ones; a
+changed text, voice, model or `chunk_size` changes the key, so stale audio is never reused. After a
+successful merge, `keep_chunks: true` keeps the lesson's chunks (removing stale ones), so
+re-synthesizing an edited transcript pays only for the changed chunks and their stitched neighbours;
+`keep_chunks: false` deletes the folder. `request_timeout_seconds` is the HTTP timeout of one
+ElevenLabs or OpenAI request; a request cut off by the timeout may still be billed, so keep it generous.
+
 ---
 
 ## Environment Variables
@@ -440,6 +454,8 @@ output/
 │   └── {section}_Siman_{N}_{model}_draft.txt
 ├── relations/                                      # Stage 2 cached relations
 │   └── {section}_Relations_{range}_{model}.txt
+├── tts_chunks/                                     # directories.tts_chunks_dir: saved TTS chunks (see TTS Engine)
+│   └── {section}_Siman_{N}_{model}/chunk_{NNNN}_{key}.mp3
 └── thinking/                                       # directories.thinking_dir: thought summaries (read-only)
     └── {output base name}_thinking.txt
 ```
