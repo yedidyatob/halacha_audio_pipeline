@@ -173,10 +173,13 @@ sefaria:
   ssl_verify: true
 directories:
   thinking_dir: "./out/thinking"
+  tts_chunks_dir: "./out/tts_chunks"
 tts:
   engine: "elevenlabs"
   chunk_gap_paragraph_ms: 0
   chunk_gap_sentence_ms: 0
+  keep_chunks: true
+  request_timeout_seconds: 1800
   elevenlabs:
     chunk_size: 8000
     context_chars: 500

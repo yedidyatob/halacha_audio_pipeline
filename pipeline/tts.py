@@ -1,6 +1,8 @@
+import hashlib
+import json
 import os
 import re
-import tempfile
+import shutil
 from typing import Optional
 from abc import ABC, abstractmethod
 from pipeline.logger import get_logger
@@ -16,6 +18,9 @@ BREAK_SENTENCE = "sentence"    # chunk was cut mid-paragraph (sentence or word s
 # Gemini TTS returns raw 24 kHz, 16-bit, mono PCM (audio/l16).
 _GEMINI_PCM_SAMPLE_RATE = 24000
 _GEMINI_PCM_BYTES_PER_SAMPLE = 2
+
+# ElevenLabs output format of every chunk (part of its chunk cache key).
+_ELEVENLABS_OUTPUT_FORMAT = "mp3_44100_128"
 
 # Sample rate / layout of the re-encoded MP3 produced when gaps are inserted.
 _MERGE_SAMPLE_RATE = 44100
@@ -42,6 +47,36 @@ def validate_chunk_size(value, name: str = "chunk_size") -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"'{name}' must be a positive integer, got {value!r}.")
     return value
+
+
+def validate_timeout_seconds(value, name: str = "request_timeout_seconds") -> float:
+    """Validates an HTTP request timeout: must be a positive number of seconds."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value < float("inf"):
+        raise ValueError(f"'{name}' must be a positive number of seconds, got {value!r}.")
+    return float(value)
+
+
+def validate_keep_chunks(value, name: str = "keep_chunks") -> bool:
+    """Validates the keep-saved-chunks-after-merge switch: must be a bool."""
+    if not isinstance(value, bool):
+        raise ValueError(f"'{name}' must be true or false, got {value!r}.")
+    return value
+
+
+def _write_atomic(path: str, data: bytes) -> None:
+    """
+    Writes `data` to `path` through a temporary file in the same directory and an atomic
+    rename, so `path` exists only once it is complete (an interrupted write leaves no file
+    that a later run could mistake for a finished chunk).
+    """
+    part_path = path + ".part"
+    try:
+        with open(part_path, "wb") as f:
+            f.write(data)
+        os.replace(part_path, path)
+    finally:
+        if os.path.exists(part_path):
+            os.remove(part_path)
 
 
 def validate_context_chars(value, name: str = "context_chars") -> int:
@@ -100,12 +135,18 @@ def context_head(text: str, max_chars: int) -> str:
 
 class BaseTTS(ABC):
     """
-    Abstract Base Class for Text-to-Speech synthesis engines.  Subclasses that produce MP3 per chunk must implement:
-      - _synthesize_chunk(text): returns raw MP3 bytes for a single chunk
+    Abstract Base Class for Text-to-Speech synthesis engines.  Subclasses must implement:
+      - _synthesize_chunk(text): returns the raw audio bytes (MP3 by default) of a single chunk
+      - _cache_settings(): every engine setting that changes a chunk's audio (chunk cache key)
+    and may implement:
+      - _setup(): hook called once before chunking begins, for lazy imports and client init
     The max characters per chunk comes from config.yaml (tts.<engine>.chunk_size) via
     _set_chunk_size(). Engines that use neighbouring text for prosody (ElevenLabs)
-    override _synthesize_chunk_in_context() instead of / in addition to _synthesize_chunk.
-      - _setup(): hook called once before chunking begins, for lazy imports and client init
+    override _chunk_context() and _synthesize_chunk_in_context().
+
+    Every chunk is saved under the per-lesson chunk_dir given to synthesize() as soon as it
+    is synthesized (see _synthesize_chunk_files), so a failed run keeps the audio already
+    paid for and a rerun synthesizes only the missing chunks.
 
     Subclasses with a fundamentally different encoding pipeline (e.g. GeminiTTS,
     which accumulates PCM and encodes at the end) should override synthesize() directly.
@@ -134,17 +175,84 @@ class BaseTTS(ABC):
         """Validates and stores the max characters per chunk (from config.yaml)."""
         self.chunk_size = validate_chunk_size(chunk_size, "chunk_size")
 
+    def _set_keep_chunks(self, keep_chunks: bool) -> None:
+        """Validates and stores whether saved chunks are kept after a successful merge."""
+        self.keep_chunks = validate_keep_chunks(keep_chunks, "keep_chunks")
+
+    @property
+    def _chunk_extension(self) -> str:
+        """File extension of one saved chunk (the raw audio _synthesize_chunk returns)."""
+        return self.file_extension
+
     @property
     def _chunk_size(self) -> int:
         """Maximum characters per text chunk for this engine."""
         return self.chunk_size
 
-    def _synthesize_chunk_in_context(self, text: str, previous_chunk, next_chunk) -> bytes:
+    def _chunk_context(self, previous_chunk, next_chunk) -> dict:
         """
-        Synthesizes one chunk, given the full text of its neighbouring chunks (None at the
-        ends / for a single chunk). Default: ignore the neighbours.
+        The neighbouring-text fields sent with a chunk, given the full text of its neighbouring
+        chunks (None at the ends / for a single chunk). Default: none.
         """
+        return {}
+
+    def _synthesize_chunk_in_context(self, text: str, context: dict) -> bytes:
+        """Synthesizes one chunk with its _chunk_context() fields. Default: no context."""
         return self._synthesize_chunk(text)
+
+    @abstractmethod
+    def _cache_settings(self) -> dict:
+        """
+        Every engine setting that changes a chunk's audio (voice, model, ...). Part of each
+        saved chunk's cache key, so a changed setting never reuses audio made with the old one.
+        """
+        pass
+
+    def _chunk_key(self, text: str, context: dict) -> str:
+        """Cache key of one chunk: a hash of the engine, its settings, the text and the context."""
+        payload = json.dumps(
+            {"engine": type(self).__name__, "settings": self._cache_settings(), "text": text, "context": context},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+    def _synthesize_chunk_files(self, text_chunks: list, chunk_dir: str) -> list:
+        """
+        Synthesizes each chunk into chunk_dir as chunk_<NNNN>_<cache key>.<ext> and returns the
+        paths in order. A chunk whose file already exists (from an earlier, failed run) is reused
+        instead of synthesized again. Each file is written atomically, so only complete chunks exist.
+        """
+        os.makedirs(chunk_dir, exist_ok=True)
+        chunk_paths = []
+        n_chunks = len(text_chunks)
+        for idx, chunk in enumerate(text_chunks, 1):
+            previous_chunk = text_chunks[idx - 2] if idx > 1 else None
+            next_chunk = text_chunks[idx] if idx < n_chunks else None
+            context = self._chunk_context(previous_chunk, next_chunk)
+            chunk_path = os.path.join(
+                chunk_dir, f"chunk_{idx:04d}_{self._chunk_key(chunk, context)}.{self._chunk_extension}"
+            )
+            if os.path.isfile(chunk_path):
+                logger.info(f"Reusing saved chunk {idx}/{n_chunks}: {chunk_path}")
+            else:
+                logger.info(f"Synthesizing chunk {idx}/{n_chunks} ({len(chunk)} chars)...")
+                _write_atomic(chunk_path, self._synthesize_chunk_in_context(chunk, context))
+            chunk_paths.append(chunk_path)
+        return chunk_paths
+
+    def _finish_chunk_dir(self, chunk_dir: str, chunk_paths: list) -> None:
+        """
+        After a successful merge: deletes chunk_dir, or with keep_chunks keeps only the chunks
+        of this audio (removing stale ones from an earlier text or setting).
+        """
+        if not self.keep_chunks:
+            shutil.rmtree(chunk_dir)
+            return
+        current = {os.path.basename(path) for path in chunk_paths}
+        for name in os.listdir(chunk_dir):
+            if name not in current:
+                os.remove(os.path.join(chunk_dir, name))
 
     @abstractmethod
     def _synthesize_chunk(self, text: str) -> bytes:
@@ -161,14 +269,14 @@ class BaseTTS(ABC):
         """
         pass
 
-    def synthesize(self, text: str, output_path: str) -> None:
+    def synthesize(self, text: str, output_path: str, chunk_dir: str) -> None:
         """
         Template Method: chunks text, synthesizes each chunk, and writes the final file.
 
-        For a single chunk the bytes are written directly.
-        For multiple chunks each chunk is written to a temp file, then merged with
-        ffmpeg (see _merge_audio_chunks) to avoid truncated-tail artifacts from raw
-        MP3 byte concatenation.  Silence is inserted between chunks according to
+        Each chunk is saved in chunk_dir (see _synthesize_chunk_files). A single chunk is
+        copied to output_path; multiple chunks are merged with ffmpeg (see
+        _merge_audio_chunks) to avoid truncated-tail artifacts from raw MP3 byte
+        concatenation.  Silence is inserted between chunks according to
         chunk_gap_paragraph_ms / chunk_gap_sentence_ms.
         """
         self._setup()
@@ -181,26 +289,12 @@ class BaseTTS(ABC):
 
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-        if len(text_chunks) == 1:
-            audio_bytes = self._synthesize_chunk_in_context(text_chunks[0], None, None)
-            with open(output_path, "wb") as f:
-                f.write(audio_bytes)
+        chunk_paths = self._synthesize_chunk_files(text_chunks, chunk_dir)
+        if len(chunk_paths) == 1:
+            shutil.copyfile(chunk_paths[0], output_path)
         else:
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                chunk_paths: list[str] = []
-                for idx, chunk in enumerate(text_chunks, 1):
-                    logger.info(
-                        f"Synthesizing chunk {idx}/{len(text_chunks)} ({len(chunk)} chars)..."
-                    )
-                    previous_chunk = text_chunks[idx - 2] if idx > 1 else None
-                    next_chunk = text_chunks[idx] if idx < len(text_chunks) else None
-                    audio_bytes = self._synthesize_chunk_in_context(chunk, previous_chunk, next_chunk)
-                    chunk_path = os.path.join(tmp_dir, f"chunk_{idx:04d}.mp3")
-                    with open(chunk_path, "wb") as f:
-                        f.write(audio_bytes)
-                    chunk_paths.append(chunk_path)
-
-                self._merge_audio_chunks(chunk_paths, output_path, gaps_ms=gaps_ms)
+            self._merge_audio_chunks(chunk_paths, output_path, gaps_ms=gaps_ms)
+        self._finish_chunk_dir(chunk_dir, chunk_paths)
 
     def _chunk_text(self, text: str, max_chars: int = 4000) -> list:
         """
@@ -452,9 +546,15 @@ class ElevenLabsTTS(BaseTTS):
         language_code: str,
         chunk_gap_paragraph_ms: int,
         chunk_gap_sentence_ms: int,
+        keep_chunks: bool,
+        request_timeout_seconds: float,
     ):
         self._set_chunk_gaps(chunk_gap_paragraph_ms, chunk_gap_sentence_ms)
         self._set_chunk_size(chunk_size)
+        self._set_keep_chunks(keep_chunks)
+        self.request_timeout_seconds = validate_timeout_seconds(
+            request_timeout_seconds, "tts.request_timeout_seconds"
+        )
         self.context_chars = validate_context_chars(context_chars, "tts.elevenlabs.context_chars")
         self.language_code = language_code
         self.api_key = api_key or os.environ.get("ELEVENLABS_API_KEY")
@@ -479,9 +579,9 @@ class ElevenLabsTTS(BaseTTS):
             from elevenlabs import VoiceSettings
             import httpx
 
-            custom_httpx = httpx.Client(verify=self.ssl_verify, timeout=300.0)
+            custom_httpx = httpx.Client(verify=self.ssl_verify, timeout=self.request_timeout_seconds)
             self._client = ElevenLabs(
-                api_key=self.api_key, httpx_client=custom_httpx, timeout=300.0
+                api_key=self.api_key, httpx_client=custom_httpx, timeout=self.request_timeout_seconds
             )
             self._voice_settings = VoiceSettings(
                 stability=self.stability, similarity_boost=self.similarity_boost
@@ -494,31 +594,44 @@ class ElevenLabsTTS(BaseTTS):
             logger.error(f"ElevenLabs TTS synthesis failed: {e}")
             raise
 
-    def _synthesize_chunk(self, text: str) -> bytes:
-        return self._synthesize_chunk_in_context(text, None, None)
+    def _cache_settings(self) -> dict:
+        return {
+            "voice_id": self.voice_id,
+            "model_id": self.model_id,
+            "stability": self.stability,
+            "similarity_boost": self.similarity_boost,
+            "language_code": self.language_code,
+            "output_format": _ELEVENLABS_OUTPUT_FORMAT,
+        }
 
-    def _synthesize_chunk_in_context(self, text: str, previous_chunk, next_chunk) -> bytes:
+    def _chunk_context(self, previous_chunk, next_chunk) -> dict:
         """
         Request stitching: previous_text / next_text are the last / first context_chars
         of the neighbouring chunks (cut at a word boundary).
         Omitted for the first / last chunk and for a single-chunk text.
         """
-        kwargs = {}
+        context = {}
         previous_text = context_tail(previous_chunk, self.context_chars) if previous_chunk else ""
         next_text = context_head(next_chunk, self.context_chars) if next_chunk else ""
         if previous_text:
-            kwargs["previous_text"] = previous_text
+            context["previous_text"] = previous_text
         if next_text:
-            kwargs["next_text"] = next_text
+            context["next_text"] = next_text
+        return context
+
+    def _synthesize_chunk(self, text: str) -> bytes:
+        return self._synthesize_chunk_in_context(text, {})
+
+    def _synthesize_chunk_in_context(self, text: str, context: dict) -> bytes:
         audio_generator = self._client.text_to_speech.convert(
             text=text,
             voice_id=self.voice_id,
             model_id=self.model_id,
             language_code=self.language_code,
-            output_format="mp3_44100_128",
+            output_format=_ELEVENLABS_OUTPUT_FORMAT,
             optimize_streaming_latency=None,
             voice_settings=self._voice_settings,
-            **kwargs,
+            **context,
         )
         return b"".join(audio_generator)
 
@@ -539,9 +652,11 @@ class GoogleCloudTTS(BaseTTS):
         chunk_size: int,
         chunk_gap_paragraph_ms: int,
         chunk_gap_sentence_ms: int,
+        keep_chunks: bool,
     ):
         self._set_chunk_gaps(chunk_gap_paragraph_ms, chunk_gap_sentence_ms)
         self._set_chunk_size(chunk_size)
+        self._set_keep_chunks(keep_chunks)
         max_chars = GOOGLE_TTS_MAX_INPUT_BYTES // GOOGLE_TTS_ASSUMED_BYTES_PER_CHAR
         if self.chunk_size > max_chars:
             raise ValueError(
@@ -590,6 +705,14 @@ class GoogleCloudTTS(BaseTTS):
             logger.error(f"Google Cloud TTS synthesis failed: {e}")
             raise
 
+    def _cache_settings(self) -> dict:
+        return {
+            "voice_name": self.voice_name,
+            "language_code": self.language_code,
+            "speaking_rate": self.speaking_rate,
+            "pitch": self.pitch,
+        }
+
     def _synthesize_chunk(self, text: str) -> bytes:
         n_bytes = len(text.encode("utf-8"))
         if n_bytes > GOOGLE_TTS_MAX_INPUT_BYTES:
@@ -621,9 +744,15 @@ class OpenAITTS(BaseTTS):
         chunk_size: int,
         chunk_gap_paragraph_ms: int,
         chunk_gap_sentence_ms: int,
+        keep_chunks: bool,
+        request_timeout_seconds: float,
     ):
         self._set_chunk_gaps(chunk_gap_paragraph_ms, chunk_gap_sentence_ms)
         self._set_chunk_size(chunk_size)
+        self._set_keep_chunks(keep_chunks)
+        self.request_timeout_seconds = validate_timeout_seconds(
+            request_timeout_seconds, "tts.request_timeout_seconds"
+        )
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         if not self.api_key:
             logger.warning(
@@ -642,8 +771,10 @@ class OpenAITTS(BaseTTS):
         try:
             import httpx
 
-            custom_httpx = httpx.Client(verify=self.ssl_verify, timeout=300.0)
-            self._client = OpenAI(api_key=self.api_key, http_client=custom_httpx)
+            custom_httpx = httpx.Client(verify=self.ssl_verify, timeout=self.request_timeout_seconds)
+            self._client = OpenAI(
+                api_key=self.api_key, http_client=custom_httpx, timeout=self.request_timeout_seconds
+            )
 
         except ImportError:
             logger.error("The 'openai' package is not installed. Please install it using pip.")
@@ -651,6 +782,9 @@ class OpenAITTS(BaseTTS):
         except Exception as e:
             logger.error(f"OpenAI TTS synthesis failed: {e}")
             raise
+
+    def _cache_settings(self) -> dict:
+        return {"voice": self.voice, "model": self.model, "speed": self.speed}
 
     def _synthesize_chunk(self, text: str) -> bytes:
         response = self._client.audio.speech.create(
@@ -688,9 +822,11 @@ class GeminiTTS(BaseTTS):
         chunk_size: int,
         chunk_gap_paragraph_ms: int,
         chunk_gap_sentence_ms: int,
+        keep_chunks: bool,
     ):
         self._set_chunk_gaps(chunk_gap_paragraph_ms, chunk_gap_sentence_ms)
         self._set_chunk_size(chunk_size)
+        self._set_keep_chunks(keep_chunks)
         self.api_key = api_key
         if not self.api_key:
             logger.warning(
@@ -701,6 +837,20 @@ class GeminiTTS(BaseTTS):
         self.language = language
         self.style = style
         self.ssl_verify = ssl_verify
+
+    @property
+    def _chunk_extension(self) -> str:
+        """Chunks are saved as the raw PCM the API returns; the MP3 is encoded once at the end."""
+        return "pcm"
+
+    def _cache_settings(self) -> dict:
+        return {
+            "model": self.model,
+            "voice": self.voice,
+            "language": self.language,
+            "style": self.style,
+            "sample_rate": _GEMINI_PCM_SAMPLE_RATE,
+        }
 
     def _synthesize_chunk(self, text: str) -> bytes:
         """One chunk -> raw 24 kHz / 16-bit / mono PCM bytes via the Interactions API."""
@@ -745,7 +895,7 @@ class GeminiTTS(BaseTTS):
                 parts.append(self._silence_pcm(gaps_ms[i]))
         return b"".join(parts)
 
-    def synthesize(self, text: str, output_path: str) -> None:
+    def synthesize(self, text: str, output_path: str, chunk_dir: str) -> None:
         logger.info(
             f"Synthesizing audio via Gemini TTS (Model: {self.model}, Voice: {self.voice}, "
             f"Language: {self.language})..."
@@ -769,12 +919,11 @@ class GeminiTTS(BaseTTS):
 
             # Accumulate all PCM before encoding so lameenc can produce a single
             # gapless MP3 stream rather than spliced per-chunk files.
+            chunk_paths = self._synthesize_chunk_files(text_chunks, chunk_dir)
             pcm_chunks = []
-            for idx, chunk in enumerate(text_chunks, 1):
-                logger.info(
-                    f"Generating audio for chunk {idx}/{len(text_chunks)} ({len(chunk)} chars)..."
-                )
-                pcm_chunks.append(self._synthesize_chunk(chunk))
+            for chunk_path in chunk_paths:
+                with open(chunk_path, "rb") as f:
+                    pcm_chunks.append(f.read())
 
             # Silence between chunks is inserted as zero samples (per break type).
             all_pcm_data = self._assemble_pcm(pcm_chunks, gaps_ms)
@@ -794,6 +943,7 @@ class GeminiTTS(BaseTTS):
                 f.write(mp3_data)
 
             logger.info(f"Successfully saved Gemini TTS audio to {output_path}")
+            self._finish_chunk_dir(chunk_dir, chunk_paths)
 
         except Exception as e:
             logger.error(f"Gemini TTS synthesis failed: {e}")

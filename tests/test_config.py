@@ -13,12 +13,15 @@ sefaria:
   ssl_verify: false
 directories:
   thinking_dir: "./output/thinking"
+  tts_chunks_dir: "./output/tts_chunks"
 generator:
   engine: "gemini"
 tts:
   engine: "elevenlabs"
   chunk_gap_paragraph_ms: 700
   chunk_gap_sentence_ms: 300
+  keep_chunks: true
+  request_timeout_seconds: 1800
   elevenlabs:
     chunk_size: 8000
     context_chars: 500
@@ -81,6 +84,7 @@ sefaria:
   ssl_verify: true
 directories:
   thinking_dir: "./output/thinking"
+  tts_chunks_dir: "./output/tts_chunks"
 system_instruction: "Including {{commentators_list_hebrew}} and {{prompt_commentators_desc}}"
 polishing_instruction: "Including {{commentators_list_short}} and {{tts_abbreviations}}"
 relations_instruction: "In {{hebrew_name}} with {{prompt_commentators_desc}}"
@@ -93,6 +97,8 @@ tts:
   engine: "elevenlabs"
   chunk_gap_paragraph_ms: 700
   chunk_gap_sentence_ms: 300
+  keep_chunks: true
+  request_timeout_seconds: 1800
   elevenlabs:
     chunk_size: 8000
     context_chars: 500

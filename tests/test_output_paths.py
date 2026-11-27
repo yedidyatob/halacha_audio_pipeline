@@ -53,10 +53,14 @@ def test_stage3_2_logs_transcript_and_review_paths(tmp_path, caplog):
 
 def test_tts_logs_audio_path_once(tmp_path, caplog):
     engine = MagicMock()
-    engine.synthesize.side_effect = lambda text, output_path: open(output_path, "w", encoding="utf-8").write(text)
+    engine.synthesize.side_effect = lambda text, output_path, chunk_dir: open(output_path, "w", encoding="utf-8").write(text)
+    config = _config(tmp_path)
+    config.tts_chunks_dir = str(tmp_path / "tts_chunks")
     with patch.object(main_mod, "create_tts_engine", return_value=engine), caplog.at_level("INFO"):
-        main_mod.synthesize_siman_audio(94, "audio", _config(tmp_path), "m")
+        main_mod.synthesize_siman_audio(94, "audio", config, "m")
     _assert_saved_once(caplog, tmp_path, "TTS output for Siman 94", "YD_Siman_94_m.mp3")
+    # The siman's chunks are saved in a stable per-lesson folder (not the timestamped history name).
+    assert engine.synthesize.call_args.kwargs["chunk_dir"] == str(tmp_path / "tts_chunks" / "YD_Siman_94_m")
     assert sum(str(tmp_path) in r.getMessage() for r in caplog.records) == 1  # the path is logged in one place
 
 

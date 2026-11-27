@@ -18,8 +18,8 @@ GEMINI_TTS = ('  engine: "gemini"\n  gemini:\n    model: "gemini-3.8-flash-tts"\
 
 
 def _load(tts_yaml: str) -> PipelineConfig:
-    yaml_content = ('halachic_section: "Yoreh De\'ah"\nsefaria:\n  base_url: "u"\n  timeout_seconds: 15\n  retries: 3\n  ssl_verify: true\ndirectories:\n  thinking_dir: "./output/thinking"\ngenerator:\n  engine: "gemini"\n'
-                    'tts:\n  chunk_gap_paragraph_ms: 0\n  chunk_gap_sentence_ms: 0\n' + tts_yaml)
+    yaml_content = ('halachic_section: "Yoreh De\'ah"\nsefaria:\n  base_url: "u"\n  timeout_seconds: 15\n  retries: 3\n  ssl_verify: true\ndirectories:\n  thinking_dir: "./output/thinking"\n  tts_chunks_dir: "./output/tts_chunks"\ngenerator:\n  engine: "gemini"\n'
+                    'tts:\n  chunk_gap_paragraph_ms: 0\n  chunk_gap_sentence_ms: 0\n  keep_chunks: true\n  request_timeout_seconds: 1800\n' + tts_yaml)
     with patch("builtins.open", mock_open(read_data=SECTIONS_YAML + yaml_content)), \
          patch("os.path.exists", return_value=True), patch("os.makedirs"):
         return PipelineConfig("config.yaml")
@@ -27,7 +27,7 @@ def _load(tts_yaml: str) -> PipelineConfig:
 
 def _engine(chunk_size=1000, **gaps):
     return GeminiTTS("k", "gemini-3.8-flash-tts", "voice_x", "he-IL", "warm, upbeat, measured pace", True,
-                     chunk_size=chunk_size, **(gaps or GAPS))
+                     chunk_size=chunk_size, keep_chunks=True, **(gaps or GAPS))
 
 
 def _interaction(pcm: bytes):
@@ -40,7 +40,7 @@ def _run(engine, text, tmp_path, responses):
     out = tmp_path / "out" / "a.mp3"
     with patch("pipeline.generator.build_gemini_client", return_value=client) as build, \
          patch.object(GeminiTTS, "_assemble_pcm", wraps=engine._assemble_pcm) as assemble:
-        engine.synthesize(text, str(out))
+        engine.synthesize(text, str(out), str(tmp_path / "chunks"))
     return client, build, assemble, out
 
 
@@ -94,6 +94,7 @@ def test_factory_builds_gemini_engine_from_config():
     config.ssl_verify = False
     config.tts_chunk_size = 1000
     config.tts_chunk_gap_paragraph_ms, config.tts_chunk_gap_sentence_ms = 700, 300
+    config.tts_keep_chunks = True
     engine = create_tts_engine(config)
     assert isinstance(engine, GeminiTTS)
     assert (engine.api_key, engine.model, engine.voice, engine.language, engine.style, engine.ssl_verify,
@@ -158,8 +159,8 @@ def test_no_audio_raises(tmp_path):
 
 
 def test_missing_api_key_raises_before_any_request(tmp_path):
-    engine = GeminiTTS(None, "m", "v", "he-IL", "s", True, chunk_size=1000, **GAPS)
+    engine = GeminiTTS(None, "m", "v", "he-IL", "s", True, chunk_size=1000, **GAPS, keep_chunks=True)
     with patch("pipeline.generator.build_gemini_client") as build, \
          pytest.raises(ValueError, match="GEMINI_API_KEY"):
-        engine.synthesize("שָׁלוֹם", str(tmp_path / "a.mp3"))
+        engine.synthesize("שָׁלוֹם", str(tmp_path / "a.mp3"), str(tmp_path / "chunks"))
     build.assert_not_called()

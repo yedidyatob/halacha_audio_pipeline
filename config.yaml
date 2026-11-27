@@ -288,6 +288,19 @@ tts:
   chunk_gap_paragraph_ms: 700
   chunk_gap_sentence_ms: 300
 
+  # Every synthesized chunk is saved as soon as it arrives, in
+  # <directories.tts_chunks_dir>/<audio base name>/chunk_<NNNN>_<key>.<mp3|pcm>, where <key> hashes
+  # the chunk text, its stitching context and the engine's voice / model settings. If a run fails
+  # midway, a rerun reuses the saved chunks and synthesizes (and pays for) only the missing ones; a
+  # changed text, voice, model or chunk_size changes the key, so stale audio is never reused.
+  # keep_chunks: after a successful merge, true keeps the lesson's chunks (stale ones from an earlier
+  # text or setting are removed), so re-synthesizing an edited transcript pays only for the changed
+  # chunks and their neighbours; false deletes the lesson's chunk folder.
+  keep_chunks: true
+  # HTTP timeout (seconds) of one ElevenLabs / OpenAI request. A long chunk can take many minutes
+  # to synthesize; a request cut off by the timeout may still be billed.
+  request_timeout_seconds: 1800
+
   # Gemini API Interactions endpoint, authenticated with GEMINI_API_KEY.
   gemini:
     model: "gemini-3.8-flash-tts"
@@ -351,6 +364,8 @@ directories:
   # Thought summaries of the synchronous Gemini calls (Stages 1-3), one
   # <output base name>_thinking.txt per call. For reading only: never fed to a later stage.
   thinking_dir: "./output/thinking"
+  # Saved TTS chunks, one folder per lesson (see tts.keep_chunks).
+  tts_chunks_dir: "./output/tts_chunks"
 
 # Stage 3 text check: the characters a polished lesson may contain, as the body of a regex character
 # class. Any other character (e.g. an Arabic or Cyrillic letter the model slipped in) fails the polish

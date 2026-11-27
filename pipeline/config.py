@@ -6,7 +6,8 @@ from pipeline.logger import get_logger
 from pipeline.extractor import SourceWork
 from pipeline.nikkud_review import has_nikkud, word_vocalization_error
 from pipeline.tts import (
-    validate_gap_ms, validate_chunk_size, validate_context_chars,
+    validate_gap_ms, validate_chunk_size, validate_context_chars, validate_keep_chunks,
+    validate_timeout_seconds,
     GOOGLE_TTS_MAX_INPUT_BYTES, GOOGLE_TTS_ASSUMED_BYTES_PER_CHAR,
 )
 
@@ -234,6 +235,13 @@ class PipelineConfig:
             if tts.get(key) is None:
                 raise ValueError(f"Missing required configuration parameter '{key}' under 'tts' in config.yaml.")
             setattr(self, attr, validate_gap_ms(tts[key], f"tts.{key}"))
+
+        # Saved TTS chunks: kept after a successful merge, or deleted (tts.keep_chunks).
+        self.tts_keep_chunks = validate_keep_chunks(_required(tts, "keep_chunks", "tts"), "tts.keep_chunks")
+        # HTTP timeout (seconds) of one ElevenLabs / OpenAI TTS request.
+        self.tts_request_timeout_seconds = validate_timeout_seconds(
+            _required(tts, "request_timeout_seconds", "tts"), "tts.request_timeout_seconds"
+        )
         
         # Max characters per TTS request chunk for the selected engine (tts.<engine>.chunk_size).
         # Required: no defaults in code.
@@ -276,6 +284,7 @@ class PipelineConfig:
         if not dirs.get("thinking_dir"):
             raise ValueError("Missing required configuration parameter 'thinking_dir' under 'directories' in config.yaml.")
         self.thinking_dir = dirs["thinking_dir"]
+        self.tts_chunks_dir = _required_str(dirs, "tts_chunks_dir", "directories")
         self.relations_dir = os.path.join(self.output_dir, "relations")
 
         # Create directories if they don't exist
@@ -284,6 +293,7 @@ class PipelineConfig:
         os.makedirs(self.drafts_dir, exist_ok=True)
         os.makedirs(self.relations_dir, exist_ok=True)
         os.makedirs(self.thinking_dir, exist_ok=True)
+        os.makedirs(self.tts_chunks_dir, exist_ok=True)
         
         logger.info("Configuration validated and directories established.")
 

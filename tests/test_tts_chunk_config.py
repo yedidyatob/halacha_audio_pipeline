@@ -17,8 +17,8 @@ VOCALIZED_WORD = "טֵית"
 
 
 def _load(tts_yaml: str) -> PipelineConfig:
-    yaml_content = ('halachic_section: "Yoreh De\'ah"\nsefaria:\n  base_url: "u"\n  timeout_seconds: 15\n  retries: 3\n  ssl_verify: true\ndirectories:\n  thinking_dir: "./output/thinking"\ngenerator:\n  engine: "gemini"\n'
-                    'tts:\n  chunk_gap_paragraph_ms: 0\n  chunk_gap_sentence_ms: 0\n' + tts_yaml)
+    yaml_content = ('halachic_section: "Yoreh De\'ah"\nsefaria:\n  base_url: "u"\n  timeout_seconds: 15\n  retries: 3\n  ssl_verify: true\ndirectories:\n  thinking_dir: "./output/thinking"\n  tts_chunks_dir: "./output/tts_chunks"\ngenerator:\n  engine: "gemini"\n'
+                    'tts:\n  chunk_gap_paragraph_ms: 0\n  chunk_gap_sentence_ms: 0\n  keep_chunks: true\n  request_timeout_seconds: 1800\n' + tts_yaml)
     with patch("builtins.open", mock_open(read_data=SECTIONS_YAML + yaml_content)), \
          patch("os.path.exists", return_value=True), patch("os.makedirs"):
         return PipelineConfig("config.yaml")
@@ -84,26 +84,26 @@ def test_repo_config_yaml_chunk_settings():
 
 
 def test_engines_store_and_validate_chunk_size():
-    assert OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy", chunk_size=4000, **GAPS)._chunk_size == 4000
-    assert GoogleCloudTTS(credentials_path=None, voice_name="v", language_code="he-IL", speaking_rate=1.0, pitch=0.0, chunk_size=2000, **GAPS)._chunk_size == 2000
-    assert GeminiTTS("k", "m", "v", "he-IL", "s", True, chunk_size=1234, **GAPS)._chunk_size == 1234
-    el = ElevenLabsTTS(api_key="k", chunk_size=8000, context_chars=500, language_code="he", **GAPS)
+    assert OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy", chunk_size=4000, **GAPS, keep_chunks=True, request_timeout_seconds=1800)._chunk_size == 4000
+    assert GoogleCloudTTS(credentials_path=None, voice_name="v", language_code="he-IL", speaking_rate=1.0, pitch=0.0, chunk_size=2000, **GAPS, keep_chunks=True)._chunk_size == 2000
+    assert GeminiTTS("k", "m", "v", "he-IL", "s", True, chunk_size=1234, **GAPS, keep_chunks=True)._chunk_size == 1234
+    el = ElevenLabsTTS(api_key="k", chunk_size=8000, context_chars=500, language_code="he", **GAPS, keep_chunks=True, request_timeout_seconds=1800)
     assert (el._chunk_size, el.context_chars) == (8000, 500)
     with pytest.raises(ValueError):
-        OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy", chunk_size=0, **GAPS)
+        OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy", chunk_size=0, **GAPS, keep_chunks=True, request_timeout_seconds=1800)
     with pytest.raises(ValueError):
-        ElevenLabsTTS(api_key="k", chunk_size=8000, context_chars=-1, language_code="he", **GAPS)
+        ElevenLabsTTS(api_key="k", chunk_size=8000, context_chars=-1, language_code="he", **GAPS, keep_chunks=True, request_timeout_seconds=1800)
     with pytest.raises(ValueError, match="5000 bytes"):
-        GoogleCloudTTS(credentials_path=None, voice_name="v", language_code="he-IL", speaking_rate=1.0, pitch=0.0, chunk_size=3000, **GAPS)
+        GoogleCloudTTS(credentials_path=None, voice_name="v", language_code="he-IL", speaking_rate=1.0, pitch=0.0, chunk_size=3000, **GAPS, keep_chunks=True)
     with pytest.raises(TypeError):
-        OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy", **GAPS)  # no code default for chunk_size
+        OpenAITTS(api_key="k", ssl_verify=True, speed=1.0, model="tts-1", voice="alloy", **GAPS, keep_chunks=True, request_timeout_seconds=1800)  # no code default for chunk_size
     for bad in (None, True, 2.0, "10"):
         with pytest.raises(ValueError):
             validate_chunk_size(bad)
 
 
 def test_google_rejects_chunk_over_byte_limit():
-    g = GoogleCloudTTS(credentials_path=None, voice_name="v", language_code="he-IL", speaking_rate=1.0, pitch=0.0, chunk_size=2500, **GAPS)
+    g = GoogleCloudTTS(credentials_path=None, voice_name="v", language_code="he-IL", speaking_rate=1.0, pitch=0.0, chunk_size=2500, **GAPS, keep_chunks=True)
     g._texttospeech = MagicMock()
     g._google_client = MagicMock()
     with pytest.raises(ValueError, match="bytes"):
@@ -119,6 +119,8 @@ def test_factory_passes_chunk_settings():
     config.elevenlabs_language_code = "he"
     config.tts_chunk_gap_paragraph_ms = 0
     config.tts_chunk_gap_sentence_ms = 0
+    config.tts_keep_chunks = True
+    config.tts_request_timeout_seconds = 1800
     config.elevenlabs_api_key = "k"
     config.elevenlabs_settings = {"voice_id": "v", "model_id": "eleven_v4", "stability": 0.5, "similarity_boost": 0.75}
     config.ssl_verify = True
@@ -150,7 +152,8 @@ def test_context_never_splits_a_vocalized_word():
 
 def _el(chunk_size, context_chars):
     tts = ElevenLabsTTS(api_key="k", voice_id="v", model_id="eleven_v4", stability=0.5,
-                        similarity_boost=0.75, chunk_size=chunk_size, context_chars=context_chars, language_code="he", **GAPS)
+                        similarity_boost=0.75, chunk_size=chunk_size, context_chars=context_chars, language_code="he",
+                        keep_chunks=True, request_timeout_seconds=1800, **GAPS)
     return tts
 
 
@@ -159,7 +162,7 @@ def _run(tts, text, tmp_path):
         client = cls.return_value
         client.text_to_speech.convert.return_value = [b"mp3"]
         with patch.object(tts, "_merge_audio_chunks"):
-            tts.synthesize(text, str(tmp_path / "out.mp3"))
+            tts.synthesize(text, str(tmp_path / "out.mp3"), str(tmp_path / "chunks"))
     return [c.kwargs for c in client.text_to_speech.convert.call_args_list]
 
 
